@@ -3,6 +3,7 @@ const API_BASE = '/api';
 // State
 const state = {
   token: null,
+  email: localStorage.getItem('supersync_email') || '',
 };
 
 // DOM Elements
@@ -24,6 +25,13 @@ const backToLoginFromPasskeyBtn = document.getElementById('back-to-login-from-pa
 const loginPasskeyBtn = document.getElementById('login-passkey-btn');
 const loginMagicLinkBtn = document.getElementById('login-magic-link-btn');
 const registerPasskeyBtn = document.getElementById('register-passkey-btn');
+
+// Email inputs (synced across forms)
+const emailInputs = [
+  document.getElementById('login-email'),
+  document.getElementById('register-email'),
+  document.getElementById('lost-passkey-email'),
+];
 
 // --- Event Listeners ---
 
@@ -69,6 +77,22 @@ loginMagicLinkBtn.addEventListener('click', requestMagicLink);
 // Passkey register button
 registerPasskeyBtn.addEventListener('click', registerWithPasskey);
 
+// Email input sync - when any email input changes, update all others
+emailInputs.forEach((input) => {
+  input.addEventListener('input', (e) => {
+    const newEmail = e.target.value;
+    state.email = newEmail;
+    // Save to localStorage for persistence across page reloads
+    localStorage.setItem('supersync_email', newEmail);
+    // Sync to other inputs
+    emailInputs.forEach((otherInput) => {
+      if (otherInput !== e.target) {
+        otherInput.value = newEmail;
+      }
+    });
+  });
+});
+
 // Lost passkey form submit
 lostPasskeyForm.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -94,7 +118,6 @@ lostPasskeyForm.addEventListener('submit', async (e) => {
     setTimeout(() => {
       lostPasskeyForm.classList.remove('active');
       loginForm.classList.add('active');
-      document.getElementById('lost-passkey-email').value = '';
     }, 3000);
   } catch (err) {
     showMessage('An error occurred. Please try again.', 'error');
@@ -273,7 +296,6 @@ async function deleteAccount() {
     tokenArea.value = '';
     tokenDisplay.classList.add('hidden');
     authForms.classList.remove('hidden');
-    document.getElementById('login-email').value = '';
   } catch (err) {
     showMessage(err.message, 'error');
   } finally {
@@ -453,6 +475,15 @@ async function registerWithPasskey() {
   if (token) {
     sessionStorage.removeItem('loginToken');
     showToken(token);
+  }
+})();
+
+// Initialize email inputs from saved state
+(function initEmailInputs() {
+  if (state.email) {
+    emailInputs.forEach((input) => {
+      input.value = state.email;
+    });
   }
 })();
 
