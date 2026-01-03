@@ -13,34 +13,15 @@ import {
   sanitizeVectorClock,
   validatePayload,
 } from '../sync.types';
+import { ENTITY_TYPES } from '@sp/shared-schema';
 
 /**
  * Valid entity types for operations.
- * Must match the EntityType union in the client's operation.types.ts.
+ * Uses shared ENTITY_TYPES from @sp/shared-schema to ensure client/server consistency.
  * Operations with unknown entity types will be rejected.
+ * Typed as Set<string> since we're validating unknown input strings.
  */
-export const ALLOWED_ENTITY_TYPES = new Set([
-  'TASK',
-  'PROJECT',
-  'TAG',
-  'NOTE',
-  'GLOBAL_CONFIG',
-  'TIME_TRACKING',
-  'SIMPLE_COUNTER',
-  'WORK_CONTEXT',
-  'TASK_REPEAT_CFG',
-  'ISSUE_PROVIDER',
-  'PLANNER',
-  'MENU_TREE',
-  'METRIC',
-  'BOARD',
-  'REMINDER',
-  'MIGRATION',
-  'RECOVERY',
-  'ALL',
-  'PLUGIN_USER_DATA',
-  'PLUGIN_METADATA',
-]);
+export const ALLOWED_ENTITY_TYPES: Set<string> = new Set(ENTITY_TYPES);
 
 export interface ValidationResult {
   valid: boolean;

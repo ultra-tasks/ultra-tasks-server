@@ -1,4 +1,12 @@
 import { Logger } from '../logger';
+import {
+  VectorClock,
+  VectorClockComparison,
+  compareVectorClocks,
+} from '@sp/shared-schema';
+
+// Re-export for consumers of this module
+export { VectorClock, VectorClockComparison, compareVectorClocks };
 
 // Structured error codes for client handling
 export const SYNC_ERROR_CODES = {
@@ -50,21 +58,8 @@ export const OP_TYPES = [
 
 export type OpType = (typeof OP_TYPES)[number];
 
-export type VectorClock = Record<string, number>;
-
-/**
- * Compare two vector clocks.
- *
- * SYNC NOTE: This algorithm must match the client implementation at:
- * src/app/core/util/vector-clock.ts - compareVectorClocks()
- *
- * Returns:
- * - 'LESS_THAN': a happened before b
- * - 'GREATER_THAN': b happened before a
- * - 'EQUAL': clocks are identical
- * - 'CONCURRENT': neither happened before the other (conflict!)
- */
-export type VectorClockComparison = 'LESS_THAN' | 'GREATER_THAN' | 'EQUAL' | 'CONCURRENT';
+// VectorClock, VectorClockComparison, and compareVectorClocks are imported from @sp/shared-schema
+// and re-exported above. This ensures client and server use identical implementations.
 
 /**
  * Validates and sanitizes a vector clock.
@@ -122,32 +117,7 @@ export const sanitizeVectorClock = (
   return { valid: true, clock: sanitized };
 };
 
-/**
- * SYNC NOTE: This algorithm must match the client implementation at:
- * src/app/core/util/vector-clock.ts - compareVectorClocks()
- */
-export const compareVectorClocks = (
-  a: VectorClock,
-  b: VectorClock,
-): VectorClockComparison => {
-  const allKeys = new Set([...Object.keys(a), ...Object.keys(b)]);
-
-  let aGreater = false;
-  let bGreater = false;
-
-  for (const key of allKeys) {
-    const aVal = a[key] ?? 0;
-    const bVal = b[key] ?? 0;
-
-    if (aVal > bVal) aGreater = true;
-    if (bVal > aVal) bGreater = true;
-  }
-
-  if (aGreater && bGreater) return 'CONCURRENT';
-  if (aGreater) return 'GREATER_THAN';
-  if (bGreater) return 'LESS_THAN';
-  return 'EQUAL';
-};
+// compareVectorClocks is imported from @sp/shared-schema (see imports at top of file)
 
 export interface Operation {
   id: string;
