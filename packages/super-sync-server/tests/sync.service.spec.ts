@@ -187,6 +187,19 @@ vi.mock('../src/db', async () => {
           return true;
         });
       }),
+      deleteMany: vi.fn().mockImplementation(async (args: any) => {
+        let deleted = 0;
+        for (const [key, syncState] of state.userSyncStates) {
+          if (
+            args.where?.userId !== undefined &&
+            syncState.userId === args.where.userId
+          ) {
+            state.userSyncStates.delete(key);
+            deleted++;
+          }
+        }
+        return { count: deleted };
+      }),
     },
     syncDevice: {
       upsert: vi.fn().mockImplementation(async (args: any) => {
@@ -2235,6 +2248,153 @@ describe('SyncService', () => {
 
       expect(snapshot.generatedAt).toBeGreaterThanOrEqual(beforeTime);
       expect(snapshot.generatedAt).toBeLessThanOrEqual(afterTime);
+    });
+  });
+
+  describe('deleteAllUserData (Reset Account)', () => {
+    it('should delete all operations for the user', async () => {
+      const service = getSyncService();
+
+      // Upload some operations
+      await service.uploadOps(userId, clientId, [
+        {
+          id: uuidv7(),
+          clientId,
+          actionType: 'ADD_TASK',
+          opType: 'CRT',
+          entityType: 'TASK',
+          entityId: 't1',
+          payload: { title: 'Task 1' },
+          vectorClock: {},
+          timestamp: Date.now(),
+          schemaVersion: 1,
+        },
+        {
+          id: uuidv7(),
+          clientId,
+          actionType: 'ADD_TASK',
+          opType: 'CRT',
+          entityType: 'TASK',
+          entityId: 't2',
+          payload: { title: 'Task 2' },
+          vectorClock: {},
+          timestamp: Date.now(),
+          schemaVersion: 1,
+        },
+      ]);
+
+      // Verify operations exist
+      const opsBefore = await service.getOpsSince(userId, 0);
+      expect(opsBefore.length).toBe(2);
+
+      // Delete all user data
+      await service.deleteAllUserData(userId);
+
+      // Verify operations are gone
+      const opsAfter = await service.getOpsSince(userId, 0);
+      expect(opsAfter.length).toBe(0);
+    });
+
+    it('should allow uploading new operations after reset', async () => {
+      const service = getSyncService();
+
+      // Upload initial operation
+      await service.uploadOps(userId, clientId, [
+        {
+          id: uuidv7(),
+          clientId,
+          actionType: 'ADD_TASK',
+          opType: 'CRT',
+          entityType: 'TASK',
+          entityId: 't1',
+          payload: { title: 'Task 1' },
+          vectorClock: {},
+          timestamp: Date.now(),
+          schemaVersion: 1,
+        },
+      ]);
+
+      // Delete all user data
+      await service.deleteAllUserData(userId);
+
+      // Upload new operation after reset
+      const results = await service.uploadOps(userId, clientId, [
+        {
+          id: uuidv7(),
+          clientId,
+          actionType: 'ADD_TASK',
+          opType: 'CRT',
+          entityType: 'TASK',
+          entityId: 't2',
+          payload: { title: 'New Task After Reset' },
+          vectorClock: {},
+          timestamp: Date.now(),
+          schemaVersion: 1,
+        },
+      ]);
+
+      expect(results[0].accepted).toBe(true);
+
+      // Verify only new operation exists
+      const ops = await service.getOpsSince(userId, 0);
+      expect(ops.length).toBe(1);
+      expect(ops[0].op.entityId).toBe('t2');
+    });
+
+    it('should not affect other users data', async () => {
+      const service = getSyncService();
+      const otherUserId = 2;
+
+      // Add other user to test state
+      testState.users.set(otherUserId, {
+        id: otherUserId,
+        email: 'other@test.com',
+        storageQuotaBytes: BigInt(100 * 1024 * 1024),
+        storageUsedBytes: BigInt(0),
+      });
+
+      // Upload operations for both users
+      await service.uploadOps(userId, clientId, [
+        {
+          id: uuidv7(),
+          clientId,
+          actionType: 'ADD_TASK',
+          opType: 'CRT',
+          entityType: 'TASK',
+          entityId: 't1',
+          payload: { title: 'User 1 Task' },
+          vectorClock: {},
+          timestamp: Date.now(),
+          schemaVersion: 1,
+        },
+      ]);
+
+      await service.uploadOps(otherUserId, 'other-device', [
+        {
+          id: uuidv7(),
+          clientId: 'other-device',
+          actionType: 'ADD_TASK',
+          opType: 'CRT',
+          entityType: 'TASK',
+          entityId: 't2',
+          payload: { title: 'User 2 Task' },
+          vectorClock: {},
+          timestamp: Date.now(),
+          schemaVersion: 1,
+        },
+      ]);
+
+      // Delete user 1's data
+      await service.deleteAllUserData(userId);
+
+      // Verify user 1's data is gone
+      const user1Ops = await service.getOpsSince(userId, 0);
+      expect(user1Ops.length).toBe(0);
+
+      // Verify user 2's data still exists
+      const user2Ops = await service.getOpsSince(otherUserId, 0);
+      expect(user2Ops.length).toBe(1);
+      expect(user2Ops[0].op.entityId).toBe('t2');
     });
   });
 });
