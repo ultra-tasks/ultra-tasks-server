@@ -17,6 +17,10 @@ const copyBtn = document.getElementById('copy-btn');
 const refreshBtn = document.getElementById('refresh-btn');
 const logoutBtn = document.getElementById('logout-btn');
 const deleteAccountBtn = document.getElementById('delete-account-btn');
+const resetAccountBtn = document.getElementById('reset-account-btn');
+const accountSettingsBtn = document.getElementById('account-settings-btn');
+const accountSettings = document.getElementById('account-settings');
+const backToTokenBtn = document.getElementById('back-to-token-btn');
 const tabLoginBtn = document.getElementById('tab-login');
 const tabRegisterBtn = document.getElementById('tab-register');
 const lostPasskeyForm = document.getElementById('lost-passkey-form');
@@ -53,6 +57,13 @@ logoutBtn.addEventListener('click', logout);
 
 // Delete account button
 deleteAccountBtn.addEventListener('click', deleteAccount);
+
+// Reset account button
+resetAccountBtn.addEventListener('click', resetAccount);
+
+// Account settings navigation
+accountSettingsBtn.addEventListener('click', showAccountSettings);
+backToTokenBtn.addEventListener('click', showTokenDisplay);
 
 // Show lost passkey form
 showLostPasskeyBtn.addEventListener('click', () => {
@@ -159,7 +170,20 @@ function logout() {
   state.token = null;
   tokenArea.value = '';
   tokenDisplay.classList.add('hidden');
+  accountSettings.classList.add('hidden');
   authForms.classList.remove('hidden');
+  hideMessage();
+}
+
+function showAccountSettings() {
+  tokenDisplay.classList.add('hidden');
+  accountSettings.classList.remove('hidden');
+  hideMessage();
+}
+
+function showTokenDisplay() {
+  accountSettings.classList.add('hidden');
+  tokenDisplay.classList.remove('hidden');
   hideMessage();
 }
 
@@ -295,7 +319,52 @@ async function deleteAccount() {
     state.token = null;
     tokenArea.value = '';
     tokenDisplay.classList.add('hidden');
+    accountSettings.classList.add('hidden');
     authForms.classList.remove('hidden');
+  } catch (err) {
+    showMessage(err.message, 'error');
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function resetAccount() {
+  if (!state.token) return;
+
+  // Show confirmation dialog
+  const confirmed = confirm(
+    'Are you sure you want to RESET your account?\n\n' +
+      'This will delete ALL synced data from the server, but your account will remain active.\n\n' +
+      'Your local data in Super Productivity will NOT be affected.\n' +
+      'You can sync again after resetting.',
+  );
+
+  if (!confirmed) return;
+
+  setLoading(true);
+  hideMessage();
+
+  try {
+    const res = await fetch(`${API_BASE}/sync/data`, {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${state.token}`,
+      },
+      body: '{}',
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      throw new Error(data.error || 'Failed to reset account');
+    }
+
+    // Show success message
+    showMessage(
+      'Account reset successfully! All synced data has been cleared. You can now sync fresh data.',
+      'success',
+    );
   } catch (err) {
     showMessage(err.message, 'error');
   } finally {

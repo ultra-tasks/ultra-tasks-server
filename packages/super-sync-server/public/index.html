@@ -235,10 +235,58 @@
               Log Out
             </button>
             <button
+              id="account-settings-btn"
+              class="btn text-only"
+            >
+              Account Settings
+            </button>
+          </div>
+        </div>
+
+        <!-- Account Settings -->
+        <div
+          id="account-settings"
+          class="card hidden"
+        >
+          <h2>Account Settings</h2>
+
+          <section class="settings-section">
+            <h3>Reset Account</h3>
+            <p>
+              Clear all synced data from the server. Your account remains active and you
+              can sync fresh data afterwards. Local data in Super Productivity is not
+              affected.
+            </p>
+            <button
+              id="reset-account-btn"
+              class="btn secondary"
+            >
+              Reset Account (Clear Data)
+            </button>
+          </section>
+
+          <hr />
+
+          <section class="settings-section danger-zone">
+            <h3>Danger Zone</h3>
+            <p>
+              Permanently delete your account and all synced data. This action cannot be
+              undone.
+            </p>
+            <button
               id="delete-account-btn"
-              class="btn text-only danger"
+              class="btn danger"
             >
               Delete Account
+            </button>
+          </section>
+
+          <div class="action-buttons">
+            <button
+              id="back-to-token-btn"
+              class="btn text-only"
+            >
+              ← Back to Token
             </button>
           </div>
         </div>
