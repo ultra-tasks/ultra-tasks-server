@@ -25,6 +25,7 @@ vi.mock('../src/db', () => {
       create: vi.fn(),
       update: vi.fn(),
       deleteMany: vi.fn(),
+      findUnique: vi.fn(),
     },
     $transaction: vi.fn(),
   };
@@ -86,6 +87,7 @@ describe('Passkey Authentication', () => {
       create: Mock;
       update: Mock;
       deleteMany: Mock;
+      findUnique: Mock;
     };
     $transaction: Mock;
   };
@@ -281,14 +283,12 @@ describe('Passkey Authentication', () => {
 
       expect(options).toBeDefined();
       expect(options.challenge).toBe(testChallenge);
+      // Implementation uses discoverable credentials (no allowCredentials)
+      // to let browser show all available passkeys for this RP
       expect(mockGenerateAuthentication).toHaveBeenCalledWith(
         expect.objectContaining({
-          allowCredentials: expect.arrayContaining([
-            expect.objectContaining({
-              id: expect.any(String),
-              transports: ['internal'],
-            }),
-          ]),
+          rpID: 'localhost',
+          userVerification: 'preferred',
         }),
       );
     });
@@ -309,6 +309,16 @@ describe('Passkey Authentication', () => {
         email: testEmail,
         isVerified: 1,
         passkeys: [mockPasskey],
+      });
+
+      // Mock passkey lookup by credential ID (new implementation uses discoverable credentials)
+      mockPrisma.passkey.findUnique.mockResolvedValue({
+        ...mockPasskey,
+        user: {
+          id: 1,
+          email: testEmail,
+          isVerified: 1,
+        },
       });
 
       mockVerifyAuthentication.mockResolvedValue({
@@ -356,6 +366,16 @@ describe('Passkey Authentication', () => {
         passkeys: [mockPasskey],
       });
 
+      // Mock passkey lookup - user is unverified
+      mockPrisma.passkey.findUnique.mockResolvedValue({
+        ...mockPasskey,
+        user: {
+          id: 1,
+          email: testEmail,
+          isVerified: 0,
+        },
+      });
+
       // Generate options first
       await generateAuthenticationOptions(testEmail);
 
@@ -383,6 +403,9 @@ describe('Passkey Authentication', () => {
         isVerified: 1,
         passkeys: [mockPasskey],
       });
+
+      // Mock passkey lookup returns null (credential not found)
+      mockPrisma.passkey.findUnique.mockResolvedValue(null);
 
       // Generate options first
       await generateAuthenticationOptions(testEmail);

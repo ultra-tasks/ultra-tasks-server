@@ -1440,4 +1440,100 @@ describe('Restore Points API', () => {
       expect(retryResponse.json().errorCode).toBe('SYNC_IMPORT_EXISTS');
     });
   });
+
+  describe('DELETE /api/sync/data - Reset Account (Delete All User Data)', () => {
+    it('should delete all user data and return success', async () => {
+      // First upload some operations
+      await app.inject({
+        method: 'POST',
+        url: '/api/sync/ops',
+        headers: { authorization: `Bearer ${authToken}` },
+        payload: {
+          ops: [
+            createOp(clientId, { entityId: 'task-1' }),
+            createOp(clientId, { entityId: 'task-2' }),
+          ],
+          clientId,
+        },
+      });
+
+      // Verify ops exist
+      const opsBefore = await app.inject({
+        method: 'GET',
+        url: '/api/sync/ops?sinceSeq=0',
+        headers: { authorization: `Bearer ${authToken}` },
+      });
+      expect(opsBefore.json().ops.length).toBe(2);
+
+      // Delete all user data
+      const deleteResponse = await app.inject({
+        method: 'DELETE',
+        url: '/api/sync/data',
+        headers: { authorization: `Bearer ${authToken}` },
+      });
+
+      expect(deleteResponse.statusCode).toBe(200);
+      expect(deleteResponse.json()).toEqual({ success: true });
+
+      // Verify ops are gone
+      const opsAfter = await app.inject({
+        method: 'GET',
+        url: '/api/sync/ops?sinceSeq=0',
+        headers: { authorization: `Bearer ${authToken}` },
+      });
+      expect(opsAfter.json().ops.length).toBe(0);
+    });
+
+    it('should return 401 without authorization', async () => {
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/api/sync/data',
+      });
+
+      expect(response.statusCode).toBe(401);
+    });
+
+    it('should allow uploading new data after reset', async () => {
+      // Upload initial data
+      await app.inject({
+        method: 'POST',
+        url: '/api/sync/ops',
+        headers: { authorization: `Bearer ${authToken}` },
+        payload: {
+          ops: [createOp(clientId, { entityId: 'old-task' })],
+          clientId,
+        },
+      });
+
+      // Delete all data
+      await app.inject({
+        method: 'DELETE',
+        url: '/api/sync/data',
+        headers: { authorization: `Bearer ${authToken}` },
+      });
+
+      // Upload new data after reset
+      const uploadResponse = await app.inject({
+        method: 'POST',
+        url: '/api/sync/ops',
+        headers: { authorization: `Bearer ${authToken}` },
+        payload: {
+          ops: [createOp(clientId, { entityId: 'new-task' })],
+          clientId,
+        },
+      });
+
+      expect(uploadResponse.statusCode).toBe(200);
+      expect(uploadResponse.json().results[0].accepted).toBe(true);
+
+      // Verify only new data exists
+      const ops = await app.inject({
+        method: 'GET',
+        url: '/api/sync/ops?sinceSeq=0',
+        headers: { authorization: `Bearer ${authToken}` },
+      });
+      expect(ops.json().ops.length).toBe(1);
+      expect(ops.json().ops[0].entityId).toBe('new-task');
+    });
+  });
 });
