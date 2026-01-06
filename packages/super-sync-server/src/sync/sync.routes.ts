@@ -532,20 +532,32 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
   // GET /api/sync/snapshot - Get full state snapshot
   // generateSnapshot() handles caching internally via sequence-based freshness:
   // returns cached snapshot if up-to-date, only replays ops when new ones exist.
-  fastify.get('/snapshot', async (req: FastifyRequest, reply: FastifyReply) => {
-    try {
-      const userId = getAuthUser(req).userId;
-      const syncService = getSyncService();
+  // Rate limited: Snapshot generation is CPU-intensive (can replay up to 100k ops)
+  fastify.get(
+    '/snapshot',
+    {
+      config: {
+        rateLimit: {
+          max: 10,
+          timeWindow: '5 minutes',
+        },
+      },
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const userId = getAuthUser(req).userId;
+        const syncService = getSyncService();
 
-      Logger.info(`[user:${userId}] Snapshot requested`);
-      const snapshot = await syncService.generateSnapshot(userId);
-      Logger.info(`[user:${userId}] Snapshot ready (seq=${snapshot.serverSeq})`);
-      return reply.send(snapshot as SnapshotResponse);
-    } catch (err) {
-      Logger.error(`Get snapshot error: ${errorMessage(err)}`);
-      return reply.status(500).send({ error: 'Internal server error' });
-    }
-  });
+        Logger.info(`[user:${userId}] Snapshot requested`);
+        const snapshot = await syncService.generateSnapshot(userId);
+        Logger.info(`[user:${userId}] Snapshot ready (seq=${snapshot.serverSeq})`);
+        return reply.send(snapshot as SnapshotResponse);
+      } catch (err) {
+        Logger.error(`Get snapshot error: ${errorMessage(err)}`);
+        return reply.status(500).send({ error: 'Internal server error' });
+      }
+    },
+  );
 
   // POST /api/sync/snapshot - Upload full state
   // Supports gzip-compressed request bodies via Content-Encoding: gzip header
