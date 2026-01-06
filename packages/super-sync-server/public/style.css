@@ -128,6 +128,18 @@ small {
   color: var(--text-light);
 }
 
+a {
+  color: var(--primary);
+}
+
+a:visited {
+  color: var(--primary);
+}
+
+a:hover {
+  color: var(--primary-dark);
+}
+
 /* Buttons */
 .btn {
   width: 100%;
@@ -364,4 +376,81 @@ footer {
 .btn.danger:hover {
   background-color: #9a1f1f;
   color: white;
+}
+
+/* Dark Mode */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --primary: #4db8e8;
+    --primary-dark: #0099cc;
+    --secondary: #a3a3a3;
+    --secondary-dark: #8b95a5;
+    --bg: #1a1a1a;
+    --card-bg: #2d2d2d;
+    --text: #e5e5e5;
+    --text-light: #a3a3a3;
+    --border: #404040;
+    --success: #66bb6a;
+    --error: #ef5350;
+  }
+
+  .card {
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+  }
+
+  input {
+    background-color: var(--bg);
+    color: var(--text);
+  }
+
+  /* Buttons need darker backgrounds for white text contrast */
+  .btn.primary {
+    background-color: #0077b6;
+  }
+
+  .btn.primary:hover {
+    background-color: #005a8c;
+  }
+
+  .btn.secondary {
+    background-color: #5c6370;
+  }
+
+  .btn.secondary:hover {
+    background-color: #4b5563;
+  }
+
+  .btn.success {
+    background-color: #2e7d32;
+  }
+
+  .warning-box {
+    background-color: #4a3f00;
+    border-color: #6d5a00;
+    color: #ffd54f;
+  }
+
+  .msg-error {
+    background-color: #3d1b1b;
+    color: #ef9a9a;
+    border-color: #5c2b2b;
+  }
+
+  .msg-success {
+    background-color: #1b3d1f;
+    color: #81c784;
+    border-color: #2b5c30;
+  }
+
+  .btn.danger {
+    background-color: #c62828;
+  }
+
+  .btn.danger:hover {
+    background-color: #9a1f1f;
+  }
+
+  .danger-zone h3 {
+    color: #f77;
+  }
 }
