@@ -1,15 +1,15 @@
 :root {
-  --primary: #0c96e2;
-  --primary-dark: #097ab8;
-  --secondary: #6b7280;
+  --primary: #0077b6;
+  --primary-dark: #005a8c;
+  --secondary: #5c6370;
   --secondary-dark: #4b5563;
   --bg: #f5f7fa;
   --card-bg: #ffffff;
   --text: #333333;
-  --text-light: #666666;
+  --text-light: #595959;
   --border: #e0e0e0;
-  --success: #4caf50;
-  --error: #f44336;
+  --success: #2e7d32;
+  --error: #c62828;
   --radius: 8px;
 }
 
@@ -182,7 +182,7 @@ small {
 }
 
 .btn.danger:hover {
-  color: #c62828;
+  color: #9a1f1f;
 }
 
 /* Token Display */
@@ -237,7 +237,7 @@ small {
 .warning-box {
   background-color: #fff3cd;
   border: 1px solid #ffeeba;
-  color: #856404;
+  color: #6d5200;
   padding: 0.75rem;
   border-radius: var(--radius);
   font-size: 0.9rem;
@@ -362,6 +362,6 @@ footer {
 }
 
 .btn.danger:hover {
-  background-color: #c62828;
+  background-color: #9a1f1f;
   color: white;
 }
