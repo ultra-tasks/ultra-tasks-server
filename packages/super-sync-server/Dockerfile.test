@@ -20,7 +20,8 @@ COPY packages/shared-schema/package.json ./packages/shared-schema/
 COPY packages/super-sync-server/package.json ./packages/super-sync-server/
 
 # Install dependencies (ignore scripts to skip husky/prepare from root)
-RUN npm ci --workspace=packages/shared-schema --workspace=packages/super-sync-server --ignore-scripts
+# Using npm install instead of npm ci due to workspace lock file sync issues
+RUN npm install --workspace=packages/shared-schema --workspace=packages/super-sync-server --ignore-scripts
 
 # Copy source files
 COPY packages/shared-schema/ ./packages/shared-schema/

@@ -360,7 +360,7 @@ export const verifyAuthentication = async (
       requireUserVerification: false, // We use 'preferred', not 'required'
       credential: {
         id: passkey.credentialId.toString('base64url'),
-        publicKey: passkey.publicKey,
+        publicKey: new Uint8Array(passkey.publicKey),
         counter: Number(passkey.counter),
         transports: passkey.transports ? JSON.parse(passkey.transports) : undefined,
       },
