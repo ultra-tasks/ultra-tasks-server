@@ -5,6 +5,9 @@ WORKDIR /repo
 
 RUN apk add --no-cache openssl libc6-compat
 
+# Upgrade npm to match lockfile version (npm 11)
+RUN npm install -g npm@11
+
 # Root package + lock (for workspace install)
 COPY package.json package-lock.json ./
 COPY packages/shared-schema/package.json ./packages/shared-schema/
