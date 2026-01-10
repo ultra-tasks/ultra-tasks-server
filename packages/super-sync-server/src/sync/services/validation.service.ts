@@ -146,10 +146,10 @@ export class ValidationService {
 
     // Validate payload complexity to prevent DoS attacks via deeply nested objects.
     // Full-state ops (SYNC_IMPORT, BACKUP_IMPORT, REPAIR) get higher thresholds
-    // since they legitimately contain more data.
+    // since they legitimately contain more data (including archives which can have 300K+ keys).
     // Note: isFullStateOp is already defined above in entityId validation.
     const maxDepth = isFullStateOp ? 50 : 20;
-    const maxKeys = isFullStateOp ? 100000 : 20000;
+    const maxKeys = isFullStateOp ? 500000 : 20000;
     if (!this.validatePayloadComplexity(op.payload, maxDepth, maxKeys)) {
       return {
         valid: false,
