@@ -286,9 +286,8 @@ describe('Storage Quota Cleanup', () => {
   describe('deleteOldestRestorePointAndOps', () => {
     it('should return failure when no restore points exist', async () => {
       // Import after mocks are set up
-      const { initSyncService, getSyncService } = await import(
-        '../src/sync/sync.service'
-      );
+      const { initSyncService, getSyncService } =
+        await import('../src/sync/sync.service');
       initSyncService();
       const service = getSyncService();
 
@@ -305,9 +304,8 @@ describe('Storage Quota Cleanup', () => {
     });
 
     it('should delete oldest restore point and all ops before it when 2+ restore points exist', async () => {
-      const { initSyncService, getSyncService } = await import(
-        '../src/sync/sync.service'
-      );
+      const { initSyncService, getSyncService } =
+        await import('../src/sync/sync.service');
       initSyncService();
       const service = getSyncService();
 
@@ -330,9 +328,8 @@ describe('Storage Quota Cleanup', () => {
     });
 
     it('should keep single restore point but delete ops before it', async () => {
-      const { initSyncService, getSyncService } = await import(
-        '../src/sync/sync.service'
-      );
+      const { initSyncService, getSyncService } =
+        await import('../src/sync/sync.service');
       initSyncService();
       const service = getSyncService();
 
@@ -353,9 +350,8 @@ describe('Storage Quota Cleanup', () => {
     });
 
     it('should return failure when restore point is at seq 1 with no ops before it', async () => {
-      const { initSyncService, getSyncService } = await import(
-        '../src/sync/sync.service'
-      );
+      const { initSyncService, getSyncService } =
+        await import('../src/sync/sync.service');
       initSyncService();
       const service = getSyncService();
 
@@ -375,9 +371,8 @@ describe('Storage Quota Cleanup', () => {
     });
 
     it('should handle BACKUP_IMPORT as restore point', async () => {
-      const { initSyncService, getSyncService } = await import(
-        '../src/sync/sync.service'
-      );
+      const { initSyncService, getSyncService } =
+        await import('../src/sync/sync.service');
       initSyncService();
       const service = getSyncService();
 
@@ -393,9 +388,8 @@ describe('Storage Quota Cleanup', () => {
     });
 
     it('should handle REPAIR as restore point', async () => {
-      const { initSyncService, getSyncService } = await import(
-        '../src/sync/sync.service'
-      );
+      const { initSyncService, getSyncService } =
+        await import('../src/sync/sync.service');
       initSyncService();
       const service = getSyncService();
 
@@ -413,9 +407,8 @@ describe('Storage Quota Cleanup', () => {
 
   describe('Storage quota with auto-cleanup', () => {
     it('should recalculate storage when quota check fails', async () => {
-      const { initSyncService, getSyncService } = await import(
-        '../src/sync/sync.service'
-      );
+      const { initSyncService, getSyncService } =
+        await import('../src/sync/sync.service');
       initSyncService();
       const service = getSyncService();
 
@@ -434,9 +427,8 @@ describe('Storage Quota Cleanup', () => {
     });
 
     it('should allow upload after storage recalculation shows actual usage is lower', async () => {
-      const { initSyncService, getSyncService } = await import(
-        '../src/sync/sync.service'
-      );
+      const { initSyncService, getSyncService } =
+        await import('../src/sync/sync.service');
       initSyncService();
       const service = getSyncService();
 
@@ -457,9 +449,8 @@ describe('Storage Quota Cleanup', () => {
 
   describe('freeStorageForUpload - iterative cleanup', () => {
     it('should return success immediately if quota is already satisfied', async () => {
-      const { initSyncService, getSyncService } = await import(
-        '../src/sync/sync.service'
-      );
+      const { initSyncService, getSyncService } =
+        await import('../src/sync/sync.service');
       initSyncService();
       const service = getSyncService();
 
@@ -480,9 +471,8 @@ describe('Storage Quota Cleanup', () => {
     });
 
     it('should return failure when no restore points exist and quota exceeded', async () => {
-      const { initSyncService, getSyncService } = await import(
-        '../src/sync/sync.service'
-      );
+      const { initSyncService, getSyncService } =
+        await import('../src/sync/sync.service');
       initSyncService();
       const service = getSyncService();
 
@@ -507,9 +497,8 @@ describe('Storage Quota Cleanup', () => {
     });
 
     it('should return failure when only one restore point exists', async () => {
-      const { initSyncService, getSyncService } = await import(
-        '../src/sync/sync.service'
-      );
+      const { initSyncService, getSyncService } =
+        await import('../src/sync/sync.service');
       initSyncService();
       const service = getSyncService();
 
@@ -535,9 +524,8 @@ describe('Storage Quota Cleanup', () => {
     });
 
     it('should delete multiple restore points iteratively until quota is satisfied', async () => {
-      const { initSyncService, getSyncService } = await import(
-        '../src/sync/sync.service'
-      );
+      const { initSyncService, getSyncService } =
+        await import('../src/sync/sync.service');
       initSyncService();
       const service = getSyncService();
 
@@ -597,9 +585,8 @@ describe('Storage Quota Cleanup', () => {
     });
 
     it('should stop when only one restore point remains even if quota still exceeded', async () => {
-      const { initSyncService, getSyncService } = await import(
-        '../src/sync/sync.service'
-      );
+      const { initSyncService, getSyncService } =
+        await import('../src/sync/sync.service');
       initSyncService();
       const service = getSyncService();
 
@@ -636,9 +623,8 @@ describe('Storage Quota Cleanup', () => {
     });
 
     it('should return stats even when cleanup fails', async () => {
-      const { initSyncService, getSyncService } = await import(
-        '../src/sync/sync.service'
-      );
+      const { initSyncService, getSyncService } =
+        await import('../src/sync/sync.service');
       initSyncService();
       const service = getSyncService();
 
@@ -667,9 +653,8 @@ describe('Storage Quota Cleanup', () => {
 
   describe('Stale snapshot cache cleanup', () => {
     it('should clear snapshot cache when deleted ops include the cached snapshot seq', async () => {
-      const { initSyncService, getSyncService } = await import(
-        '../src/sync/sync.service'
-      );
+      const { initSyncService, getSyncService } =
+        await import('../src/sync/sync.service');
       const { prisma } = await import('../src/db');
       initSyncService();
       const service = getSyncService();
@@ -708,9 +693,8 @@ describe('Storage Quota Cleanup', () => {
     });
 
     it('should NOT clear snapshot cache when cached seq is after deleted ops', async () => {
-      const { initSyncService, getSyncService } = await import(
-        '../src/sync/sync.service'
-      );
+      const { initSyncService, getSyncService } =
+        await import('../src/sync/sync.service');
       const { prisma } = await import('../src/db');
       initSyncService();
       const service = getSyncService();
@@ -749,9 +733,8 @@ describe('Storage Quota Cleanup', () => {
     });
 
     it('should clear snapshot cache when cached seq equals deleteUpToSeq exactly', async () => {
-      const { initSyncService, getSyncService } = await import(
-        '../src/sync/sync.service'
-      );
+      const { initSyncService, getSyncService } =
+        await import('../src/sync/sync.service');
       const { prisma } = await import('../src/db');
       initSyncService();
       const service = getSyncService();
@@ -789,9 +772,8 @@ describe('Storage Quota Cleanup', () => {
     });
 
     it('should not crash when no cached snapshot exists', async () => {
-      const { initSyncService, getSyncService } = await import(
-        '../src/sync/sync.service'
-      );
+      const { initSyncService, getSyncService } =
+        await import('../src/sync/sync.service');
       initSyncService();
       const service = getSyncService();
 
