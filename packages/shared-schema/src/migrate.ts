@@ -1,13 +1,6 @@
-import { MIGRATIONS } from './migrations/index.js';
-import {
-  CURRENT_SCHEMA_VERSION,
-  MIN_SUPPORTED_SCHEMA_VERSION,
-} from './schema-version.js';
-import type {
-  MigrationResult,
-  OperationLike,
-  SchemaMigration,
-} from './migration.types.js';
+import { MIGRATIONS } from './migrations/index';
+import { CURRENT_SCHEMA_VERSION, MIN_SUPPORTED_SCHEMA_VERSION } from './schema-version';
+import type { MigrationResult, OperationLike, SchemaMigration } from './migration.types';
 
 /**
  * Find a migration that transforms from the given version.

@@ -3,7 +3,7 @@ export {
   CURRENT_SCHEMA_VERSION,
   MIN_SUPPORTED_SCHEMA_VERSION,
   MAX_VERSION_SKIP,
-} from './schema-version.js';
+} from './schema-version';
 
 // Types
 export type {
@@ -11,7 +11,7 @@ export type {
   SchemaMigration,
   MigrationResult,
   MigratableStateCache,
-} from './migration.types.js';
+} from './migration.types';
 
 // Migration functions
 export {
@@ -22,15 +22,15 @@ export {
   operationNeedsMigration,
   validateMigrationRegistry,
   getCurrentSchemaVersion,
-} from './migrate.js';
+} from './migrate';
 
 // Migration registry (for inspection/debugging)
-export { MIGRATIONS } from './migrations/index.js';
+export { MIGRATIONS } from './migrations/index';
 
 // Vector clock types and comparison (shared between client and server)
-export type { VectorClock, VectorClockComparison } from './vector-clock.js';
-export { compareVectorClocks, mergeVectorClocks } from './vector-clock.js';
+export type { VectorClock, VectorClockComparison } from './vector-clock';
+export { compareVectorClocks, mergeVectorClocks } from './vector-clock';
 
 // Entity types (shared between client and server)
-export type { EntityType } from './entity-types.js';
-export { ENTITY_TYPES } from './entity-types.js';
+export type { EntityType } from './entity-types';
+export { ENTITY_TYPES } from './entity-types';
