@@ -148,15 +148,25 @@ export async function pageRoutes(fastify: FastifyInstance) {
     },
   );
 
-  fastify.get<{ Querystring: VerifyEmailQuery }>('/verify-email', async (req, reply) => {
-    try {
-      const { token } = req.query;
-      if (!token) {
-        return reply.status(400).send('Token is required');
-      }
+  fastify.get<{ Querystring: VerifyEmailQuery }>(
+    '/verify-email',
+    {
+      config: {
+        rateLimit: {
+          max: 20,
+          timeWindow: '15 minutes',
+        },
+      },
+    },
+    async (req, reply) => {
+      try {
+        const { token } = req.query;
+        if (!token) {
+          return reply.status(400).send('Token is required');
+        }
 
-      await verifyEmail(token);
-      return reply.type('text/html').send(`
+        await verifyEmail(token);
+        return reply.type('text/html').send(`
         <html>
           <head>
             <title>Email Verified</title>
@@ -176,13 +186,14 @@ export async function pageRoutes(fastify: FastifyInstance) {
           </body>
         </html>
       `);
-    } catch (err) {
-      Logger.error(`Verification error: ${errorMessage(err)}`);
-      // Escape the error message to prevent XSS
-      const safeError = escapeHtml(errorMessage(err));
-      return reply.status(400).send(`Verification failed: ${safeError}`);
-    }
-  });
+      } catch (err) {
+        Logger.error(`Verification error: ${errorMessage(err)}`);
+        // Escape the error message to prevent XSS
+        const safeError = escapeHtml(errorMessage(err));
+        return reply.status(400).send(`Verification failed: ${safeError}`);
+      }
+    },
+  );
 
   // Passkey recovery page - allows user to register a new passkey
   fastify.get<{ Querystring: RecoverPasskeyQuery }>(
@@ -292,19 +303,29 @@ export async function pageRoutes(fastify: FastifyInstance) {
   );
 
   // Magic link login page - verifies token and displays JWT
-  fastify.get<{ Querystring: MagicLoginQuery }>('/magic-login', async (req, reply) => {
-    const { token } = req.query;
-    if (!token) {
-      return reply.status(400).send('Token is required');
-    }
+  fastify.get<{ Querystring: MagicLoginQuery }>(
+    '/magic-login',
+    {
+      config: {
+        rateLimit: {
+          max: 10,
+          timeWindow: '15 minutes',
+        },
+      },
+    },
+    async (req, reply) => {
+      const { token } = req.query;
+      if (!token) {
+        return reply.status(400).send('Token is required');
+      }
 
-    try {
-      // Verify the magic link token and get JWT
-      const result = await verifyLoginMagicLink(token);
+      try {
+        // Verify the magic link token and get JWT
+        const result = await verifyLoginMagicLink(token);
 
-      // Redirect to main page with token in sessionStorage
-      // Uses external script to avoid CSP inline script issues
-      return reply.type('text/html').send(`
+        // Redirect to main page with token in sessionStorage
+        // Uses external script to avoid CSP inline script issues
+        return reply.type('text/html').send(`
         <html>
           <head>
             <title>Login Successful</title>
@@ -314,10 +335,10 @@ export async function pageRoutes(fastify: FastifyInstance) {
           </body>
         </html>
         `);
-    } catch (err) {
-      Logger.error(`Magic link login error: ${errorMessage(err)}`);
-      const safeError = escapeHtml(errorMessage(err));
-      return reply.type('text/html').send(`
+      } catch (err) {
+        Logger.error(`Magic link login error: ${errorMessage(err)}`);
+        const safeError = escapeHtml(errorMessage(err));
+        return reply.type('text/html').send(`
         <html>
           <head>
             <title>Login Failed</title>
@@ -339,6 +360,7 @@ export async function pageRoutes(fastify: FastifyInstance) {
           </body>
         </html>
         `);
-    }
-  });
+      }
+    },
+  );
 }
