@@ -41,10 +41,10 @@ export const MIGRATIONS: SchemaMigration[] = [
 
       const migratedTasksConfig = {
         ...state.tasks,
-        isConfirmBeforeTaskDelete: state.misc.isConfirmBeforeTaskDelete ?? false,
+        isConfirmBeforeDelete: state.misc.isConfirmBeforeTaskDelete ?? false,
         isAutoAddWorkedOnToToday: state.misc.isAutoAddWorkedOnToToday ?? false,
         isAutoMarkParentAsDone: state.misc.isAutMarkParentAsDone ?? false,
-        isTrayShowCurrentTask: state.misc.isTrayShowCurrentTask ?? false,
+        isTrayShowCurrent: state.misc.isTrayShowCurrentTask ?? false,
         isMarkdownFormattingInNotesEnabled: !(state.misc.isTurnOffMarkdown ?? false),
         defaultProjectId: state.misc.defaultProjectId ?? null,
         notesTemplate: state.misc.taskNotesTpl ?? '',
