@@ -45,6 +45,7 @@ export const MIGRATIONS: SchemaMigration[] = [
         isAutoAddWorkedOnToToday: state.misc.isAutoAddWorkedOnToToday ?? false,
         isAutoMarkParentAsDone: state.misc.isAutMarkParentAsDone ?? false,
         isTrayShowCurrentTask: state.misc.isTrayShowCurrentTask ?? false,
+        isMarkdownFormattingInNotesEnabled: !(state.misc.isTurnOffMarkdown ?? false),
         defaultProjectId: state.misc.defaultProjectId ?? null,
         notesTemplate: state.misc.taskNotesTpl ?? '',
       };
@@ -54,6 +55,7 @@ export const MIGRATIONS: SchemaMigration[] = [
       delete updatedMiscConfig.isAutoAddWorkedOnToToday;
       delete updatedMiscConfig.isAutMarkParentAsDone;
       delete updatedMiscConfig.isTrayShowCurrentTask;
+      delete updatedMiscConfig.isTurnOffMarkdown;
       delete updatedMiscConfig.defaultProjectId;
       delete updatedMiscConfig.taskNotesTpl;
 
