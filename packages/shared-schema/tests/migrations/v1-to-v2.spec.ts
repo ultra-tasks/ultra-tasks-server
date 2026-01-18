@@ -25,11 +25,13 @@ describe('Migrate MiscConfig to TasksConfig', () => {
     };
 
     const migratedState = migration.migrateState(initialState) as {
-      misc: Record<string, unknown>;
-      tasks: Record<string, unknown>;
+      globalConfig: {
+        misc: Record<string, unknown>;
+        tasks: Record<string, unknown>;
+      };
     };
 
-    expect(migratedState.tasks).toEqual({
+    expect(migratedState.globalConfig.tasks).toEqual({
       isConfirmBeforeDelete: true,
       isAutoAddWorkedOnToToday: true,
       isAutoMarkParentAsDone: false,
@@ -39,18 +41,22 @@ describe('Migrate MiscConfig to TasksConfig', () => {
       notesTemplate: 'Template',
     });
 
-    expect(migratedState.misc).toEqual({});
+    expect(migratedState.globalConfig.misc).toEqual({});
   });
 
   it('should not modify state if misc is empty', () => {
     const initialState = {
-      misc: {},
-      tasks: {},
+      globalConfig: {
+        misc: {},
+        tasks: {},
+      },
     };
 
     const migratedState = migration.migrateState(initialState) as {
-      misc: Record<string, unknown>;
-      tasks: Record<string, unknown>;
+      globalConfig: {
+        misc: Record<string, unknown>;
+        tasks: Record<string, unknown>;
+      };
     };
 
     expect(migratedState).toEqual(initialState);
@@ -58,17 +64,21 @@ describe('Migrate MiscConfig to TasksConfig', () => {
 
   it('should not modify state if tasks already migrated', () => {
     const initialState = {
-      misc: {
-        isConfirmBeforeTaskDelete: true,
-      },
-      tasks: {
-        isConfirmBeforeDelete: true,
+      globalConfig: {
+        misc: {
+          isConfirmBeforeTaskDelete: true,
+        },
+        tasks: {
+          isConfirmBeforeDelete: true,
+        },
       },
     };
 
     const migratedState = migration.migrateState(initialState) as {
-      misc: Record<string, unknown>;
-      tasks: Record<string, unknown>;
+      globalConfig: {
+        misc: Record<string, unknown>;
+        tasks: Record<string, unknown>;
+      };
     };
 
     expect(migratedState).toEqual(initialState);
