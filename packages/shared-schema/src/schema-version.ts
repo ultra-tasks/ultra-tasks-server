@@ -2,6 +2,7 @@
  * Current schema version for all operations and state snapshots.
  * Increment this BEFORE adding a new migration.
  */
+// @todo - v17.x.x - bump to 2
 export const CURRENT_SCHEMA_VERSION = 1;
 
 /**
