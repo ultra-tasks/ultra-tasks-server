@@ -2,7 +2,8 @@
  * Current schema version for all operations and state snapshots.
  * Increment this BEFORE adding a new migration.
  */
-export const CURRENT_SCHEMA_VERSION = 17;
+// @todo: synchronize the schema version with the application versions?
+export const CURRENT_SCHEMA_VERSION = 2;
 
 /**
  * Minimum schema version that this codebase can still handle.

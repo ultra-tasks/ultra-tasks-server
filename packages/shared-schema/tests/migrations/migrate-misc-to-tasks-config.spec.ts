@@ -2,10 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { MIGRATIONS } from '../../src/migrations';
 
 describe('Migrate MiscConfig to TasksConfig', () => {
-  const migration = MIGRATIONS.find((m) => m.fromVersion === 16 && m.toVersion === 17);
+  const migration = MIGRATIONS.find((m) => m.fromVersion === 1 && m.toVersion === 2);
 
   if (!migration) {
-    throw new Error('Migration for version 16 to 17 not found');
+    throw new Error('Migration for version 1 to 2 not found');
   }
 
   it('should migrate settings from misc to tasks', () => {

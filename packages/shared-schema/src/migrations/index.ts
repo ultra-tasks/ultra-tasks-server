@@ -27,8 +27,8 @@ import type { SchemaMigration } from '../migration.types';
  */
 export const MIGRATIONS: SchemaMigration[] = [
   {
-    fromVersion: 16,
-    toVersion: 17,
+    fromVersion: 1,
+    toVersion: 2,
     description: 'Move settings from MiscConfig to TasksConfig.',
     migrateState: (state: any) => {
       if (!state.misc || Object.keys(state.misc).length === 0) {
