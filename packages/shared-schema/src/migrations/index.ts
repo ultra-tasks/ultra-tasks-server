@@ -26,5 +26,43 @@ import type { SchemaMigration } from '../migration.types';
  * ```
  */
 export const MIGRATIONS: SchemaMigration[] = [
-  // No migrations yet - schema version 1 is the initial version
+  {
+    fromVersion: 16,
+    toVersion: 17,
+    description: 'Move settings from MiscConfig to TasksConfig.',
+    migrateState: (state: any) => {
+      if (!state.misc || Object.keys(state.misc).length === 0) {
+        return state;
+      }
+
+      if (state.tasks?.isConfirmBeforeTaskDelete !== undefined) {
+        return state;
+      }
+
+      const migratedTasksConfig = {
+        ...state.tasks,
+        isConfirmBeforeTaskDelete: state.misc.isConfirmBeforeTaskDelete ?? false,
+        isAutoAddWorkedOnToToday: state.misc.isAutoAddWorkedOnToToday ?? false,
+        isAutoMarkParentAsDone: state.misc.isAutMarkParentAsDone ?? false,
+        isTrayShowCurrentTask: state.misc.isTrayShowCurrentTask ?? false,
+        defaultProjectId: state.misc.defaultProjectId ?? null,
+        notesTemplate: state.misc.taskNotesTpl ?? '',
+      };
+
+      const updatedMiscConfig = { ...state.misc };
+      delete updatedMiscConfig.isConfirmBeforeTaskDelete;
+      delete updatedMiscConfig.isAutoAddWorkedOnToToday;
+      delete updatedMiscConfig.isAutMarkParentAsDone;
+      delete updatedMiscConfig.isTrayShowCurrentTask;
+      delete updatedMiscConfig.defaultProjectId;
+      delete updatedMiscConfig.taskNotesTpl;
+
+      return {
+        ...state,
+        tasks: migratedTasksConfig,
+        misc: updatedMiscConfig,
+      };
+    },
+    requiresOperationMigration: false,
+  },
 ];
