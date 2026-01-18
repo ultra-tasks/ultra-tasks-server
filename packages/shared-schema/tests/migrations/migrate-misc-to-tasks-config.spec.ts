@@ -15,6 +15,7 @@ describe('Migrate MiscConfig to TasksConfig', () => {
         isAutoAddWorkedOnToToday: true,
         isAutMarkParentAsDone: false,
         isTrayShowCurrentTask: true,
+        isTurnOffMarkdown: false,
         defaultProjectId: 'project_1',
         taskNotesTpl: 'Template',
       },
@@ -27,10 +28,11 @@ describe('Migrate MiscConfig to TasksConfig', () => {
     };
 
     expect(migratedState.tasks).toEqual({
-      isConfirmBeforeTaskDelete: true,
+      isConfirmBeforeDelete: true,
       isAutoAddWorkedOnToToday: true,
       isAutoMarkParentAsDone: false,
-      isTrayShowCurrentTask: true,
+      isTrayShowCurrent: true,
+      isMarkdownFormattingInNotesEnabled: true,
       defaultProjectId: 'project_1',
       notesTemplate: 'Template',
     });
