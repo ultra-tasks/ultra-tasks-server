@@ -1,4 +1,5 @@
 import type { SchemaMigration } from '../migration.types';
+import { MoveSettingsFromMiscToTasks_v1v2 } from './v1-to-v2';
 
 /**
  * Registry of all schema migrations.
@@ -25,4 +26,4 @@ import type { SchemaMigration } from '../migration.types';
  * }
  * ```
  */
-export const MIGRATIONS: SchemaMigration[] = [];
+export const MIGRATIONS: SchemaMigration[] = [MoveSettingsFromMiscToTasks_v1v2];

@@ -1,31 +1,33 @@
-import { MIGRATIONS } from './index';
+import { SchemaMigration } from '../migration.types';
 
-MIGRATIONS.push({
+export const MoveSettingsFromMiscToTasks_v1v2: SchemaMigration = {
   fromVersion: 1,
   toVersion: 2,
   description: 'Move settings from MiscConfig to TasksConfig.',
   migrateState: (state: any) => {
-    if (!state.misc || Object.keys(state.misc).length === 0) {
+    const misc = state.globalConfig?.misc;
+    if (!misc || Object.keys(misc).length === 0) {
       return state;
     }
 
+    const tasks = state.globalConfig?.tasks;
     // Skip migration if tasks already contain the isConfirmBeforeDelete property (tasks is migrated)
-    if (state.tasks?.isConfirmBeforeTaskDelete !== undefined) {
+    if (tasks?.isConfirmBeforeDelete !== undefined) {
       return state;
     }
 
     const migratedTasksConfig = {
-      ...state.tasks,
-      isConfirmBeforeDelete: state.misc.isConfirmBeforeTaskDelete ?? false,
-      isAutoAddWorkedOnToToday: state.misc.isAutoAddWorkedOnToToday ?? false,
-      isAutoMarkParentAsDone: state.misc.isAutMarkParentAsDone ?? false,
-      isTrayShowCurrent: state.misc.isTrayShowCurrentTask ?? false,
-      isMarkdownFormattingInNotesEnabled: !(state.misc.isTurnOffMarkdown ?? false),
-      defaultProjectId: state.misc.defaultProjectId ?? null,
-      notesTemplate: state.misc.taskNotesTpl ?? '',
+      ...tasks,
+      isConfirmBeforeDelete: misc.isConfirmBeforeTaskDelete ?? false,
+      isAutoAddWorkedOnToToday: misc.isAutoAddWorkedOnToToday ?? false,
+      isAutoMarkParentAsDone: misc.isAutMarkParentAsDone ?? false,
+      isTrayShowCurrent: misc.isTrayShowCurrentTask ?? false,
+      isMarkdownFormattingInNotesEnabled: !(misc.isTurnOffMarkdown ?? false),
+      defaultProjectId: misc.defaultProjectId ?? null,
+      notesTemplate: misc.taskNotesTpl ?? '',
     };
 
-    const updatedMiscConfig = { ...state.misc };
+    const updatedMiscConfig = { ...misc };
     delete updatedMiscConfig.isConfirmBeforeTaskDelete;
     delete updatedMiscConfig.isAutoAddWorkedOnToToday;
     delete updatedMiscConfig.isAutMarkParentAsDone;
@@ -36,9 +38,12 @@ MIGRATIONS.push({
 
     return {
       ...state,
-      tasks: migratedTasksConfig,
-      misc: updatedMiscConfig,
+      globalConfig: {
+        ...state.globalConfig,
+        misc: updatedMiscConfig,
+        tasks: migratedTasksConfig,
+      },
     };
   },
   requiresOperationMigration: false,
-});
+};
