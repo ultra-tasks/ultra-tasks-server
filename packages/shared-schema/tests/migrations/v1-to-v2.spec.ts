@@ -10,16 +10,18 @@ describe('Migrate MiscConfig to TasksConfig', () => {
 
   it('should migrate settings from misc to tasks', () => {
     const initialState = {
-      misc: {
-        isConfirmBeforeTaskDelete: true,
-        isAutoAddWorkedOnToToday: true,
-        isAutMarkParentAsDone: false,
-        isTrayShowCurrentTask: true,
-        isTurnOffMarkdown: false,
-        defaultProjectId: 'project_1',
-        taskNotesTpl: 'Template',
+      globalConfig: {
+        misc: {
+          isConfirmBeforeTaskDelete: true,
+          isAutoAddWorkedOnToToday: true,
+          isAutMarkParentAsDone: false,
+          isTrayShowCurrentTask: true,
+          isTurnOffMarkdown: false,
+          defaultProjectId: 'project_1',
+          taskNotesTpl: 'Template',
+        },
+        tasks: {},
       },
-      tasks: {},
     };
 
     const migratedState = migration.migrateState(initialState) as {
