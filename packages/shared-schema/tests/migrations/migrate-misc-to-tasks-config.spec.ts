@@ -60,7 +60,7 @@ describe('Migrate MiscConfig to TasksConfig', () => {
         isConfirmBeforeTaskDelete: true,
       },
       tasks: {
-        isConfirmBeforeTaskDelete: true,
+        isConfirmBeforeDelete: true,
       },
     };
 
