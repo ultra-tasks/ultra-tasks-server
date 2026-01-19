@@ -20,7 +20,7 @@ interface MultiEntityPayload {
   entityChanges?: unknown[];
 }
 
-export const MoveSettingsFromMiscToTasks_v1v2: SchemaMigration = {
+export const MiscToTasksSettingsMigration_v1v2: SchemaMigration = {
   fromVersion: 1,
   toVersion: 2,
   description: 'Move settings from MiscConfig to TasksConfig.',
