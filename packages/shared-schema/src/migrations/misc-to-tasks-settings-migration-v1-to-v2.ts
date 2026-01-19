@@ -1,73 +1,52 @@
 import { OperationLike, SchemaMigration } from '../migration.types';
 
-// Settings that are moved from misc to tasks
-const MIGRATED_SETTINGS = [
-  'isConfirmBeforeTaskDelete',
-  'isAutoAddWorkedOnToToday',
-  'isAutMarkParentAsDone',
-  'isTrayShowCurrentTask',
-  'isTurnOffMarkdown',
-  'defaultProjectId',
-  'taskNotesTpl',
-] as const;
-
 /**
- * MultiEntityPayload structure used by the operation log.
- * Operations store their payload in this format.
+ * Mapping from old misc field names to new tasks field names.
+ * Key: old field name in misc
+ * Value: new field name in tasks (or transform function)
  */
-interface MultiEntityPayload {
-  actionPayload: Record<string, unknown>;
-  entityChanges?: unknown[];
-}
+const FIELD_MAPPINGS: Record<string, string | ((value: unknown) => [string, unknown])> = {
+  isConfirmBeforeTaskDelete: 'isConfirmBeforeDelete',
+  isAutoAddWorkedOnToToday: 'isAutoAddWorkedOnToToday',
+  isAutMarkParentAsDone: 'isAutoMarkParentAsDone', // Fixed typo
+  isTrayShowCurrentTask: 'isTrayShowCurrent',
+  isTurnOffMarkdown: (value) => ['isMarkdownFormattingInNotesEnabled', !value], // Inverted
+  defaultProjectId: 'defaultProjectId',
+  taskNotesTpl: 'notesTemplate',
+};
+
+const MIGRATED_FIELDS = Object.keys(FIELD_MAPPINGS);
 
 export const MiscToTasksSettingsMigration_v1v2: SchemaMigration = {
   fromVersion: 1,
   toVersion: 2,
   description: 'Move settings from MiscConfig to TasksConfig.',
+
   migrateState: (state: any) => {
     const misc = state.globalConfig?.misc;
-    if (!misc || Object.keys(misc).length === 0) {
+    if (!misc || !hasMigratedFields(misc)) {
       return state;
     }
 
-    const tasks = state.globalConfig?.tasks;
-    // Skip migration if tasks already contain the isConfirmBeforeDelete property (tasks is migrated)
-    if (tasks?.isConfirmBeforeDelete !== undefined) {
+    const tasks = state.globalConfig?.tasks ?? {};
+
+    // Skip if already migrated (tasks has new fields)
+    if (tasks.isConfirmBeforeDelete !== undefined) {
       return state;
     }
-
-    const migratedTasksConfig = {
-      ...tasks,
-      isConfirmBeforeDelete: misc.isConfirmBeforeTaskDelete ?? false,
-      isAutoAddWorkedOnToToday: misc.isAutoAddWorkedOnToToday ?? false,
-      isAutoMarkParentAsDone: misc.isAutMarkParentAsDone ?? false,
-      isTrayShowCurrent: misc.isTrayShowCurrentTask ?? false,
-      isMarkdownFormattingInNotesEnabled: !(misc.isTurnOffMarkdown ?? false),
-      defaultProjectId: misc.defaultProjectId ?? null,
-      notesTemplate: misc.taskNotesTpl ?? '',
-    };
-
-    const updatedMiscConfig = { ...misc };
-    delete updatedMiscConfig.isConfirmBeforeTaskDelete;
-    delete updatedMiscConfig.isAutoAddWorkedOnToToday;
-    delete updatedMiscConfig.isAutMarkParentAsDone;
-    delete updatedMiscConfig.isTrayShowCurrentTask;
-    delete updatedMiscConfig.isTurnOffMarkdown;
-    delete updatedMiscConfig.defaultProjectId;
-    delete updatedMiscConfig.taskNotesTpl;
 
     return {
       ...state,
       globalConfig: {
         ...state.globalConfig,
-        misc: updatedMiscConfig,
-        tasks: migratedTasksConfig,
+        misc: removeMigratedFields(misc),
+        tasks: { ...tasks, ...transformMiscToTasks(misc) },
       },
     };
   },
 
+  requiresOperationMigration: true,
   migrateOperation: (op: OperationLike): OperationLike | OperationLike[] | null => {
-    // Only handle GLOBAL_CONFIG operations with entityId 'misc'
     if (op.entityType !== 'GLOBAL_CONFIG' || op.entityId !== 'misc') {
       return op;
     }
@@ -77,8 +56,7 @@ export const MiscToTasksSettingsMigration_v1v2: SchemaMigration = {
       return op;
     }
 
-    // Handle MultiEntityPayload structure (used by operation log)
-    // The payload format is: { actionPayload: { sectionKey, sectionCfg }, entityChanges }
+    // Extract sectionCfg from various payload formats
     let sectionCfg: Record<string, unknown> | null = null;
     let actionPayload: Record<string, unknown> | null = null;
 
@@ -86,92 +64,86 @@ export const MiscToTasksSettingsMigration_v1v2: SchemaMigration = {
       actionPayload = payload.actionPayload;
       sectionCfg = extractSectionCfg(actionPayload);
     } else if ('sectionCfg' in payload) {
-      // Direct payload format (for tests or simple cases)
       actionPayload = payload;
       sectionCfg = extractSectionCfg(payload);
     } else {
-      // Legacy format: payload is the sectionCfg itself
       sectionCfg = payload;
     }
 
-    if (!sectionCfg || !hasMigratedSettings(sectionCfg)) {
+    if (!sectionCfg || !hasMigratedFields(sectionCfg)) {
       return op;
     }
 
-    // Create tasks sectionCfg with transformed settings
-    const tasksSectionCfg = transformMiscToTasksSectionCfg(sectionCfg);
+    // Transform settings
+    const tasksCfg = transformMiscToTasks(sectionCfg);
+    const miscCfg = removeMigratedFields(sectionCfg);
 
-    // Remove migrated settings from misc sectionCfg
-    const updatedMiscSectionCfg = removeMigratedFromMiscSectionCfg(sectionCfg);
-
-    // Generate unique ID for the new tasks operation
-    const tasksOpId = `${op.id}_tasks_migrated`;
-
-    const result: OperationLike[] = [];
-
-    // Build misc payload
-    const buildPayload = (
-      newSectionCfg: Record<string, unknown>,
-      newSectionKey: string,
-    ): unknown => {
+    // Build payload for the new operation
+    const buildPayload = (cfg: Record<string, unknown>, sectionKey: string): unknown => {
       if (isMultiEntityPayload(payload)) {
         return {
           ...payload,
-          actionPayload: {
-            ...actionPayload,
-            sectionKey: newSectionKey,
-            sectionCfg: newSectionCfg,
-          },
+          actionPayload: { ...actionPayload, sectionKey, sectionCfg: cfg },
         };
       } else if (actionPayload && 'sectionCfg' in actionPayload) {
-        return {
-          ...actionPayload,
-          sectionKey: newSectionKey,
-          sectionCfg: newSectionCfg,
-        };
-      } else {
-        // Legacy format
-        return newSectionCfg;
+        return { ...actionPayload, sectionKey, sectionCfg: cfg };
       }
+      return cfg;
     };
 
-    // Add misc operation only if there are remaining settings
-    if (Object.keys(updatedMiscSectionCfg).length > 0) {
-      result.push({
-        ...op,
-        payload: buildPayload(updatedMiscSectionCfg, 'misc'),
-      });
+    const result: OperationLike[] = [];
+
+    if (Object.keys(miscCfg).length > 0) {
+      result.push({ ...op, payload: buildPayload(miscCfg, 'misc') });
     }
 
-    // Add tasks operation if there are migrated settings
-    if (Object.keys(tasksSectionCfg).length > 0) {
+    if (Object.keys(tasksCfg).length > 0) {
       result.push({
         ...op,
-        id: tasksOpId,
+        id: `${op.id}_tasks_migrated`,
         entityId: 'tasks',
-        payload: buildPayload(tasksSectionCfg, 'tasks'),
+        payload: buildPayload(tasksCfg, 'tasks'),
       });
     }
 
-    // If no operations remain, return null to drop
-    if (result.length === 0) {
-      return null;
-    }
-
-    // If only one operation, return it directly
-    if (result.length === 1) {
-      return result[0];
-    }
-
-    return result;
+    return result.length === 0 ? null : result.length === 1 ? result[0] : result;
   },
-
-  requiresOperationMigration: true,
 };
 
-/**
- * Checks if the payload is a MultiEntityPayload structure.
- */
+function transformMiscToTasks(miscCfg: Record<string, unknown>): Record<string, unknown> {
+  const tasksCfg: Record<string, unknown> = {};
+
+  for (const [oldKey, mapping] of Object.entries(FIELD_MAPPINGS)) {
+    if (oldKey in miscCfg) {
+      if (typeof mapping === 'function') {
+        const [newKey, newValue] = mapping(miscCfg[oldKey]);
+        tasksCfg[newKey] = newValue;
+      } else {
+        tasksCfg[mapping] = miscCfg[oldKey];
+      }
+    }
+  }
+
+  return tasksCfg;
+}
+
+function removeMigratedFields(miscCfg: Record<string, unknown>): Record<string, unknown> {
+  const result = { ...miscCfg };
+  for (const key of MIGRATED_FIELDS) {
+    delete result[key];
+  }
+  return result;
+}
+
+function hasMigratedFields(cfg: Record<string, unknown>): boolean {
+  return MIGRATED_FIELDS.some((key) => key in cfg);
+}
+
+interface MultiEntityPayload {
+  actionPayload: Record<string, unknown>;
+  entityChanges?: unknown[];
+}
+
 function isMultiEntityPayload(payload: unknown): payload is MultiEntityPayload {
   return (
     payload !== null &&
@@ -181,10 +153,6 @@ function isMultiEntityPayload(payload: unknown): payload is MultiEntityPayload {
   );
 }
 
-/**
- * Extracts sectionCfg from the action payload.
- * The GlobalConfig action stores settings in { sectionKey, sectionCfg }.
- */
 function extractSectionCfg(
   actionPayload: Record<string, unknown>,
 ): Record<string, unknown> | null {
@@ -192,59 +160,4 @@ function extractSectionCfg(
     return actionPayload['sectionCfg'] as Record<string, unknown>;
   }
   return null;
-}
-
-/**
- * Transforms misc sectionCfg to tasks sectionCfg.
- * Maps old field names to new field names and handles value inversions.
- */
-function transformMiscToTasksSectionCfg(
-  miscCfg: Record<string, unknown>,
-): Record<string, unknown> {
-  const tasksCfg: Record<string, unknown> = {};
-
-  if ('isConfirmBeforeTaskDelete' in miscCfg) {
-    tasksCfg['isConfirmBeforeDelete'] = miscCfg['isConfirmBeforeTaskDelete'];
-  }
-  if ('isAutoAddWorkedOnToToday' in miscCfg) {
-    tasksCfg['isAutoAddWorkedOnToToday'] = miscCfg['isAutoAddWorkedOnToToday'];
-  }
-  if ('isAutMarkParentAsDone' in miscCfg) {
-    tasksCfg['isAutoMarkParentAsDone'] = miscCfg['isAutMarkParentAsDone'];
-  }
-  if ('isTrayShowCurrentTask' in miscCfg) {
-    tasksCfg['isTrayShowCurrent'] = miscCfg['isTrayShowCurrentTask'];
-  }
-  if ('isTurnOffMarkdown' in miscCfg) {
-    // Invert the value: isTurnOffMarkdown -> isMarkdownFormattingInNotesEnabled
-    tasksCfg['isMarkdownFormattingInNotesEnabled'] = !miscCfg['isTurnOffMarkdown'];
-  }
-  if ('defaultProjectId' in miscCfg) {
-    tasksCfg['defaultProjectId'] = miscCfg['defaultProjectId'];
-  }
-  if ('taskNotesTpl' in miscCfg) {
-    tasksCfg['notesTemplate'] = miscCfg['taskNotesTpl'];
-  }
-
-  return tasksCfg;
-}
-
-/**
- * Removes migrated settings from misc sectionCfg.
- */
-function removeMigratedFromMiscSectionCfg(
-  miscCfg: Record<string, unknown>,
-): Record<string, unknown> {
-  const updatedCfg = { ...miscCfg };
-  for (const key of MIGRATED_SETTINGS) {
-    delete updatedCfg[key];
-  }
-  return updatedCfg;
-}
-
-/**
- * Checks if the sectionCfg contains any settings that should be migrated.
- */
-function hasMigratedSettings(sectionCfg: Record<string, unknown>): boolean {
-  return MIGRATED_SETTINGS.some((key) => key in sectionCfg);
 }
