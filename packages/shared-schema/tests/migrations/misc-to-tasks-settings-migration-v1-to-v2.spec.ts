@@ -64,14 +64,46 @@ describe('Migrate MiscConfig to TasksConfig', () => {
       expect(migratedState).toEqual(initialState);
     });
 
-    it('should not modify state if tasks already migrated', () => {
+    it('should complete migration even if tasks.isConfirmBeforeDelete exists but misc still has migrated fields', () => {
       const initialState = {
         globalConfig: {
           misc: {
             isConfirmBeforeTaskDelete: true,
+            defaultProjectId: 'proj-123',
+            someOtherField: 'value',
+          },
+          tasks: {
+            isConfirmBeforeDelete: false, // Already exists
+            existingField: 'existing',
+          },
+        },
+      };
+
+      const migratedState = migration.migrateState(initialState) as {
+        globalConfig: {
+          misc: Record<string, unknown>;
+          tasks: Record<string, unknown>;
+        };
+      };
+
+      // Should migrate remaining fields from misc
+      expect(migratedState.globalConfig.tasks.isConfirmBeforeDelete).toBe(true); // Migrated value overwrites
+      expect(migratedState.globalConfig.tasks.defaultProjectId).toBe('proj-123'); // Migrated
+      expect(migratedState.globalConfig.tasks.existingField).toBe('existing'); // Preserved
+      expect(migratedState.globalConfig.misc.isConfirmBeforeTaskDelete).toBeUndefined(); // Removed
+      expect(migratedState.globalConfig.misc.defaultProjectId).toBeUndefined(); // Removed
+      expect(migratedState.globalConfig.misc.someOtherField).toBe('value'); // Preserved
+    });
+
+    it('should skip migration if tasks already has migrated fields AND misc has no migrated fields', () => {
+      const initialState = {
+        globalConfig: {
+          misc: {
+            someOtherField: 'value', // Not a migrated field
           },
           tasks: {
             isConfirmBeforeDelete: true,
+            defaultProjectId: 'proj-123',
           },
         },
       };
@@ -111,6 +143,7 @@ describe('Migrate MiscConfig to TasksConfig', () => {
       // First operation should be misc with non-migrated settings
       const miscOp = resultArray.find((r) => r.entityId === 'misc');
       expect(miscOp).toBeDefined();
+      expect(miscOp!.id).toBe('op_1_misc');
       expect(miscOp!.payload).toEqual({
         isMinimizeToTray: false,
       });
@@ -118,7 +151,7 @@ describe('Migrate MiscConfig to TasksConfig', () => {
       // Second operation should be tasks with migrated settings
       const tasksOp = resultArray.find((r) => r.entityId === 'tasks');
       expect(tasksOp).toBeDefined();
-      expect(tasksOp!.id).toBe('op_1_tasks_migrated');
+      expect(tasksOp!.id).toBe('op_1_tasks');
       expect(tasksOp!.payload).toEqual({
         isConfirmBeforeDelete: true,
         isMarkdownFormattingInNotesEnabled: false, // Inverted from isTurnOffMarkdown: true
@@ -143,6 +176,7 @@ describe('Migrate MiscConfig to TasksConfig', () => {
       // Should return single tasks operation
       expect(Array.isArray(result)).toBe(false);
       const singleOp = result as OperationLike;
+      expect(singleOp.id).toBe('op_2_tasks');
       expect(singleOp.entityId).toBe('tasks');
       expect(singleOp.payload).toEqual({
         isAutoAddWorkedOnToToday: true,

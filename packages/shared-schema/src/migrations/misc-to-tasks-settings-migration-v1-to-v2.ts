@@ -30,8 +30,8 @@ export const MiscToTasksSettingsMigration_v1v2: SchemaMigration = {
 
     const tasks = state.globalConfig?.tasks ?? {};
 
-    // Skip if already migrated (tasks has new fields)
-    if (tasks.isConfirmBeforeDelete !== undefined) {
+    // Skip if already migrated (tasks has new fields AND misc has no migrated fields)
+    if (tasks.isConfirmBeforeDelete !== undefined && !hasMigratedFields(misc)) {
       return state;
     }
 
@@ -94,13 +94,17 @@ export const MiscToTasksSettingsMigration_v1v2: SchemaMigration = {
     const result: OperationLike[] = [];
 
     if (Object.keys(miscCfg).length > 0) {
-      result.push({ ...op, payload: buildPayload(miscCfg, 'misc') });
+      result.push({
+        ...op,
+        id: `${op.id}_misc`,
+        payload: buildPayload(miscCfg, 'misc'),
+      });
     }
 
     if (Object.keys(tasksCfg).length > 0) {
       result.push({
         ...op,
-        id: `${op.id}_tasks_migrated`,
+        id: `${op.id}_tasks`,
         entityId: 'tasks',
         payload: buildPayload(tasksCfg, 'tasks'),
       });
