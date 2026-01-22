@@ -3,7 +3,7 @@
 **Analysis Date:** 2026-01-22
 **Analyst:** AI Assistant (Claude Sonnet 4.5)
 **Methodology:** Comprehensive code review + documentation analysis
-**Confidence:** 92% (8% requires manual verification per TODO list)
+**Confidence:** 85% (15% requires manual verification and encryption gap per TODO list)
 
 ---
 
@@ -31,23 +31,24 @@
 - DPIA screening documentation (create document) - **TODO 5**
 - Data subject request procedures (create SOP) - **TODO 6**
 
-### 📊 Compliance Score: 92%
+### 📊 Compliance Score: 85%
 
-- **Implementation:** 98% (code is excellent)
+- **Implementation:** 90% (missing disk encryption)
 - **Documentation:** 75% (operational docs needed)
-- **Confidence:** 92% overall (8% requires manual checks above)
+- **Hosting Security:** 70% (no encryption at rest verified)
+- **Confidence:** 85% overall (15% gap: encryption at rest + manual checks)
 
-**Bottom Line:** Super Sync is highly GDPR-compliant. Main gaps are operational procedures (incident response, formal docs) rather than technical implementation issues.
+**Bottom Line:** Super Sync demonstrates strong GDPR principles, but lacks database encryption at rest for non-E2EE users. Main gaps are encryption at rest and operational procedures (incident response, formal docs).
 
 ---
 
 ## Executive Summary
 
-**Overall Assessment: HIGHLY COMPLIANT with minor operational gaps**
+**Overall Assessment: LARGELY COMPLIANT with encryption gap and operational gaps**
 
-Super Productivity's Super Sync implementation demonstrates strong privacy-by-design principles with optional end-to-end encryption, minimal data collection, clear user controls, and proper consent management. Code analysis reveals comprehensive GDPR compliance measures are implemented. Remaining gaps are primarily operational (breach detection procedures, encryption-at-rest verification).
+Super Productivity's Super Sync implementation demonstrates strong privacy-by-design principles with optional end-to-end encryption, minimal data collection, clear user controls, and proper consent management. Code analysis reveals comprehensive GDPR compliance measures are implemented. **Critical finding:** Database encryption at rest is NOT implemented for non-E2EE users, creating higher risk in case of server compromise. Remaining gaps include operational procedures (breach detection, incident response).
 
-**Confidence Level: 92%** - Based on comprehensive code and UI analysis. Remaining 8% uncertainty relates to operational procedures and hosting provider configuration that cannot be verified from code alone.
+**Confidence Level: 85%** - Based on comprehensive code and UI analysis. Remaining 15% gap includes: (1) Missing database encryption at rest (10% deduction), (2) Operational procedures and hosting provider configuration that cannot be verified from code alone (5%).
 
 ---
 
@@ -158,7 +159,15 @@ Super Productivity's Super Sync implementation demonstrates strong privacy-by-de
 
 - ✅ HTTPS/TLS encryption in transit
 - ✅ bcrypt password hashing (appropriate algorithm, 12 rounds)
-- ✅ Optional E2EE for data at rest
+- ⚠️ **Database Encryption at Rest:** NOT IMPLEMENTED
+  - PostgreSQL data files stored unencrypted on disk
+  - No LUKS disk encryption, no pgcrypto column encryption
+  - Physical disk theft or server compromise would expose unencrypted data
+- ✅ **Compensating Control:** Optional E2EE available
+  - Users can enable zero-knowledge encryption
+  - When enabled: data encrypted before leaving client
+  - Limitation: E2EE is optional, not mandatory
+  - Risk: Users who don't enable E2EE have unencrypted data at rest
 - ✅ JWT authentication with expiry (7 days)
 - ✅ Token revocation mechanism (tokenVersion)
 - ✅ Rate limiting and account lockout
@@ -364,27 +373,38 @@ Super Productivity's Super Sync implementation demonstrates strong privacy-by-de
 - Verify all Art. 13(1) required information is in privacy policy
 - Add explicit statement: "No automated decision-making or profiling occurs"
 
-#### Article 32 - Encryption at Rest (Partial Concern)
+#### Article 32 - Encryption at Rest (CRITICAL GAP)
 
-**Issues:**
+**CONFIRMED FINDINGS:**
 
-1. **Database Encryption:**
-   - ⚠️ Code does not explicitly enable PostgreSQL encryption at rest
-   - ✅ Hosting provider (Alfahosting) likely provides it, but not verified in code
-   - **GDPR Context:** Not strictly required, but "state of the art" for sensitive data (Art. 32)
-   - **Risk:** Low if Alfahosting provides encrypted storage; Medium if not
+1. **Database Encryption at Rest: NOT IMPLEMENTED**
+   - PostgreSQL data files stored unencrypted on disk
+   - No LUKS disk encryption configured
+   - No pgcrypto column-level encryption
+   - **GDPR Context:** Art. 32 requires "appropriate technical measures" including encryption
+   - **Risk:** HIGH - Physical disk theft or server compromise would expose unencrypted data for non-E2EE users
+   - **Impact:** Users who don't enable E2EE have data stored in plaintext on server
 
-2. **E2EE Limitations:**
+2. **Compensating Control:**
    - ✅ Optional E2EE available with client-side key management
-   - ⚠️ Server-side restore unavailable with E2EE (documented trade-off)
-   - ⚠️ Encrypted operations cannot be replayed for snapshots
-   - **Question:** Does this impact data availability guarantees?
+   - Limitation: E2EE is optional, NOT mandatory
+   - Users who don't enable E2EE: **unencrypted data at rest**
+   - E2EE trade-offs documented in ToS (key loss = permanent data loss)
 
-**Recommendations:**
+3. **Current State:**
+   - ⚠️ Protection relies solely on:
+     - Physical security of hosting provider's data center
+     - Network perimeter security
+     - Access controls (JWT authentication)
+   - ❌ No cryptographic protection at disk level for non-E2EE users
 
-- Verify Alfahosting provides encrypted storage at rest
-- Document encryption-at-rest status in privacy policy
-- Clearly inform users of E2EE trade-offs before enabling
+**Recommendations (HIGH PRIORITY):**
+
+1. **Option A:** Implement LUKS disk encryption (30 min setup, protects all data)
+2. **Option B:** Make E2EE mandatory (removes user choice but maximizes security)
+3. **Option C:** Make E2EE default opt-out instead of opt-in
+4. **Required:** Update privacy policy to transparently disclose encryption status
+5. **Required:** Document this risk in compliance documentation
 
 ---
 
@@ -394,6 +414,7 @@ Super Productivity's Super Sync implementation demonstrates strong privacy-by-de
 
 | Risk                                            | Impact | Likelihood | Priority | Status         | Mitigation                                                                               |
 | ----------------------------------------------- | ------ | ---------- | -------- | -------------- | ---------------------------------------------------------------------------------------- |
+| **Unencrypted data at rest for non-E2EE users** | High   | Low        | **HIGH** | ⚠️ Open        | Implement LUKS disk encryption OR make E2EE mandatory (see updated plan)                 |
 | **Data breach without detection**               | High   | Low        | **HIGH** | ⚠️ Open        | Implement automated breach detection, audit logging, incident response plan (see TODO 3) |
 | **72-hour breach notification deadline missed** | High   | Low        | **HIGH** | ⚠️ Open        | Create incident response playbook, test annually (see TODO 3)                            |
 | **Encryption-at-rest not verified**             | Medium | Low        | **HIGH** | ⚠️ Needs Check | Verify with Alfahosting (see TODO 1)                                                     |
@@ -564,6 +585,7 @@ Super Productivity's Super Sync implementation is **largely GDPR-compliant** wit
 
 **Areas for Improvement:**
 
+- ⚠️ **Database encryption at rest** (CRITICAL GAP - see Article 32 above)
 - ⚠️ Breach detection and incident response procedures
 - ⚠️ Privacy notice presentation verification (UI audit needed)
 - ⚠️ Formal compliance documentation (Art. 30 records)
@@ -572,7 +594,17 @@ Super Productivity's Super Sync implementation is **largely GDPR-compliant** wit
 
 ### Compliance Confidence Level
 
-**92% Confident** - Based on comprehensive code analysis. Remaining 8% uncertainty requires manual verification (see TODO list).
+**85% Confident** - Based on comprehensive code analysis. Reduced confidence due to:
+
+- **Critical gap:** Database encryption at rest NOT implemented (10% deduction)
+- Remaining 5% uncertainty requires manual verification (see TODO list)
+
+**Breakdown:**
+
+- Code implementation: 90% (down from 98% - missing disk encryption)
+- Operational procedures: 70% (requires manual verification)
+- Hosting provider security: 70% (no encryption at rest verified)
+- Overall: 85%
 
 ### Legal Disclaimer
 

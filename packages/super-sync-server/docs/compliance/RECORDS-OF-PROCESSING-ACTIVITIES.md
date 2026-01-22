@@ -166,9 +166,15 @@ Personal Productivity Data Synchronization Across Devices
 
 **At Rest:**
 
-- Optional end-to-end encryption (E2EE) with client-side key management
-- Password-protected encryption keys (user chooses encryption password)
-- [To verify: Database encryption at rest via Alfahosting]
+- ❌ **Database files: NOT ENCRYPTED** (stored in plaintext on disk)
+- ❌ No LUKS disk encryption configured
+- ❌ No pgcrypto column-level encryption
+- ✅ **Compensating control:** Optional client-side E2EE available
+  - When enabled: Zero-knowledge encryption (AES-256)
+  - User chooses encryption password
+  - Server cannot decrypt E2EE data
+- ⚠️ **Risk:** Users who don't enable E2EE have unencrypted data at rest
+- **Recommendation:** Implement LUKS disk encryption OR make E2EE mandatory
 
 **Data Integrity:**
 

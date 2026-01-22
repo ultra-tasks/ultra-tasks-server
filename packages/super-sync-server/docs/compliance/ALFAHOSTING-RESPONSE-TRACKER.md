@@ -82,6 +82,16 @@
 
 **Status:** ⏳ Awaiting Response
 
+**Important Context:**
+Even if Alfahosting provides storage encryption at infrastructure level, Super Productivity
+does NOT currently implement database encryption at application level. This means:
+
+- If Alfahosting storage encryption = YES: Partial protection (infrastructure layer only)
+- If Alfahosting storage encryption = NO: No encryption at rest for non-E2EE users
+
+Users who don't enable E2EE have data stored unencrypted in PostgreSQL regardless of infrastructure encryption.
+Application-level encryption (LUKS, pgcrypto) would be needed for full protection.
+
 **Response Received:**
 
 ```

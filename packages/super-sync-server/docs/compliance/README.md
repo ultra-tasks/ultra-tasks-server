@@ -1,14 +1,14 @@
 # GDPR Compliance Documentation - Super Productivity Sync
 
 **Last Updated:** 2026-01-22
-**Status:** Implementation Complete - Manual Verification Required
-**Compliance Level:** 92% (8% pending manual verification)
+**Status:** Implementation Complete - Encryption Gap Identified - Manual Verification Required
+**Compliance Level:** 85% (10% encryption gap + 5% pending manual verification)
 
 ---
 
 ## Overview
 
-This directory contains all GDPR compliance documentation for Super Productivity Sync. The compliance analysis shows the service is **highly compliant** with minor operational gaps.
+This directory contains all GDPR compliance documentation for Super Productivity Sync. The compliance analysis shows the service is **largely compliant** with one critical gap: **database encryption at rest is NOT implemented** for users who don't enable E2EE. Additional minor operational gaps remain.
 
 ---
 
@@ -46,9 +46,9 @@ This directory contains all GDPR compliance documentation for Super Productivity
 
 ## Quick Status Summary
 
-### ✅ What's Compliant (92%)
+### ✅ What's Compliant (85%)
 
-**Technical Implementation (98%):**
+**Technical Implementation (90%):**
 
 - ✅ E2EE warning shown in app UI
 - ✅ ToS/Privacy checkbox during registration (required)
@@ -56,7 +56,10 @@ This directory contains all GDPR compliance documentation for Super Productivity
 - ✅ Account deletion is immediate (better than policy states)
 - ✅ German privacy policy exists (authoritative version)
 - ✅ English translation available
-- ✅ Strong encryption (HTTPS/TLS, bcrypt, optional E2EE)
+- ✅ Encryption in transit (HTTPS/TLS)
+- ✅ Password hashing (bcrypt, 12 rounds)
+- ✅ Optional E2EE (not enabled by default)
+- ❌ **Database encryption at rest: NOT IMPLEMENTED**
 - ✅ Data minimization (no tracking/analytics)
 - ✅ Automatic data cleanup (45 days for operations)
 - ✅ German hosting with Data Processing Agreement
@@ -71,7 +74,15 @@ This directory contains all GDPR compliance documentation for Super Productivity
 - ✅ Data subject request procedures established
 - ✅ Alfahosting verification checklist prepared
 
-### ⚠️ What Needs Manual Verification (8%)
+### ❌ Critical Gap Identified (10% deduction)
+
+| Item                            | Priority | Impact                                                                  | Mitigation Required                                              |
+| ------------------------------- | -------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| **Database encryption at rest** | 🔴 High  | Users without E2EE have unencrypted data on disk                        | Implement LUKS disk encryption OR make E2EE mandatory            |
+| **Physical security reliance**  | 🔴 High  | Protection relies solely on hosting provider's physical access controls | Document risk, consider implementing disk encryption immediately |
+| **Server compromise risk**      | 🔴 High  | Disk theft or server breach would expose unencrypted data               | Privacy policy updated to disclose risk transparently            |
+
+### ⚠️ What Needs Manual Verification (5%)
 
 | Item                   | Priority  | Action Required                                 | Estimated Time |
 | ---------------------- | --------- | ----------------------------------------------- | -------------- |
@@ -266,18 +277,24 @@ This directory contains all GDPR compliance documentation for Super Productivity
 
 ### Weaknesses (What Needs Work)
 
-1. **Breach Detection:**
+1. **🔴 CRITICAL: Database Encryption at Rest NOT IMPLEMENTED**
+   - PostgreSQL data files stored unencrypted on disk
+   - Users who don't enable E2EE have unencrypted data at rest
+   - Risk: Physical disk theft or server compromise would expose data
+   - Recommendation: Implement LUKS disk encryption OR make E2EE mandatory
+
+2. **Breach Detection:**
    - No automated security monitoring
    - Limited audit logging
    - Recommendation: Implement IDS and enhanced logging
 
-2. **Operational Documentation:**
+3. **Operational Documentation:**
    - No formal incident response testing (yet)
    - No data subject request log (yet)
    - Recommendation: Set up processes and test them
 
-3. **Infrastructure Verification:**
-   - Encryption at rest not confirmed
+4. **Infrastructure Verification:**
+   - Encryption at rest not confirmed with Alfahosting
    - Backup procedures not documented
    - Recommendation: Complete Alfahosting verification checklist
 
@@ -285,19 +302,19 @@ This directory contains all GDPR compliance documentation for Super Productivity
 
 ## Compliance Confidence Breakdown
 
-| Area                       | Confidence | Justification                                                         |
-| -------------------------- | ---------- | --------------------------------------------------------------------- |
-| **Code Implementation**    | 98%        | Verified through code review, minor discrepancy found (45 vs 90 days) |
-| **Documentation**          | 100%       | All required documents created                                        |
-| **Hosting Security**       | 70%        | Need Alfahosting verification (encryption, AVV, backups)              |
-| **Operational Procedures** | 80%        | Procedures documented but not yet tested                              |
-| **Overall Compliance**     | **92%**    | 8% uncertainty from pending manual verifications                      |
+| Area                       | Confidence | Justification                                                             |
+| -------------------------- | ---------- | ------------------------------------------------------------------------- |
+| **Code Implementation**    | 90%        | Critical gap: Database encryption at rest NOT implemented (10% deduction) |
+| **Documentation**          | 100%       | All required documents created and updated with encryption disclosure     |
+| **Hosting Security**       | 60%        | Need Alfahosting verification + no encryption at rest confirmed (lowered) |
+| **Operational Procedures** | 80%        | Procedures documented but not yet tested                                  |
+| **Overall Compliance**     | **85%**    | 10% encryption gap + 5% uncertainty from pending manual verifications     |
 
-**Remaining Uncertainty:**
+**Compliance Gap Breakdown:**
 
-- 5% - Alfahosting infrastructure verification
-- 2% - Operational procedure testing
-- 1% - Privacy policy discrepancy correction
+- 10% - Database encryption at rest NOT implemented (CRITICAL)
+- 3% - Alfahosting infrastructure verification pending
+- 2% - Operational procedure testing pending
 
 ---
 
@@ -405,10 +422,11 @@ _For questions about this documentation, contact Johannes Millan (contact@super-
 
 **Status Summary:**
 
-- ✅ Compliance analysis: Complete
+- ✅ Compliance analysis: Complete (updated with encryption findings)
 - ✅ Code verification: Complete (3/3 items verified)
 - ✅ Operational documents: Complete (6/6 created)
+- ❌ **CRITICAL GAP:** Database encryption at rest NOT implemented
 - ⚠️ Manual verification: Pending (4 items)
 - ⏳ Testing: Not yet started
 
-**Overall:** 92% Complete - Ready for manual verification and testing phase.
+**Overall:** 85% Complete - Critical encryption gap identified. Privacy policy updated to disclose risk transparently. Ready for manual verification and encryption implementation decision.
