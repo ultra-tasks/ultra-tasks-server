@@ -28,8 +28,8 @@ Complete these tasks **1 week before** the scheduled maintenance window:
   - **Total estimated time**: **\_** hours
 
 - [ ] **Reserve maintenance window**: Total estimate + 50% buffer
-  - Scheduled start: \***\*\_\_\_\*\***
-  - Scheduled end: \***\*\_\_\_\*\***
+  - Scheduled start: ****\_\_\_****
+  - Scheduled end: ****\_\_\_****
 
 ### 2. System Prerequisites
 
@@ -134,8 +134,8 @@ Complete these tasks **1 week before** the scheduled maintenance window:
   ```
 
 - [ ] **Confirm key holders available**:
-  - Operational key holder: \***\*\_\_\_\*\***
-  - Recovery key holder: \***\*\_\_\_\*\***
+  - Operational key holder: ****\_\_\_****
+  - Recovery key holder: ****\_\_\_****
   - Both available during maintenance window: YES / NO
 
 ### 7. Communication
@@ -178,8 +178,8 @@ Complete these tasks **1 week before** the scheduled maintenance window:
 - ❌ Missing prerequisites (cryptsetup, kernel modules)
 
 **Decision**: GO / NO-GO
-**Authorized by**: \***\*\_\_\_\*\***
-**Date/Time**: \***\*\_\_\_\*\***
+**Authorized by**: ****\_\_\_****
+**Date/Time**: ****\_\_\_****
 
 ---
 
@@ -966,14 +966,14 @@ Execute rollback **IMMEDIATELY** if any of these occur:
 
 ### Pre-Migration Approval
 
-**Checklist completed by**: \***\*\_\_\_\*\***
-**Date**: \***\*\_\_\_\*\***
-**Approval to proceed**: \***\*\_\_\_\*\***
+**Checklist completed by**: ****\_\_\_****
+**Date**: ****\_\_\_****
+**Approval to proceed**: ****\_\_\_****
 
 ### Post-Migration Sign-Off
 
-**Migration completed by**: \***\*\_\_\_\*\***
-**Date**: \***\*\_\_\_\*\***
+**Migration completed by**: ****\_\_\_****
+**Date**: ****\_\_\_****
 **All verification passed**: YES / NO
 **System in production**: YES / NO
 **Issues encountered**: NONE / [DESCRIBE]
