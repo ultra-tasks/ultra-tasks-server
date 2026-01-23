@@ -50,26 +50,28 @@ case "$COMMAND" in
 
     echo -e "${YELLOW}Running: analyze-storage.ts $SUBCOMMAND $@${NC}"
 
-    # Check if tsx is available, if not install temporarily
-    if ! docker exec "$CONTAINER_NAME" sh -c "command -v tsx >/dev/null 2>&1"; then
-      echo -e "${YELLOW}Installing tsx temporarily...${NC}"
-      docker exec "$CONTAINER_NAME" sh -c "npm install -g tsx --silent"
+    # Check if tsx is available, if not use npx or install
+    if docker exec "$CONTAINER_NAME" sh -c "command -v tsx >/dev/null 2>&1"; then
+      # tsx already installed
+      docker exec -it "$CONTAINER_NAME" tsx scripts/analyze-storage.ts "$SUBCOMMAND" "$@"
+    else
+      # Try npx first (faster, no installation needed)
+      echo -e "${YELLOW}Using npx tsx (first time may be slower)...${NC}"
+      docker exec -it "$CONTAINER_NAME" npx tsx scripts/analyze-storage.ts "$SUBCOMMAND" "$@"
     fi
-
-    docker exec -it "$CONTAINER_NAME" tsx scripts/analyze-storage.ts "$SUBCOMMAND" "$@"
     ;;
 
   # Full monitoring suite
   monitor-all|all)
     echo -e "${YELLOW}Running: Full monitoring suite${NC}"
 
-    # Check if tsx is available
-    if ! docker exec "$CONTAINER_NAME" sh -c "command -v tsx >/dev/null 2>&1"; then
-      echo -e "${YELLOW}Installing tsx temporarily...${NC}"
-      docker exec "$CONTAINER_NAME" sh -c "npm install -g tsx --silent"
+    # Check if tsx is available, if not use npx
+    if docker exec "$CONTAINER_NAME" sh -c "command -v tsx >/dev/null 2>&1"; then
+      docker exec -it "$CONTAINER_NAME" tsx scripts/run-all-monitoring.ts "$@"
+    else
+      echo -e "${YELLOW}Using npx tsx (first time may be slower)...${NC}"
+      docker exec -it "$CONTAINER_NAME" npx tsx scripts/run-all-monitoring.ts "$@"
     fi
-
-    docker exec -it "$CONTAINER_NAME" tsx scripts/run-all-monitoring.ts "$@"
     ;;
 
   # Interactive shell
