@@ -16,7 +16,11 @@
     "delete-user": "ts-node scripts/delete-user.ts",
     "clear-data": "ts-node scripts/clear-data.ts",
     "monitor": "node dist/scripts/monitor.js",
-    "monitor:dev": "ts-node scripts/monitor.ts"
+    "monitor:dev": "tsx scripts/monitor.ts",
+    "analyze-storage": "tsx scripts/analyze-storage.ts",
+    "monitor:all": "tsx scripts/run-all-monitoring.ts",
+    "monitor:all:quick": "tsx scripts/run-all-monitoring.ts --quick",
+    "monitor:all:save": "tsx scripts/run-all-monitoring.ts --save"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",
