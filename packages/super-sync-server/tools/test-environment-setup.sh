@@ -3,6 +3,7 @@
 # Creates sample database with test data for migration dry-run
 
 set -e
+set -u
 
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-postgres}"
 POSTGRES_USER="${POSTGRES_USER:-supersync}"

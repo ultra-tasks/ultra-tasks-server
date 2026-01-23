@@ -105,16 +105,27 @@ log "=== Step 3/7: Stopping PostgreSQL Gracefully ==="
 log "Shutting down PostgreSQL (smart mode, 60s timeout)..."
 
 # Try graceful shutdown first
-docker exec "$POSTGRES_CONTAINER" pg_ctl stop -D /var/lib/postgresql/data -m smart -t 60 || {
+if docker exec "$POSTGRES_CONTAINER" pg_ctl stop -D /var/lib/postgresql/data -m smart -t 60; then
+  log "✅ Graceful shutdown succeeded"
+else
   log "⚠️  Graceful shutdown failed, forcing stop..."
-  docker exec "$POSTGRES_CONTAINER" pg_ctl stop -D /var/lib/postgresql/data -m fast -t 30 || true
-}
+  if ! docker exec "$POSTGRES_CONTAINER" pg_ctl stop -D /var/lib/postgresql/data -m fast -t 30; then
+    error "Fast shutdown also failed - PostgreSQL may not have stopped cleanly"
+  fi
+  log "✅ Fast shutdown succeeded"
+fi
+
+# Verify PostgreSQL process has stopped
+log "Verifying PostgreSQL process terminated..."
+if docker exec "$POSTGRES_CONTAINER" pgrep -x postgres >/dev/null 2>&1; then
+  error "PostgreSQL processes still running after shutdown - data may be inconsistent"
+fi
 
 # Stop container
 log "Stopping container: $POSTGRES_CONTAINER"
 docker compose stop "$POSTGRES_CONTAINER"
 
-# Verify stopped
+# Verify container stopped
 if docker ps --format '{{.Names}}' | grep -q "^${POSTGRES_CONTAINER}$"; then
   error "Container still running after stop command"
 fi

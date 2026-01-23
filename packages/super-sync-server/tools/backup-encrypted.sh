@@ -5,11 +5,16 @@
 
 set -e
 set -o pipefail
+set -u
 
 # Configuration
 BACKUP_DIR="/var/backups/supersync"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 ENCRYPTED_BACKUP="$BACKUP_DIR/supersync-$TIMESTAMP.sql.gz.enc"
+ENCRYPTED_BACKUP_TMP="$ENCRYPTED_BACKUP.tmp"
+
+# Cleanup temp file on exit
+trap 'rm -f "$ENCRYPTED_BACKUP_TMP"' EXIT
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-db}"  # Default to 'db', override with env var
 POSTGRES_USER="${POSTGRES_USER:-supersync}"
 POSTGRES_DB="${POSTGRES_DB:-supersync_db}"
@@ -50,6 +55,18 @@ if ! docker ps --format '{{.Names}}' | grep -q "^${POSTGRES_CONTAINER}$"; then
   exit 1
 fi
 
+# Check if PostgreSQL is ready to accept connections
+echo "Checking PostgreSQL readiness..."
+if ! docker exec "$POSTGRES_CONTAINER" pg_isready -U "$POSTGRES_USER" >/dev/null 2>&1; then
+  echo "❌ ERROR: PostgreSQL is not ready to accept connections"
+  echo ""
+  echo "Check container logs:"
+  echo "  docker logs $POSTGRES_CONTAINER"
+  exit 1
+fi
+echo "✅ PostgreSQL is ready"
+echo ""
+
 # Step 1: Stream database dump → compression → encryption
 echo "Step 1/3: Creating encrypted backup (streaming)..."
 echo "  Source: PostgreSQL database '$POSTGRES_DB'"
@@ -60,25 +77,29 @@ docker exec "$POSTGRES_CONTAINER" pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" | \
   gzip -9 | \
   openssl enc -aes-256-cbc -salt -pbkdf2 -iter 1000000 \
     -pass file:/run/secrets/backup_passphrase \
-    -out "$ENCRYPTED_BACKUP"
+    -out "$ENCRYPTED_BACKUP_TMP"
 
-echo "✅ Backup file created"
+echo "✅ Temporary backup file created"
 
 # Step 2: Verify encrypted file
 echo ""
 echo "Step 2/3: Verifying backup..."
 
-if [ ! -f "$ENCRYPTED_BACKUP" ]; then
+if [ ! -f "$ENCRYPTED_BACKUP_TMP" ]; then
   echo "❌ ERROR: Encrypted backup file not created"
   exit 1
 fi
 
 # Verify file is actually encrypted (not plaintext)
-if file "$ENCRYPTED_BACKUP" | grep -qi "text\|SQL"; then
+if file "$ENCRYPTED_BACKUP_TMP" | grep -qi "text\|SQL"; then
   echo "❌ ERROR: Backup appears to be unencrypted!"
-  rm "$ENCRYPTED_BACKUP"
+  rm "$ENCRYPTED_BACKUP_TMP"
   exit 1
 fi
+
+# Atomically move temp file to final location
+echo "Moving to final location..."
+mv "$ENCRYPTED_BACKUP_TMP" "$ENCRYPTED_BACKUP"
 
 # Set secure permissions
 chmod 600 "$ENCRYPTED_BACKUP"

@@ -3,6 +3,7 @@
 # Implements retention policy: 7 daily, 4 weekly, 12 monthly
 
 set -e
+set -u
 
 BACKUP_DIR="/var/backups/supersync"
 LOG_FILE="/var/log/backup-rotation.log"

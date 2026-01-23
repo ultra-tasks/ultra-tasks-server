@@ -3,6 +3,7 @@
 # Usage: ./unlock-encrypted-volume.sh <volume-name>
 
 set -e
+set -u
 
 # Parse arguments
 VOLUME_NAME="${1:-pg-data-encrypted}"

@@ -139,6 +139,18 @@ if [ -f "/run/secrets/backup_passphrase" ]; then
     -in "$HEADER_BACKUP" \
     -out "$HEADER_BACKUP.enc"
 
+  # Verify encrypted header can be decrypted
+  echo "Verifying encrypted header backup..."
+  if openssl enc -d -aes-256-cbc -pbkdf2 -iter 1000000 \
+      -pass file:/run/secrets/backup_passphrase \
+      -in "$HEADER_BACKUP.enc" | dd bs=1 count=1 >/dev/null 2>&1; then
+    echo "✅ Header backup encryption verified (decrypts successfully)"
+  else
+    echo "❌ ERROR: Encrypted header backup cannot be decrypted!"
+    echo "   DO NOT PROCEED - header backup is corrupted"
+    exit 1
+  fi
+
   # Remove unencrypted header
   rm "$HEADER_BACKUP"
   echo "✅ LUKS header backup created: $HEADER_BACKUP.enc"

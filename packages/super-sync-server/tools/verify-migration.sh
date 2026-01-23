@@ -4,6 +4,7 @@
 # ENHANCED: Includes checksum verification to detect silent corruption
 
 set -e
+set -u
 
 # Configuration
 SOURCE_DIR="${SOURCE_DIR:-/var/lib/docker/volumes/postgres-data/_data}"
@@ -58,15 +59,15 @@ echo "  This may take a few minutes for large databases..."
 
 # Generate source checksums (PostgreSQL critical files only for speed)
 echo "  Computing source checksums..."
-find "$SOURCE_DIR" -type f \( -name "*.conf" -o -name "pg_*" -o -path "*/base/*" \) 2>/dev/null | \
-  sort | \
-  xargs -r md5sum 2>/dev/null > "$CHECKSUM_TEMP/source.md5" || true
+find "$SOURCE_DIR" -type f \( -name "*.conf" -o -name "pg_*" -o -path "*/base/*" \) -print0 2>/dev/null | \
+  sort -z | \
+  xargs -0 -r md5sum 2>/dev/null > "$CHECKSUM_TEMP/source.md5" || true
 
 # Generate target checksums
 echo "  Computing target checksums..."
-find "$TARGET_DIR" -type f \( -name "*.conf" -o -name "pg_*" -o -path "*/base/*" \) 2>/dev/null | \
-  sort | \
-  xargs -r md5sum 2>/dev/null > "$CHECKSUM_TEMP/target.md5" || true
+find "$TARGET_DIR" -type f \( -name "*.conf" -o -name "pg_*" -o -path "*/base/*" \) -print0 2>/dev/null | \
+  sort -z | \
+  xargs -0 -r md5sum 2>/dev/null > "$CHECKSUM_TEMP/target.md5" || true
 
 # Normalize paths (remove directory prefixes)
 sed "s|$SOURCE_DIR/||" "$CHECKSUM_TEMP/source.md5" > "$CHECKSUM_TEMP/source-normalized.md5"
