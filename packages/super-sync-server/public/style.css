@@ -69,6 +69,19 @@ header p {
   flex-shrink: 0;
 }
 
+.beta-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  background-color: #ff9800;
+  color: white;
+  border-radius: 12px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  margin-left: 0.5rem;
+  vertical-align: middle;
+}
+
 .card {
   background: var(--card-bg);
   border-radius: var(--radius);
@@ -479,5 +492,10 @@ footer {
     background-color: #039;
     border-color: #002970;
     color: #fc0;
+  }
+
+  .beta-badge {
+    background-color: #ffa726;
+    color: #1a1a1a;
   }
 }
