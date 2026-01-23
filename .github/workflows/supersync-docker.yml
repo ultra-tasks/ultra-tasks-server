@@ -1,13 +1,6 @@
 name: Build and Push SuperSync Docker Image
 
 on:
-  push:
-    branches:
-      - master
-    paths:
-      - 'packages/super-sync-server/**'
-      - 'packages/shared-schema/**'
-      - '.github/workflows/supersync-docker.yml'
   workflow_dispatch:
     inputs:
       no_cache:
