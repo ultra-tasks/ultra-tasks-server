@@ -1,0 +1,45 @@
+# Docker Compose overlay for PostgreSQL TDE (Transparent Data Encryption)
+#
+# This file modifies the base docker-compose.yml to enable TDE encryption.
+#
+# PREREQUISITES:
+# 1. Run: sudo ./tools/setup-tde.sh (creates encrypted master key)
+# 2. Run: sudo ./tools/unlock-tde.sh (decrypts key to /run/secrets/)
+# 3. Then start with: docker compose -f docker-compose.yml -f docker-compose.tde.yml up -d
+#
+# SECURITY:
+# - All data files encrypted with AES-128-GCM
+# - WAL (transaction logs) encrypted with AES-128-CTR
+# - Master key stored in memory-only tmpfs
+# - Requires manual unlock after reboot (like LUKS)
+#
+# See docs/tde-operations.md for full operational procedures.
+
+services:
+  postgres:
+    # Use Percona PostgreSQL 17 with pg_tde extension
+    # Percona tracks official PostgreSQL releases closely (99.9% compatible)
+    image: percona/percona-postgresql:17
+
+    # Override command to load pg_tde extension and enable WAL encryption
+    # CRITICAL: shared_preload_libraries MUST be set or CREATE EXTENSION will fail
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_tde
+      - -c
+      - pg_tde.wal_encrypt=on
+
+    # Mount decrypted master key from host tmpfs
+    # This file is created by unlock-tde.sh and only exists in RAM
+    volumes:
+      - /run/secrets/pg_tde_master_key:/run/secrets/pg_tde_master_key:ro
+      - postgres-data:/var/lib/postgresql/data
+
+    environment:
+      # Point pg_tde to the mounted master key file
+      # This will be used by the global key provider
+      - PG_TDE_MASTER_KEY_FILE=/run/secrets/pg_tde_master_key
+
+# Volumes inherited from base docker-compose.yml
+# postgres-data volume will contain encrypted database files after migration
