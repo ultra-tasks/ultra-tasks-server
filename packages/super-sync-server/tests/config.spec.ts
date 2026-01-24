@@ -76,6 +76,22 @@ describe('parseCorsOrigin', () => {
       const result = parseCorsOrigin('https://*.example.com');
       expect((result as RegExp).test('https://foo.example.com/path')).toBe(false);
     });
+
+    it('should normalize domain to lowercase for case-insensitive matching', async () => {
+      const { parseCorsOrigin } = await importConfig();
+      const result = parseCorsOrigin('https://*.EXAMPLE.COM');
+
+      // Browsers send Origin header in lowercase per RFC 6454
+      expect((result as RegExp).test('https://sub.example.com')).toBe(true);
+      expect((result as RegExp).test('https://sub.EXAMPLE.COM')).toBe(true);
+    });
+
+    it('should normalize subdomain pattern domain to lowercase', async () => {
+      const { parseCorsOrigin } = await importConfig();
+      const result = parseCorsOrigin('https://*.Preview.Example.COM');
+
+      expect((result as RegExp).test('https://abc.preview.example.com')).toBe(true);
+    });
   });
 
   describe('validation errors', () => {
@@ -112,6 +128,16 @@ describe('parseCorsOrigin', () => {
       expect(() => parseCorsOrigin('https://example.com/*')).toThrow(
         'wildcard only allowed as subdomain',
       );
+    });
+
+    it('should reject empty origin', async () => {
+      const { parseCorsOrigin } = await importConfig();
+      expect(() => parseCorsOrigin('')).toThrow('cannot be empty');
+    });
+
+    it('should reject whitespace-only origin', async () => {
+      const { parseCorsOrigin } = await importConfig();
+      expect(() => parseCorsOrigin('   ')).toThrow('cannot be empty');
     });
   });
 

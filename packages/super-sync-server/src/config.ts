@@ -20,6 +20,11 @@ export type CorsOrigin = string | RegExp;
 export const parseCorsOrigin = (origin: string): CorsOrigin => {
   const trimmed = origin.trim();
 
+  // Validate non-empty
+  if (!trimmed) {
+    throw new Error('CORS origin cannot be empty');
+  }
+
   // No wildcard - return as-is for exact match
   if (!trimmed.includes('*')) {
     return trimmed;
@@ -43,13 +48,15 @@ export const parseCorsOrigin = (origin: string): CorsOrigin => {
 
   const [, protocol, domain, port] = match;
 
-  // Convert to safe RegExp: https://*.example.com -> /^https:\/\/[a-zA-Z0-9-]+\.example\.com$/
+  // Convert to safe RegExp: https://*.example.com -> /^https:\/\/[a-zA-Z0-9-]+\.example\.com$/i
   // Only allow alphanumeric and hyphens in subdomain (prevents domain confusion)
-  const escapedDomain = domain.replace(/\./g, '\\.');
+  // Normalize domain to lowercase (browsers send Origin header in lowercase per RFC 6454)
+  const escapedDomain = domain.toLowerCase().replace(/\./g, '\\.');
   const portPart = port ? port.replace(/\./g, '\\.') : '';
   const pattern = `^${protocol}:\\/\\/[a-zA-Z0-9-]+\\.${escapedDomain}${portPart}$`;
 
-  return new RegExp(pattern);
+  // Use case-insensitive flag to handle uppercase/lowercase variations
+  return new RegExp(pattern, 'i');
 };
 
 export interface PrivacyConfig {
