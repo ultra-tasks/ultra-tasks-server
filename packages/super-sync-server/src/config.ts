@@ -93,10 +93,14 @@ export interface ServerConfig {
 
 /**
  * Default CORS origins for production security.
- * Only allows the official Super Productivity app.
- * Use CORS_ORIGINS env var to add development origins (e.g., localhost).
+ * - Production app: exact match
+ * - Preview deployments: wildcard subdomain pattern
+ * Use CORS_ORIGINS env var to add additional origins.
  */
-const DEFAULT_CORS_ORIGINS: CorsOrigin[] = ['https://app.super-productivity.com'];
+const DEFAULT_CORS_ORIGINS: CorsOrigin[] = [
+  'https://app.super-productivity.com',
+  /^https:\/\/[^\/]+\.super-productivity-preview\.pages\.dev$/,
+];
 
 const DEFAULT_CONFIG: ServerConfig = {
   port: 1900,
