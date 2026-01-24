@@ -180,7 +180,8 @@ export const loadConfigFromEnv = (
   }
   if (process.env.CORS_ORIGINS) {
     const origins = process.env.CORS_ORIGINS.split(',').map((o) => o.trim());
-    // Block wildcard in production - this is a security vulnerability
+
+    // Block universal wildcard in production - security vulnerability
     if (origins.includes('*')) {
       if (process.env.NODE_ENV === 'production') {
         throw new Error(
@@ -191,8 +192,17 @@ export const loadConfigFromEnv = (
       Logger.warn(
         'CORS_ORIGINS contains wildcard (*). This is insecure and not recommended for production.',
       );
+      config.cors.allowedOrigins = origins;
+    } else {
+      // Parse each origin (converts wildcard patterns to RegExp)
+      try {
+        config.cors.allowedOrigins = origins.map(parseCorsOrigin);
+      } catch (err) {
+        throw new Error(
+          `Invalid CORS_ORIGINS configuration: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
-    config.cors.allowedOrigins = origins;
     // If origins are provided, implicitly enable CORS if not explicitly disabled
     if (process.env.CORS_ENABLED === undefined) {
       config.cors.enabled = true;

@@ -143,6 +143,49 @@ describe('parseCorsOrigin', () => {
   });
 });
 
+describe('loadConfigFromEnv - CORS_ORIGINS parsing', () => {
+  beforeEach(() => {
+    resetEnv();
+  });
+
+  afterEach(() => {
+    resetEnv();
+  });
+
+  it('should parse comma-separated origins with wildcards', async () => {
+    process.env.CORS_ORIGINS =
+      'https://app.example.com,https://*.preview.example.com,http://localhost:4200';
+
+    const { loadConfigFromEnv } = await importConfig();
+    const config = loadConfigFromEnv();
+
+    expect(config.cors.allowedOrigins).toHaveLength(3);
+    expect(config.cors.allowedOrigins![0]).toBe('https://app.example.com');
+    expect(config.cors.allowedOrigins![1]).toBeInstanceOf(RegExp);
+    expect(config.cors.allowedOrigins![2]).toBe('http://localhost:4200');
+  });
+
+  it('should throw error on invalid wildcard pattern in CORS_ORIGINS', async () => {
+    process.env.CORS_ORIGINS = 'https://*';
+
+    const { loadConfigFromEnv } = await importConfig();
+    expect(() => loadConfigFromEnv()).toThrow('wildcard only allowed as subdomain');
+  });
+
+  it('should handle wildcard syntax in CORS_ORIGINS', async () => {
+    process.env.CORS_ORIGINS = 'https://*.super-productivity-preview.pages.dev';
+
+    const { loadConfigFromEnv } = await importConfig();
+    const config = loadConfigFromEnv();
+
+    expect(config.cors.allowedOrigins).toHaveLength(1);
+    const pattern = config.cors.allowedOrigins![0] as RegExp;
+    expect(pattern.test('https://abc123.super-productivity-preview.pages.dev')).toBe(
+      true,
+    );
+  });
+});
+
 describe('DEFAULT_CORS_ORIGINS', () => {
   beforeEach(() => {
     resetEnv();
