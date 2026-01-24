@@ -93,6 +93,7 @@ const UploadSnapshotSchema = z.object({
   isPayloadEncrypted: z.boolean().optional(),
   // Client's operation ID - server MUST use this to prevent ID mismatch bugs
   opId: z.string().uuid().optional(),
+  isCleanSlate: z.boolean().optional(),
 });
 
 // Error helper
@@ -649,6 +650,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
           schemaVersion,
           isPayloadEncrypted,
           opId,
+          isCleanSlate,
         } = parseResult.data;
         const syncService = getSyncService();
 
@@ -755,7 +757,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
           isPayloadEncrypted: isPayloadEncrypted ?? false,
         };
 
-        const results = await syncService.uploadOps(userId, clientId, [op]);
+        const results = await syncService.uploadOps(userId, clientId, [op], isCleanSlate);
         const result = results[0];
 
         if (result.accepted && result.serverSeq !== undefined) {
