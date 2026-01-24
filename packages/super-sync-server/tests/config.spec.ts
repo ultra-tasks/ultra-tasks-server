@@ -114,6 +114,33 @@ describe('parseCorsOrigin', () => {
       );
     });
   });
+
+  describe('parseCorsOrigin security', () => {
+    it('should reject domain confusion in wildcard patterns', async () => {
+      const { parseCorsOrigin } = await importConfig();
+      const result = parseCorsOrigin('https://*.super-productivity-preview.pages.dev');
+
+      expect(
+        (result as RegExp).test('https://evil.com.super-productivity-preview.pages.dev'),
+      ).toBe(false);
+      expect(
+        (result as RegExp).test('https://a.b.super-productivity-preview.pages.dev'),
+      ).toBe(false);
+    });
+
+    it('should only allow alphanumeric and hyphens in wildcard subdomains', async () => {
+      const { parseCorsOrigin } = await importConfig();
+      const result = parseCorsOrigin('https://*.example.com');
+
+      // Should match valid subdomains
+      expect((result as RegExp).test('https://abc123.example.com')).toBe(true);
+      expect((result as RegExp).test('https://abc-123.example.com')).toBe(true);
+
+      // Should reject subdomains with dots
+      expect((result as RegExp).test('https://sub.domain.example.com')).toBe(false);
+      expect((result as RegExp).test('https://evil.com.example.com')).toBe(false);
+    });
+  });
 });
 
 describe('DEFAULT_CORS_ORIGINS', () => {

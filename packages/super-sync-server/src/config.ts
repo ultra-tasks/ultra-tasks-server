@@ -9,6 +9,10 @@ export type CorsOrigin = string | RegExp;
  * Supports wildcard subdomain syntax: https://*.example.com
  * Converts wildcards to safe RegExp patterns.
  *
+ * SECURITY: The generated pattern only allows alphanumeric characters and
+ * hyphens in the subdomain portion to prevent domain confusion attacks.
+ * For example, https://*.example.com will NOT match https://evil.com.example.com
+ *
  * @param origin - CORS origin string (exact match or wildcard pattern)
  * @returns CorsOrigin (string for exact match, RegExp for wildcard)
  * @throws Error if wildcard pattern is invalid or unsafe
@@ -39,10 +43,11 @@ export const parseCorsOrigin = (origin: string): CorsOrigin => {
 
   const [, protocol, domain, port] = match;
 
-  // Convert to safe RegExp: https://*.example.com -> /^https:\/\/[^\/]+\.example\.com$/
+  // Convert to safe RegExp: https://*.example.com -> /^https:\/\/[a-zA-Z0-9-]+\.example\.com$/
+  // Only allow alphanumeric and hyphens in subdomain (prevents domain confusion)
   const escapedDomain = domain.replace(/\./g, '\\.');
   const portPart = port ? port.replace(/\./g, '\\.') : '';
-  const pattern = `^${protocol}:\\/\\/[^\\/]+\\.${escapedDomain}${portPart}$`;
+  const pattern = `^${protocol}:\\/\\/[a-zA-Z0-9-]+\\.${escapedDomain}${portPart}$`;
 
   return new RegExp(pattern);
 };
