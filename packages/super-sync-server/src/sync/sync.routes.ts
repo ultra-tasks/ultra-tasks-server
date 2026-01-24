@@ -714,8 +714,9 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         // Exceptions that bypass this check:
         // - 'recovery': Explicit backup restore or repair (user action)
         // - 'migration': Legacy data migration (should be allowed to override)
+        // - 'isCleanSlate': Password change or explicit clean slate request
         // Only 'initial' (first-time server migration) should be rejected if one exists.
-        if (reason === 'initial') {
+        if (reason === 'initial' && !isCleanSlate) {
           const existingImport = await prisma.operation.findFirst({
             where: {
               userId,
