@@ -75,6 +75,7 @@ const UploadOpsSchema = z.object({
   clientId: ClientIdSchema,
   lastKnownServerSeq: z.number().optional(),
   requestId: z.string().min(1).max(64).optional(), // For request deduplication
+  isCleanSlate: z.boolean().optional(), // If true, server deletes all user data before accepting ops
 });
 
 const DownloadOpsQuerySchema = z.object({
@@ -230,7 +231,8 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
             .send(createValidationErrorResponse(parseResult.error.issues));
         }
 
-        const { ops, clientId, lastKnownServerSeq, requestId } = parseResult.data;
+        const { ops, clientId, lastKnownServerSeq, requestId, isCleanSlate } =
+          parseResult.data;
         const syncService = getSyncService();
 
         Logger.info(
@@ -366,6 +368,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
           userId,
           clientId,
           ops as unknown as import('./sync.types').Operation[],
+          isCleanSlate,
         );
 
         // Cache results for deduplication if requestId was provided
