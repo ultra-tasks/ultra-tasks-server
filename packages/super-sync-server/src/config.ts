@@ -4,6 +4,49 @@ import { Logger } from './logger';
 /** CORS origin can be a string or RegExp for pattern matching (e.g., localhost with any port) */
 export type CorsOrigin = string | RegExp;
 
+/**
+ * Parse CORS origin string into CorsOrigin type (string or RegExp).
+ * Supports wildcard subdomain syntax: https://*.example.com
+ * Converts wildcards to safe RegExp patterns.
+ *
+ * @param origin - CORS origin string (exact match or wildcard pattern)
+ * @returns CorsOrigin (string for exact match, RegExp for wildcard)
+ * @throws Error if wildcard pattern is invalid or unsafe
+ */
+export const parseCorsOrigin = (origin: string): CorsOrigin => {
+  const trimmed = origin.trim();
+
+  // No wildcard - return as-is for exact match
+  if (!trimmed.includes('*')) {
+    return trimmed;
+  }
+
+  // Validate wildcard count
+  const wildcardCount = (trimmed.match(/\*/g) || []).length;
+  if (wildcardCount > 1) {
+    throw new Error(`Invalid CORS origin "${trimmed}": multiple wildcards not allowed`);
+  }
+
+  // Only allow subdomain wildcards: https://*.example.com
+  const subdomainWildcardPattern = /^(https?):\/\/\*\.([a-z0-9.-]+)(:\d+)?$/i;
+  const match = trimmed.match(subdomainWildcardPattern);
+
+  if (!match) {
+    throw new Error(
+      `Invalid CORS origin "${trimmed}": wildcard only allowed as subdomain (e.g., https://*.example.com)`,
+    );
+  }
+
+  const [, protocol, domain, port] = match;
+
+  // Convert to safe RegExp: https://*.example.com -> /^https:\/\/[^\/]+\.example\.com$/
+  const escapedDomain = domain.replace(/\./g, '\\.');
+  const portPart = port ? port.replace(/\./g, '\\.') : '';
+  const pattern = `^${protocol}:\\/\\/[^\\/]+\\.${escapedDomain}${portPart}$`;
+
+  return new RegExp(pattern);
+};
+
 export interface PrivacyConfig {
   contactName: string;
   addressStreet: string;
