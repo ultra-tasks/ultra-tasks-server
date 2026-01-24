@@ -94,12 +94,14 @@ export interface ServerConfig {
 /**
  * Default CORS origins for production security.
  * - Production app: exact match
- * - Preview deployments: wildcard subdomain pattern
+ * - Preview deployments: RegExp pattern matching Cloudflare Pages format
  * Use CORS_ORIGINS env var to add additional origins.
  */
 const DEFAULT_CORS_ORIGINS: CorsOrigin[] = [
   'https://app.super-productivity.com',
-  /^https:\/\/[^\/]+\.super-productivity-preview\.pages\.dev$/,
+  // Cloudflare Pages preview format: <commit-hash>.<project>.pages.dev
+  // Using [a-zA-Z0-9-]+ to prevent domain confusion attacks (e.g., evil.com.preview.pages.dev)
+  /^https:\/\/[a-zA-Z0-9-]+\.super-productivity-preview\.pages\.dev$/,
 ];
 
 const DEFAULT_CONFIG: ServerConfig = {

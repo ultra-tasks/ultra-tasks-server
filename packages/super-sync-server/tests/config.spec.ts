@@ -115,3 +115,47 @@ describe('parseCorsOrigin', () => {
     });
   });
 });
+
+describe('DEFAULT_CORS_ORIGINS', () => {
+  beforeEach(() => {
+    resetEnv();
+  });
+
+  afterEach(() => {
+    resetEnv();
+  });
+
+  it('should match valid preview deployment URLs', async () => {
+    const { loadConfigFromEnv } = await importConfig();
+    const config = loadConfigFromEnv();
+    const pattern = config.cors.allowedOrigins![1] as RegExp;
+
+    expect(pattern.test('https://f5382282.super-productivity-preview.pages.dev')).toBe(
+      true,
+    );
+    expect(pattern.test('https://abc-123.super-productivity-preview.pages.dev')).toBe(
+      true,
+    );
+  });
+
+  it('should reject domain confusion attacks', async () => {
+    const { loadConfigFromEnv } = await importConfig();
+    const config = loadConfigFromEnv();
+    const pattern = config.cors.allowedOrigins![1] as RegExp;
+
+    expect(pattern.test('https://evil.com.super-productivity-preview.pages.dev')).toBe(
+      false,
+    );
+    expect(pattern.test('https://a.b.super-productivity-preview.pages.dev')).toBe(false);
+  });
+
+  it('should reject URLs with paths', async () => {
+    const { loadConfigFromEnv } = await importConfig();
+    const config = loadConfigFromEnv();
+    const pattern = config.cors.allowedOrigins![1] as RegExp;
+
+    expect(pattern.test('https://abc.super-productivity-preview.pages.dev/path')).toBe(
+      false,
+    );
+  });
+});
