@@ -184,6 +184,22 @@ describe('loadConfigFromEnv - CORS_ORIGINS parsing', () => {
       true,
     );
   });
+
+  it('should parse wildcard patterns even when universal wildcard is present', async () => {
+    process.env.CORS_ORIGINS = 'https://app.com,*,https://*.preview.com';
+
+    const { loadConfigFromEnv } = await importConfig();
+    const config = loadConfigFromEnv();
+
+    expect(config.cors.allowedOrigins).toHaveLength(3);
+    expect(config.cors.allowedOrigins![0]).toBe('https://app.com');
+    expect(config.cors.allowedOrigins![1]).toBe('*');
+    expect(config.cors.allowedOrigins![2]).toBeInstanceOf(RegExp);
+
+    // Verify the RegExp works
+    const pattern = config.cors.allowedOrigins![2] as RegExp;
+    expect(pattern.test('https://abc123.preview.com')).toBe(true);
+  });
 });
 
 describe('DEFAULT_CORS_ORIGINS', () => {

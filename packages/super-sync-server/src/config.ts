@@ -192,7 +192,16 @@ export const loadConfigFromEnv = (
       Logger.warn(
         'CORS_ORIGINS contains wildcard (*). This is insecure and not recommended for production.',
       );
-      config.cors.allowedOrigins = origins;
+      // Parse non-wildcard origins, keep * as-is
+      try {
+        config.cors.allowedOrigins = origins.map((o) =>
+          o === '*' ? o : parseCorsOrigin(o),
+        );
+      } catch (err) {
+        throw new Error(
+          `Invalid CORS_ORIGINS configuration: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     } else {
       // Parse each origin (converts wildcard patterns to RegExp)
       try {
