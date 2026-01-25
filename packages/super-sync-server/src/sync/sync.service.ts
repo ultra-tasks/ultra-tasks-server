@@ -378,6 +378,7 @@ export class SyncService {
           accepted: false,
           error: conflict.reason,
           errorCode,
+          existingClock: conflict.existingClock,
         };
       }
 
@@ -414,6 +415,7 @@ export class SyncService {
           accepted: false,
           error: finalConflict.reason,
           errorCode,
+          existingClock: finalConflict.existingClock,
         };
       }
 

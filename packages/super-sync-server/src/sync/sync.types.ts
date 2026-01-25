@@ -155,6 +155,11 @@ export interface UploadResult {
   serverSeq?: number;
   error?: string;
   errorCode?: SyncErrorCode;
+  /**
+   * The existing entity's vector clock when rejecting due to conflict.
+   * Allows clients to create LWW updates that dominate the server's state.
+   */
+  existingClock?: VectorClock;
 }
 
 export interface UploadOpsResponse {
