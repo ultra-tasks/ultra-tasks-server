@@ -698,11 +698,11 @@ describe('Conflict Detection', () => {
       expect(result2[0].error).toContain('Equal vector clocks from different clients');
     });
 
-    it('should handle very large vector clocks', async () => {
+    it('should handle very large vector clocks by pruning to MAX_VECTOR_CLOCK_SIZE', async () => {
       const service = getSyncService();
       const entityId = 'task-1';
 
-      // Create clock with many entries (under the 100 limit)
+      // Create clock with many entries (under the 100 sanitize limit but over MAX_VECTOR_CLOCK_SIZE)
       const largeClock: VectorClock = {};
       for (let i = 0; i < 50; i++) {
         largeClock[`client-${i}`] = i + 1;
@@ -717,9 +717,16 @@ describe('Conflict Detection', () => {
       const result = await service.uploadOps(userId, clientA, [op1]);
       expect(result[0].accepted).toBe(true);
 
-      // Verify the clock was stored correctly
+      // Verify the clock was pruned to MAX_VECTOR_CLOCK_SIZE (10).
+      // clientA ('client-a') is not in the clock, so only the 10 most active
+      // clients are kept (client-40 through client-49 with values 41-50).
       const ops = await service.getOpsSince(userId, 0);
-      expect(ops[0].op.vectorClock).toEqual(largeClock);
+      const storedClock = ops[0].op.vectorClock;
+      expect(Object.keys(storedClock).length).toBe(10);
+      // The most active clients should be preserved
+      for (let i = 40; i < 50; i++) {
+        expect(storedClock[`client-${i}`]).toBe(i + 1);
+      }
     });
 
     it('should handle first operation on entity (no existing op to conflict with)', async () => {

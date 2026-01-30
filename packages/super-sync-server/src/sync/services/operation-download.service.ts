@@ -5,7 +5,12 @@
  * This service handles operation retrieval with gap detection and snapshot optimization.
  */
 import { prisma } from '../../db';
-import { Operation, ServerOperation, VectorClock } from '../sync.types';
+import {
+  Operation,
+  ServerOperation,
+  VectorClock,
+  limitVectorClockSize,
+} from '../sync.types';
 import { Logger } from '../../logger';
 
 export class OperationDownloadService {
@@ -123,6 +128,11 @@ export class OperationDownloadService {
               }
             }
           }
+
+          // Limit snapshot clock to MAX_VECTOR_CLOCK_SIZE to prevent oversized
+          // clocks from being sent to clients. No specific client to preserve,
+          // so we keep the most active entries.
+          snapshotVectorClock = limitVectorClockSize(snapshotVectorClock);
 
           Logger.info(
             `[user:${userId}] Computed snapshotVectorClock from ${skippedOps.length} ops: ${JSON.stringify(snapshotVectorClock)}`,

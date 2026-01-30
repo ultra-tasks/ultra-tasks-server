@@ -129,15 +129,21 @@ export const limitVectorClockSize = (
   entries.sort(([, a], [, b]) => b - a);
 
   const limited: VectorClock = {};
+
+  // Add preserved IDs first, but cap at MAX_VECTOR_CLOCK_SIZE.
+  // If preserveClientIds itself exceeds MAX, only the first MAX are kept.
+  let count = 0;
   for (const id of alwaysPreserve) {
-    if (clock[id] !== undefined) {
+    if (clock[id] !== undefined && count < MAX_VECTOR_CLOCK_SIZE) {
       limited[id] = clock[id];
+      count++;
     }
   }
 
-  let count = Object.keys(limited).length;
+  // Fill remaining slots with most active non-preserved clients
   for (const [clientId, value] of entries) {
-    if (!alwaysPreserve.has(clientId) && count < MAX_VECTOR_CLOCK_SIZE) {
+    if (count >= MAX_VECTOR_CLOCK_SIZE) break;
+    if (!alwaysPreserve.has(clientId)) {
       limited[clientId] = value;
       count++;
     }

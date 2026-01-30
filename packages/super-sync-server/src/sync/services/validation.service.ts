@@ -12,6 +12,7 @@ import {
   SyncErrorCode,
   sanitizeVectorClock,
   validatePayload,
+  limitVectorClockSize,
 } from '../sync.types';
 import { ENTITY_TYPES } from '@sp/shared-schema';
 
@@ -143,6 +144,11 @@ export class ValidationService {
       };
     }
     op.vectorClock = clockValidation.clock;
+
+    // Enforce MAX_VECTOR_CLOCK_SIZE on server side.
+    // A buggy or adversarial client may send oversized clocks.
+    // Preserve the uploading client's ID during pruning.
+    op.vectorClock = limitVectorClockSize(op.vectorClock, [op.clientId]);
 
     // Validate payload complexity to prevent DoS attacks via deeply nested objects.
     // Full-state ops (SYNC_IMPORT, BACKUP_IMPORT, REPAIR) get higher thresholds
