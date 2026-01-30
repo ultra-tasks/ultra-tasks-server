@@ -231,6 +231,27 @@ describe('compareVectorClocks', () => {
       expect(compareVectorClocks(a, b)).toBe('GREATER_THAN');
     });
 
+    it('should return LESS_THAN when only b side has non-shared keys and shared keys show b dominates', () => {
+      // Symmetric case of the GREATER_THAN test above: b dominates on shared keys,
+      // only b has non-shared keys (aOnlyCount=0), so no escalation to CONCURRENT.
+      const a: Record<string, number> = {};
+      const b: Record<string, number> = {};
+      for (let i = 0; i < MAX_VECTOR_CLOCK_SIZE; i++) {
+        a[`shared_${i}`] = 5;
+        b[`shared_${i}`] = 10;
+      }
+      // Only b has extra keys
+      for (let i = 0; i < 3; i++) {
+        b[`b_only_${i}`] = 100;
+      }
+
+      expect(Object.keys(a).length).toBe(MAX_VECTOR_CLOCK_SIZE);
+      expect(Object.keys(b).length).toBeGreaterThan(MAX_VECTOR_CLOCK_SIZE);
+      // Both >= MAX → pruning-aware mode. Shared keys: b dominates.
+      // Only b has non-shared keys (aOnlyCount=0), so no escalation to CONCURRENT.
+      expect(compareVectorClocks(a, b)).toBe('LESS_THAN');
+    });
+
     it('should return EQUAL when only one side has non-shared keys and shared keys are equal', () => {
       const a: Record<string, number> = {};
       const b: Record<string, number> = {};
@@ -348,6 +369,34 @@ describe('limitVectorClockSize', () => {
     const result = limitVectorClockSize(clock, ['nonexistent']);
     expect(Object.keys(result).length).toBe(MAX_VECTOR_CLOCK_SIZE);
     expect(result['nonexistent']).toBeUndefined();
+  });
+
+  it('should cap at MAX_VECTOR_CLOCK_SIZE even when preserveClientIds exceeds MAX', () => {
+    // Build a clock with many entries including 15 "preserved" clients
+    const clock: Record<string, number> = {};
+    const preserveIds: string[] = [];
+    for (let i = 0; i < 15; i++) {
+      const id = `preserved_${i}`;
+      clock[id] = i + 1;
+      preserveIds.push(id);
+    }
+    // Add more clients with higher counters
+    for (let i = 0; i < 20; i++) {
+      clock[`high_${i}`] = 200 + i;
+    }
+
+    const result = limitVectorClockSize(clock, preserveIds);
+    expect(Object.keys(result).length).toBe(MAX_VECTOR_CLOCK_SIZE);
+
+    // Only the first MAX_VECTOR_CLOCK_SIZE preserved IDs should be kept
+    // (Set insertion order determines which ones)
+    let preservedCount = 0;
+    for (const id of preserveIds) {
+      if (result[id] !== undefined) {
+        preservedCount++;
+      }
+    }
+    expect(preservedCount).toBeLessThanOrEqual(MAX_VECTOR_CLOCK_SIZE);
   });
 });
 

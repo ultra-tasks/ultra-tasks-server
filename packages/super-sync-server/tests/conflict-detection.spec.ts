@@ -170,7 +170,12 @@ vi.mock('../src/db', async () => {
 });
 
 import { initSyncService, getSyncService } from '../src/sync/sync.service';
-import { Operation, SYNC_ERROR_CODES, VectorClock } from '../src/sync/sync.types';
+import {
+  Operation,
+  SYNC_ERROR_CODES,
+  VectorClock,
+  MAX_VECTOR_CLOCK_SIZE,
+} from '../src/sync/sync.types';
 
 describe('Conflict Detection', () => {
   const userId = 1;
@@ -727,6 +732,34 @@ describe('Conflict Detection', () => {
       for (let i = 40; i < 50; i++) {
         expect(storedClock[`client-${i}`]).toBe(i + 1);
       }
+    });
+
+    it('should preserve uploading client ID during server-side clock pruning', async () => {
+      const service = getSyncService();
+      const entityId = 'task-1';
+
+      // Create clock with many entries where the uploading client (clientA) IS in the clock
+      // but has a low counter value that would normally be pruned
+      const largeClock: VectorClock = { [clientA]: 2 }; // Low counter
+      for (let i = 0; i < 50; i++) {
+        largeClock[`client-${i}`] = 100 + i; // All have higher counters
+      }
+
+      const op = createOp({
+        entityId,
+        clientId: clientA,
+        vectorClock: largeClock,
+        opType: 'CRT',
+      });
+      const result = await service.uploadOps(userId, clientA, [op]);
+      expect(result[0].accepted).toBe(true);
+
+      // Verify the clock was pruned to MAX_VECTOR_CLOCK_SIZE
+      const ops = await service.getOpsSince(userId, 0);
+      const storedClock = ops[0].op.vectorClock;
+      expect(Object.keys(storedClock).length).toBe(MAX_VECTOR_CLOCK_SIZE);
+      // clientA should be preserved despite having the lowest counter
+      expect(storedClock[clientA]).toBe(2);
     });
 
     it('should handle first operation on entity (no existing op to conflict with)', async () => {

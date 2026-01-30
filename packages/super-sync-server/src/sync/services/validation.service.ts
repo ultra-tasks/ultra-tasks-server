@@ -15,6 +15,7 @@ import {
   limitVectorClockSize,
 } from '../sync.types';
 import { ENTITY_TYPES } from '@sp/shared-schema';
+import { Logger } from '../../logger';
 
 /**
  * Valid entity types for operations.
@@ -155,7 +156,13 @@ export class ValidationService {
     // GREATER_THAN for early-stage entities. This is the safe direction — it
     // triggers LWW conflict resolution rather than silent data loss. Only affects
     // buggy or adversarial clients sending oversized clocks.
+    const originalClockSize = Object.keys(op.vectorClock).length;
     op.vectorClock = limitVectorClockSize(op.vectorClock, [op.clientId]);
+    if (Object.keys(op.vectorClock).length < originalClockSize) {
+      Logger.warn(
+        `[client:${op.clientId}] Oversized vector clock pruned from ${originalClockSize} to ${Object.keys(op.vectorClock).length} entries`,
+      );
+    }
 
     // Validate payload complexity to prevent DoS attacks via deeply nested objects.
     // Full-state ops (SYNC_IMPORT, BACKUP_IMPORT, REPAIR) get higher thresholds
