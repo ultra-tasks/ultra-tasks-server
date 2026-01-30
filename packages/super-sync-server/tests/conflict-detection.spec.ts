@@ -230,7 +230,7 @@ describe('Conflict Detection', () => {
       expect(result2[0].accepted).toBe(true);
     });
 
-    it('should reject operation when incoming clock is LESS_THAN existing (stale)', async () => {
+    it('should reject operation when incoming clock is LESS_THAN existing (superseded)', async () => {
       const service = getSyncService();
       const entityId = 'task-1';
 
@@ -244,7 +244,7 @@ describe('Conflict Detection', () => {
       const result1 = await service.uploadOps(userId, clientA, [op1]);
       expect(result1[0].accepted).toBe(true);
 
-      // Second op with clock {a: 1} - LESS_THAN {a: 2} (stale)
+      // Second op with clock {a: 1} - LESS_THAN {a: 2} (superseded)
       const op2 = createOp({
         entityId,
         clientId: clientB,
@@ -252,8 +252,8 @@ describe('Conflict Detection', () => {
       });
       const result2 = await service.uploadOps(userId, clientB, [op2]);
       expect(result2[0].accepted).toBe(false);
-      expect(result2[0].errorCode).toBe(SYNC_ERROR_CODES.CONFLICT_STALE);
-      expect(result2[0].error).toContain('Stale operation');
+      expect(result2[0].errorCode).toBe(SYNC_ERROR_CODES.CONFLICT_SUPERSEDED);
+      expect(result2[0].error).toContain('Superseded operation');
     });
 
     it('should reject operation when clocks are CONCURRENT', async () => {
@@ -309,7 +309,7 @@ describe('Conflict Detection', () => {
       expect(result[0].existingClock).toEqual({ [clientA]: 1 });
     });
 
-    it('should return existingClock in rejection response for stale conflicts', async () => {
+    it('should return existingClock in rejection response for superseded conflicts', async () => {
       const service = getSyncService();
       const entityId = 'task-1';
 
@@ -322,7 +322,7 @@ describe('Conflict Detection', () => {
       });
       await service.uploadOps(userId, clientA, [op1]);
 
-      // Second op with clock {a: 1} - LESS_THAN {a: 2} (stale)
+      // Second op with clock {a: 1} - LESS_THAN {a: 2} (superseded)
       const op2 = createOp({
         entityId,
         clientId: clientB,
@@ -400,7 +400,7 @@ describe('Conflict Detection', () => {
       });
       await service.uploadOps(userId, clientA, [op1]);
 
-      // SYNC_IMPORT with stale clock should still be accepted
+      // SYNC_IMPORT with superseded clock should still be accepted
       const op2 = createOp({
         entityId,
         clientId: clientB,
@@ -450,7 +450,7 @@ describe('Conflict Detection', () => {
       });
       await service.uploadOps(userId, clientA, [op1]);
 
-      // REPAIR with stale clock should still be accepted
+      // REPAIR with superseded clock should still be accepted
       const op2 = createOp({
         entityId,
         clientId: clientB,
@@ -522,7 +522,7 @@ describe('Conflict Detection', () => {
       });
       expect((await service.uploadOps(userId, clientC, [op3]))[0].accepted).toBe(true);
 
-      // Client A tries to update with stale clock {a: 2} (doesn't know about B, C)
+      // Client A tries to update with superseded clock {a: 2} (doesn't know about B, C)
       const op4 = createOp({
         entityId,
         clientId: clientA,
