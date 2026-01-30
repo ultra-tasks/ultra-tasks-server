@@ -45,6 +45,14 @@ export const MAX_VECTOR_CLOCK_SIZE = 10;
  * Missing keys could mean "pruned away" rather than "genuinely zero". Comparing
  * only shared keys avoids false CONCURRENT from cross-client pruning asymmetry.
  *
+ * Known limitation: A clock that naturally grew to exactly MAX_VECTOR_CLOCK_SIZE
+ * entries (without pruning) is indistinguishable from a pruned clock. In that case,
+ * missing keys genuinely mean "never seen" but are treated as "possibly pruned".
+ * This could produce LESS_THAN/GREATER_THAN instead of CONCURRENT when one clock
+ * was pruned and the other naturally reached MAX size. This is accepted as a pragmatic
+ * tradeoff — it requires exactly MAX_VECTOR_CLOCK_SIZE active clients, which is
+ * unlikely for a personal productivity app.
+ *
  * @param a First vector clock
  * @param b Second vector clock
  * @returns The comparison result
@@ -67,6 +75,8 @@ export const compareVectorClocks = (
   if (bothPossiblyPruned) {
     const bKeySet = new Set(bKeys);
     keysToCompare = new Set(aKeys.filter((k) => bKeySet.has(k)));
+    // If no shared keys at all, clocks are from independent client populations → CONCURRENT
+    if (keysToCompare.size === 0) return 'CONCURRENT';
   } else {
     keysToCompare = new Set([...aKeys, ...bKeys]);
   }

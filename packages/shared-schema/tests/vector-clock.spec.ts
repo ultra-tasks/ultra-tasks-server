@@ -143,6 +143,55 @@ describe('compareVectorClocks', () => {
       // b: x=0, y=5 -> bGreater on y
       expect(compareVectorClocks(a, b)).toBe('CONCURRENT');
     });
+
+    it('should return CONCURRENT when both clocks at MAX but completely disjoint keys', () => {
+      const a = buildMaxClock('a_client', 1);
+      const b = buildMaxClock('b_client', 1);
+
+      // No shared keys at all — independent client populations
+      expect(Object.keys(a).length).toBe(MAX_VECTOR_CLOCK_SIZE);
+      expect(Object.keys(b).length).toBe(MAX_VECTOR_CLOCK_SIZE);
+      expect(compareVectorClocks(a, b)).toBe('CONCURRENT');
+    });
+
+    it('should use ALL keys when one clock is at MAX and other is at MAX-1', () => {
+      // a has exactly MAX entries
+      const a: Record<string, number> = {};
+      for (let i = 0; i < MAX_VECTOR_CLOCK_SIZE; i++) {
+        a[`client_${i}`] = 10;
+      }
+      // b has MAX-1 entries with one unique key
+      const b: Record<string, number> = {};
+      for (let i = 0; i < MAX_VECTOR_CLOCK_SIZE - 2; i++) {
+        b[`client_${i}`] = 5;
+      }
+      b['unique_b'] = 100;
+
+      // Only a is at MAX, so all keys are used (no pruning-aware mode)
+      // a > b on shared client keys, b > a on unique_b => CONCURRENT
+      expect(Object.keys(a).length).toBe(MAX_VECTOR_CLOCK_SIZE);
+      expect(Object.keys(b).length).toBe(MAX_VECTOR_CLOCK_SIZE - 1);
+      expect(compareVectorClocks(a, b)).toBe('CONCURRENT');
+    });
+
+    it('should use pruning-aware mode when both clocks exceed MAX (more than MAX entries)', () => {
+      // This tests the >= condition — clocks larger than MAX (e.g., from merge before pruning)
+      const a: Record<string, number> = {};
+      const b: Record<string, number> = {};
+      for (let i = 0; i < 3; i++) {
+        a[`shared_${i}`] = 10;
+        b[`shared_${i}`] = 5;
+      }
+      for (let i = 0; i < MAX_VECTOR_CLOCK_SIZE; i++) {
+        a[`a_only_${i}`] = 100;
+        b[`b_only_${i}`] = 100;
+      }
+
+      // Both exceed MAX, pruning-aware mode → only shared keys compared → a dominates
+      expect(Object.keys(a).length).toBeGreaterThan(MAX_VECTOR_CLOCK_SIZE);
+      expect(Object.keys(b).length).toBeGreaterThan(MAX_VECTOR_CLOCK_SIZE);
+      expect(compareVectorClocks(a, b)).toBe('GREATER_THAN');
+    });
   });
 });
 
