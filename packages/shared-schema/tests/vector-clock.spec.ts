@@ -57,7 +57,7 @@ describe('compareVectorClocks', () => {
       return clock;
     };
 
-    it('should compare only shared keys when both clocks >= MAX_VECTOR_CLOCK_SIZE', () => {
+    it('should return CONCURRENT when both clocks at MAX and both have non-shared keys', () => {
       // Build two max-size clocks with some shared and some unique keys
       const a: Record<string, number> = {};
       const b: Record<string, number> = {};
@@ -73,11 +73,11 @@ describe('compareVectorClocks', () => {
         b[`b_only_${i}`] = 100;
       }
 
-      // Without pruning-aware mode, unique keys would cause CONCURRENT
-      // With pruning-aware mode (both at MAX), only shared keys are compared
+      // Even though shared keys show a dominance, non-shared keys on both sides
+      // mean we can't safely declare dominance.
       expect(Object.keys(a).length).toBe(MAX_VECTOR_CLOCK_SIZE);
       expect(Object.keys(b).length).toBe(MAX_VECTOR_CLOCK_SIZE);
-      expect(compareVectorClocks(a, b)).toBe('GREATER_THAN');
+      expect(compareVectorClocks(a, b)).toBe('CONCURRENT');
     });
 
     it('should return CONCURRENT when shared keys are equal but both sides have non-shared keys', () => {
@@ -175,7 +175,7 @@ describe('compareVectorClocks', () => {
       expect(compareVectorClocks(a, b)).toBe('CONCURRENT');
     });
 
-    it('should use pruning-aware mode when both clocks exceed MAX (more than MAX entries)', () => {
+    it('should return CONCURRENT when both clocks exceed MAX and both have non-shared keys', () => {
       // This tests the >= condition — clocks larger than MAX (e.g., from merge before pruning)
       const a: Record<string, number> = {};
       const b: Record<string, number> = {};
@@ -188,10 +188,10 @@ describe('compareVectorClocks', () => {
         b[`b_only_${i}`] = 100;
       }
 
-      // Both exceed MAX, pruning-aware mode → only shared keys compared → a dominates
+      // Both exceed MAX with unique keys on both sides → cannot safely declare dominance
       expect(Object.keys(a).length).toBeGreaterThan(MAX_VECTOR_CLOCK_SIZE);
       expect(Object.keys(b).length).toBeGreaterThan(MAX_VECTOR_CLOCK_SIZE);
-      expect(compareVectorClocks(a, b)).toBe('GREATER_THAN');
+      expect(compareVectorClocks(a, b)).toBe('CONCURRENT');
     });
 
     it('should return EQUAL when fully-shared keys at MAX size are identical', () => {
@@ -246,6 +246,38 @@ describe('compareVectorClocks', () => {
       // Both >= MAX → pruning-aware. Shared keys equal.
       // Only one side has non-shared keys → not escalated to CONCURRENT.
       expect(compareVectorClocks(a, b)).toBe('EQUAL');
+    });
+
+    it('asymmetric pruning: one clock pruned, other naturally at MAX size (known limitation)', () => {
+      // Known limitation: A clock that naturally grew to MAX entries (without pruning)
+      // is indistinguishable from a pruned clock. When one side was genuinely pruned
+      // and the other naturally reached MAX, missing keys on the pruned side are treated
+      // as "possibly pruned" rather than "genuinely zero". This may produce
+      // GREATER_THAN instead of CONCURRENT for the non-pruned side's unique keys.
+
+      // Clock A: naturally has exactly MAX active clients (no pruning occurred)
+      const a: Record<string, number> = {};
+      for (let i = 0; i < MAX_VECTOR_CLOCK_SIZE; i++) {
+        a[`client_${i}`] = 10;
+      }
+
+      // Clock B: was pruned to MAX, shares most keys but has one unique key
+      // (replacing client_9 with b_unique simulates pruning that dropped client_9
+      // and kept a different client)
+      const b: Record<string, number> = {};
+      for (let i = 0; i < MAX_VECTOR_CLOCK_SIZE - 1; i++) {
+        b[`client_${i}`] = 5;
+      }
+      b['b_unique'] = 50;
+
+      expect(Object.keys(a).length).toBe(MAX_VECTOR_CLOCK_SIZE);
+      expect(Object.keys(b).length).toBe(MAX_VECTOR_CLOCK_SIZE);
+
+      // Both at MAX → pruning-aware mode.
+      // Shared keys: a dominates (10 > 5 for client_0..client_8).
+      // b has non-shared key b_unique → escalated to CONCURRENT.
+      // This is the safe direction: LWW conflict resolution will handle it.
+      expect(compareVectorClocks(a, b)).toBe('CONCURRENT');
     });
   });
 });
