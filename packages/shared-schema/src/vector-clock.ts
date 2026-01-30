@@ -29,10 +29,21 @@ export interface VectorClock {
 export type VectorClockComparison = 'EQUAL' | 'LESS_THAN' | 'GREATER_THAN' | 'CONCURRENT';
 
 /**
+ * Maximum number of entries in a vector clock.
+ * Shared between client and server to ensure consistent pruning.
+ */
+export const MAX_VECTOR_CLOCK_SIZE = 10;
+
+/**
  * Compare two vector clocks to determine their relationship.
  *
  * CRITICAL: This algorithm must produce identical results on client and server.
  * Both implementations import from this shared module to ensure consistency.
+ *
+ * Pruning-aware mode: When both clocks are at MAX_VECTOR_CLOCK_SIZE, they may
+ * have been pruned by different clients (each preserving its own clientId).
+ * Missing keys could mean "pruned away" rather than "genuinely zero". Comparing
+ * only shared keys avoids false CONCURRENT from cross-client pruning asymmetry.
  *
  * @param a First vector clock
  * @param b Second vector clock
@@ -42,12 +53,28 @@ export const compareVectorClocks = (
   a: VectorClock,
   b: VectorClock,
 ): VectorClockComparison => {
-  const allKeys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+
+  // When both clocks are at MAX_VECTOR_CLOCK_SIZE, they may have been pruned
+  // by different clients (each preserving its own clientId). Missing keys could
+  // mean "pruned away" rather than "genuinely zero". Comparing only shared keys
+  // avoids false CONCURRENT from cross-client pruning asymmetry.
+  const bothPossiblyPruned =
+    aKeys.length >= MAX_VECTOR_CLOCK_SIZE && bKeys.length >= MAX_VECTOR_CLOCK_SIZE;
+
+  let keysToCompare: Set<string>;
+  if (bothPossiblyPruned) {
+    const bKeySet = new Set(bKeys);
+    keysToCompare = new Set(aKeys.filter((k) => bKeySet.has(k)));
+  } else {
+    keysToCompare = new Set([...aKeys, ...bKeys]);
+  }
 
   let aGreater = false;
   let bGreater = false;
 
-  for (const key of allKeys) {
+  for (const key of keysToCompare) {
     const aVal = a[key] ?? 0;
     const bVal = b[key] ?? 0;
 
@@ -77,4 +104,44 @@ export const mergeVectorClocks = (a: VectorClock, b: VectorClock): VectorClock =
   }
 
   return merged;
+};
+
+/**
+ * Limits vector clock size by keeping only the most active clients.
+ * Used by both client (when creating ops) and server (when storing ops).
+ *
+ * @param clock The vector clock to limit
+ * @param preserveClientIds Client IDs to always keep (e.g., current client, protected IDs)
+ * @returns A clock with at most MAX_VECTOR_CLOCK_SIZE entries
+ */
+export const limitVectorClockSize = (
+  clock: VectorClock,
+  preserveClientIds: string[] = [],
+): VectorClock => {
+  const entries = Object.entries(clock);
+  if (entries.length <= MAX_VECTOR_CLOCK_SIZE) {
+    return clock;
+  }
+
+  const alwaysPreserve = new Set(preserveClientIds);
+
+  // Sort by value descending to keep most active clients
+  entries.sort(([, a], [, b]) => b - a);
+
+  const limited: VectorClock = {};
+  for (const id of alwaysPreserve) {
+    if (clock[id] !== undefined) {
+      limited[id] = clock[id];
+    }
+  }
+
+  let count = Object.keys(limited).length;
+  for (const [clientId, value] of entries) {
+    if (!alwaysPreserve.has(clientId) && count < MAX_VECTOR_CLOCK_SIZE) {
+      limited[clientId] = value;
+      count++;
+    }
+  }
+
+  return limited;
 };
