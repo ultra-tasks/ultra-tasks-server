@@ -104,11 +104,12 @@ export const compareVectorClocks = (
   if (aGreater) return 'GREATER_THAN';
   if (bGreater) return 'LESS_THAN';
 
-  // In pruning-aware mode, if shared keys are equal but both sides have
-  // non-shared keys, the clocks have genuinely different causal histories.
-  // Returning EQUAL here would cause silent data loss (skip as duplicate).
-  // Returning CONCURRENT triggers LWW conflict resolution (safe).
+  // In pruning-aware mode, if shared keys are equal but either side has
+  // non-shared keys, the clocks may have genuinely different causal histories.
+  // Returning EQUAL would cause silent data loss (skip as duplicate).
+  // Returning CONCURRENT triggers LWW conflict resolution (safe direction).
   if (bothPossiblyPruned && aOnlyCount > 0 && bOnlyCount > 0) return 'CONCURRENT';
+  if (bothPossiblyPruned && (aOnlyCount > 0 || bOnlyCount > 0)) return 'CONCURRENT';
   return 'EQUAL';
 };
 
