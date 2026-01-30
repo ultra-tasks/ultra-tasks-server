@@ -85,7 +85,7 @@ export class OperationDownloadService {
             opType: { in: ['SYNC_IMPORT', 'BACKUP_IMPORT', 'REPAIR'] },
           },
           orderBy: { serverSeq: 'desc' },
-          select: { serverSeq: true },
+          select: { serverSeq: true, clientId: true },
         });
 
         const latestSnapshotSeq = latestFullStateOp?.serverSeq ?? undefined;
@@ -130,9 +130,12 @@ export class OperationDownloadService {
           }
 
           // Limit snapshot clock to MAX_VECTOR_CLOCK_SIZE to prevent oversized
-          // clocks from being sent to clients. No specific client to preserve,
-          // so we keep the most active entries.
-          snapshotVectorClock = limitVectorClockSize(snapshotVectorClock);
+          // clocks from being sent to clients. Preserve the requesting client's ID
+          // and the snapshot author's ID to avoid false EQUAL in pruning-aware comparison.
+          const preserveIds: string[] = [];
+          if (excludeClient) preserveIds.push(excludeClient);
+          if (latestFullStateOp?.clientId) preserveIds.push(latestFullStateOp.clientId);
+          snapshotVectorClock = limitVectorClockSize(snapshotVectorClock, preserveIds);
 
           Logger.info(
             `[user:${userId}] Computed snapshotVectorClock from ${skippedOps.length} ops: ${JSON.stringify(snapshotVectorClock)}`,

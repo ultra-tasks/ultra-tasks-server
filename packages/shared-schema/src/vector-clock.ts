@@ -72,11 +72,15 @@ export const compareVectorClocks = (
     aKeys.length >= MAX_VECTOR_CLOCK_SIZE && bKeys.length >= MAX_VECTOR_CLOCK_SIZE;
 
   let keysToCompare: Set<string>;
+  let aOnlyCount = 0;
+  let bOnlyCount = 0;
   if (bothPossiblyPruned) {
     const bKeySet = new Set(bKeys);
     keysToCompare = new Set(aKeys.filter((k) => bKeySet.has(k)));
     // If no shared keys at all, clocks are from independent client populations → CONCURRENT
     if (keysToCompare.size === 0) return 'CONCURRENT';
+    aOnlyCount = aKeys.length - keysToCompare.size;
+    bOnlyCount = bKeys.length - keysToCompare.size;
   } else {
     keysToCompare = new Set([...aKeys, ...bKeys]);
   }
@@ -95,6 +99,12 @@ export const compareVectorClocks = (
   if (aGreater && bGreater) return 'CONCURRENT';
   if (aGreater) return 'GREATER_THAN';
   if (bGreater) return 'LESS_THAN';
+
+  // In pruning-aware mode, if shared keys are equal but both sides have
+  // non-shared keys, the clocks have genuinely different causal histories.
+  // Returning EQUAL here would cause silent data loss (skip as duplicate).
+  // Returning CONCURRENT triggers LWW conflict resolution (safe).
+  if (bothPossiblyPruned && aOnlyCount > 0 && bOnlyCount > 0) return 'CONCURRENT';
   return 'EQUAL';
 };
 
