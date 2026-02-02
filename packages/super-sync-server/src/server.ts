@@ -137,7 +137,7 @@ export const createServer = (
             'X-Force-Overwrite',
             'X-Requested-With',
           ],
-          exposedHeaders: ['X-Rev', 'X-Updated-At'],
+          exposedHeaders: ['X-Rev', 'X-Updated-At', 'X-Refreshed-Token'],
           credentials: true,
           maxAge: 86400,
           preflight: true,

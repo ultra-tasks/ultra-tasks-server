@@ -4,6 +4,7 @@ import * as zlib from 'zlib';
 import { promisify } from 'util';
 import { uuidv7 } from 'uuidv7';
 import { authenticate, getAuthUser } from '../middleware';
+import { createRefreshedToken } from '../auth';
 import { getSyncService } from './sync.service';
 import { Logger } from '../logger';
 import { prisma } from '../db';
@@ -151,6 +152,18 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
 
   // All sync routes require authentication
   fastify.addHook('preHandler', authenticate);
+
+  // Rolling token refresh: return a fresh JWT on successful sync requests
+  fastify.addHook('onSend', async (req, reply) => {
+    if (req.user && reply.statusCode < 400) {
+      const refreshedToken = createRefreshedToken(
+        req.user.userId,
+        req.user.email,
+        req.user.tokenVersion,
+      );
+      reply.header('X-Refreshed-Token', refreshedToken);
+    }
+  });
 
   // POST /api/sync/ops - Upload operations
   fastify.post<{ Body: UploadOpsRequest }>(

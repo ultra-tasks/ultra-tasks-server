@@ -5,6 +5,7 @@ import { verifyToken } from './auth';
 export interface AuthUser {
   userId: number;
   email: string;
+  tokenVersion: number;
 }
 
 // Extend FastifyRequest to include optional user (before auth)

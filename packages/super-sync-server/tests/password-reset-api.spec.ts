@@ -10,6 +10,9 @@ vi.mock('../src/auth', () => ({
   verifyToken: vi.fn(),
   requestPasswordReset: vi.fn(),
   resetPassword: vi.fn(),
+  createRefreshedToken: vi.fn().mockReturnValue('mock-refreshed-token'),
+  JWT_EXPIRY: '14d',
+  getJwtSecret: vi.fn().mockReturnValue('test-secret-that-is-long-enough-for-jwt'),
 }));
 
 // Mock middleware

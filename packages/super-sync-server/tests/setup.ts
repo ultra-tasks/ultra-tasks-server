@@ -236,7 +236,12 @@ vi.mock('../src/db', () => {
 
 // Mock auth module
 vi.mock('../src/auth', () => ({
-  verifyToken: vi.fn().mockResolvedValue({ userId: 1, email: 'test@test.com' }),
+  verifyToken: vi
+    .fn()
+    .mockResolvedValue({ userId: 1, email: 'test@test.com', tokenVersion: 0 }),
+  createRefreshedToken: vi.fn().mockReturnValue('mock-refreshed-token'),
+  JWT_EXPIRY: '14d',
+  getJwtSecret: vi.fn().mockReturnValue('test-secret-that-is-long-enough-for-jwt'),
 }));
 
 // Reset test data before each test
