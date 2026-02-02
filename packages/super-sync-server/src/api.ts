@@ -6,8 +6,6 @@ import {
   replaceToken,
   requestLoginMagicLink,
   verifyLoginMagicLink,
-  JWT_EXPIRY,
-  getJwtSecret,
 } from './auth';
 import {
   generateRegistrationOptions,
@@ -21,6 +19,14 @@ import {
 import { authenticate, getAuthUser } from './middleware';
 import { Logger } from './logger';
 import { prisma } from './db';
+
+// JWT config (same as auth.ts)
+const JWT_EXPIRY = '7d';
+const getJwtSecret = (): string => {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) throw new Error('JWT_SECRET required');
+  return secret;
+};
 
 // Zod Schemas
 const VerifyEmailSchema = z.object({

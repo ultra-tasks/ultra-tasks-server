@@ -6,11 +6,11 @@ import { sendLoginMagicLinkEmail } from './email';
 
 // Auth constants
 const MIN_JWT_SECRET_LENGTH = 32;
-export const JWT_EXPIRY = '14d';
+const JWT_EXPIRY = '7d';
 const VERIFICATION_TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 const LOGIN_MAGIC_LINK_EXPIRY_MS = 15 * 60 * 1000; // 15 minutes
 
-export const getJwtSecret = (): string => {
+const getJwtSecret = (): string => {
   const secret = process.env.JWT_SECRET;
   if (!secret) {
     throw new Error(
@@ -100,7 +100,7 @@ export const replaceToken = async (
 
 export const verifyToken = async (
   token: string,
-): Promise<{ userId: number; email: string; tokenVersion: number } | null> => {
+): Promise<{ userId: number; email: string } | null> => {
   try {
     const payload = await new Promise<{
       userId: number;
@@ -136,25 +136,10 @@ export const verifyToken = async (
       return null;
     }
 
-    return { userId: payload.userId, email: payload.email, tokenVersion };
+    return { userId: payload.userId, email: payload.email };
   } catch (err) {
     return null;
   }
-};
-
-/**
- * Create a refreshed JWT token with the same claims but a new expiry.
- * Used for rolling token refresh on sync requests. No DB call needed
- * since tokenVersion is already verified in the original token.
- */
-export const createRefreshedToken = (
-  userId: number,
-  email: string,
-  tokenVersion: number,
-): string => {
-  return jwt.sign({ userId, email, tokenVersion }, JWT_SECRET, {
-    expiresIn: JWT_EXPIRY,
-  });
 };
 
 /**
