@@ -91,10 +91,12 @@ export const sanitizeVectorClock = (
   const entries = Object.entries(clock as Record<string, unknown>);
 
   // Reject absurdly large clocks (DoS protection).
-  // Legitimate clocks are at most MAX_VECTOR_CLOCK_SIZE + a few entries during
-  // conflict resolution (entity clock IDs + client ID + extra merged clocks).
-  // 3x MAX gives ample room while catching adversarial inputs.
-  const MAX_SANITIZE_VECTOR_CLOCK_SIZE = MAX_VECTOR_CLOCK_SIZE * 3;
+  // Legitimate clocks can temporarily exceed MAX_VECTOR_CLOCK_SIZE during conflict
+  // resolution: entity clock IDs + client ID + merged clocks from multiple concurrent
+  // clients. 5x MAX gives ample room for multi-client merge scenarios while catching
+  // adversarial inputs. Server-side pruning (limitVectorClockSize) will trim to MAX
+  // before storage.
+  const MAX_SANITIZE_VECTOR_CLOCK_SIZE = MAX_VECTOR_CLOCK_SIZE * 5;
   if (entries.length > MAX_SANITIZE_VECTOR_CLOCK_SIZE) {
     return {
       valid: false,

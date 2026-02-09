@@ -462,7 +462,7 @@ export class SyncService {
       op.vectorClock = limitVectorClockSize(op.vectorClock, [op.clientId]);
       const afterSize = Object.keys(op.vectorClock).length;
       if (afterSize < beforeSize) {
-        Logger.info(
+        Logger.debug(
           `[client:${op.clientId}] Vector clock pruned from ${beforeSize} to ${afterSize} before storage`,
         );
       }
