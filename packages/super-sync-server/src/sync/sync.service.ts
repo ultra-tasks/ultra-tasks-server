@@ -458,11 +458,12 @@ export class SyncService {
       // clock IDs + its own client ID). Pruning before comparison would drop an entity
       // clock ID, causing the pruning-aware comparison to see a non-shared key and return
       // CONCURRENT instead of GREATER_THAN, leading to an infinite rejection loop.
-      const clockBeforePrune = op.vectorClock;
+      const beforeSize = Object.keys(op.vectorClock).length;
       op.vectorClock = limitVectorClockSize(op.vectorClock, [op.clientId]);
-      if (Object.keys(op.vectorClock).length < Object.keys(clockBeforePrune).length) {
+      const afterSize = Object.keys(op.vectorClock).length;
+      if (afterSize < beforeSize) {
         Logger.info(
-          `[client:${op.clientId}] Vector clock pruned from ${Object.keys(clockBeforePrune).length} to ${Object.keys(op.vectorClock).length} before storage`,
+          `[client:${op.clientId}] Vector clock pruned from ${beforeSize} to ${afterSize} before storage`,
         );
       }
 
