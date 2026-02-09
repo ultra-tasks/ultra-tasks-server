@@ -176,7 +176,7 @@ describe('compareVectorClocks', () => {
     });
 
     it('should return CONCURRENT when both clocks exceed MAX and both have non-shared keys', () => {
-      // This tests the >= condition — clocks larger than MAX (e.g., from merge before pruning)
+      // Both exceed MAX → neither was pruned → normal comparison mode
       const a: Record<string, number> = {};
       const b: Record<string, number> = {};
       for (let i = 0; i < 3; i++) {
@@ -226,8 +226,8 @@ describe('compareVectorClocks', () => {
 
       expect(Object.keys(a).length).toBeGreaterThan(MAX_VECTOR_CLOCK_SIZE);
       expect(Object.keys(b).length).toBe(MAX_VECTOR_CLOCK_SIZE);
-      // Both >= MAX → pruning-aware mode. Shared keys: a dominates.
-      // Only a has non-shared keys (bOnlyCount=0), so no escalation to CONCURRENT.
+      // a exceeds MAX → never pruned → normal comparison mode.
+      // a has all of b's keys at higher values PLUS extra keys → GREATER_THAN.
       expect(compareVectorClocks(a, b)).toBe('GREATER_THAN');
     });
 
@@ -247,27 +247,27 @@ describe('compareVectorClocks', () => {
 
       expect(Object.keys(a).length).toBe(MAX_VECTOR_CLOCK_SIZE);
       expect(Object.keys(b).length).toBeGreaterThan(MAX_VECTOR_CLOCK_SIZE);
-      // Both >= MAX → pruning-aware mode. Shared keys: b dominates.
-      // Only b has non-shared keys (aOnlyCount=0), so no escalation to CONCURRENT.
+      // b exceeds MAX → never pruned → normal comparison mode.
+      // b has all of a's keys at higher values PLUS extra keys → LESS_THAN.
       expect(compareVectorClocks(a, b)).toBe('LESS_THAN');
     });
 
-    it('should return CONCURRENT when only one side has non-shared keys and shared keys are equal', () => {
+    it('should return GREATER_THAN when one side exceeds MAX (never pruned) with extra keys', () => {
       const a: Record<string, number> = {};
       const b: Record<string, number> = {};
       for (let i = 0; i < MAX_VECTOR_CLOCK_SIZE; i++) {
         a[`shared_${i}`] = 10;
         b[`shared_${i}`] = 10;
       }
-      // Only a has extra keys
+      // Only a has extra keys → a has MORE than MAX entries, so was never pruned
       for (let i = 0; i < 3; i++) {
         a[`a_only_${i}`] = 100;
       }
 
-      // Both >= MAX → pruning-aware. Shared keys equal.
-      // One side has non-shared keys → CONCURRENT (safe direction).
-      // Non-shared keys may represent real causal knowledge the other side lacks.
-      expect(compareVectorClocks(a, b)).toBe('CONCURRENT');
+      // a > MAX entries → not possibly pruned → normal comparison mode.
+      // a has all of b's keys with equal values PLUS extra keys with values > 0.
+      // Result: GREATER_THAN (a dominates b).
+      expect(compareVectorClocks(a, b)).toBe('GREATER_THAN');
     });
 
     it('asymmetric pruning: one clock pruned, other naturally at MAX size (known limitation)', () => {
