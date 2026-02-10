@@ -76,7 +76,7 @@ export type OpType = (typeof OP_TYPES)[number];
  * Returns a sanitized clock with validated entries, or an error.
  *
  * Validation rules:
- * - Maximum MAX_VECTOR_CLOCK_SIZE * 3 (30) entries (prevents DoS via huge clocks)
+ * - Maximum MAX_VECTOR_CLOCK_SIZE * 5 (50) entries (prevents DoS via huge clocks)
  * - Keys must be non-empty strings, max 255 characters
  * - Values must be non-negative integers, max 10 million
  * - Invalid entries are removed (not rejected)
