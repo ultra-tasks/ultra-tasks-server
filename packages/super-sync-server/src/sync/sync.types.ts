@@ -54,6 +54,19 @@ export const SYNC_ERROR_CODES = {
 
 export type SyncErrorCode = (typeof SYNC_ERROR_CODES)[keyof typeof SYNC_ERROR_CODES];
 
+export type ConflictType =
+  | 'concurrent'
+  | 'superseded'
+  | 'equal_different_client'
+  | 'unknown';
+
+export interface ConflictResult {
+  hasConflict: boolean;
+  reason?: string;
+  conflictType?: ConflictType;
+  existingClock?: VectorClock;
+}
+
 // Operation types - single source of truth
 export const OP_TYPES = [
   'CRT',

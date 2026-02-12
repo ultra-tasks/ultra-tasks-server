@@ -9,6 +9,8 @@ import {
   limitVectorClockSize,
   VectorClock,
   SYNC_ERROR_CODES,
+  ConflictType,
+  ConflictResult,
 } from './sync.types';
 import { Logger } from '../logger';
 import { CURRENT_SCHEMA_VERSION } from '@sp/shared-schema';
@@ -68,12 +70,7 @@ export class SyncService {
     userId: number,
     op: Operation,
     tx: Prisma.TransactionClient,
-  ): Promise<{
-    hasConflict: boolean;
-    reason?: string;
-    conflictType?: 'concurrent' | 'superseded' | 'equal_different_client' | 'unknown';
-    existingClock?: VectorClock;
-  }> {
+  ): Promise<ConflictResult> {
     // Skip conflict detection for full-state operations
     if (
       op.opType === 'SYNC_IMPORT' ||
@@ -116,12 +113,7 @@ export class SyncService {
     op: Operation,
     entityId: string,
     tx: Prisma.TransactionClient,
-  ): Promise<{
-    hasConflict: boolean;
-    reason?: string;
-    conflictType?: 'concurrent' | 'superseded' | 'equal_different_client' | 'unknown';
-    existingClock?: VectorClock;
-  }> {
+  ): Promise<ConflictResult> {
     // Get the latest operation for this entity
     const existingOp = await tx.operation.findFirst({
       where: {
