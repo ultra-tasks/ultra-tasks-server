@@ -922,17 +922,12 @@ export class SyncService {
       // Delete all devices
       await tx.syncDevice.deleteMany({ where: { userId } });
 
-      // Reset snapshot data but PRESERVE lastSeq so sequence numbers continue.
-      // Same rationale as clean slate in uploadOps: if we reset lastSeq,
-      // other clients' lastServerSeq would be stale and they'd miss new ops.
-      await tx.userSyncState.updateMany({
-        where: { userId },
-        data: {
-          lastSnapshotSeq: null,
-          snapshotData: null,
-          snapshotAt: null,
-        },
-      });
+      // Delete sync state entirely, resetting lastSeq to 0.
+      // Unlike uploadOps clean slate (which preserves lastSeq), account reset
+      // intentionally wipes everything. Clients detect the wipe via latestSeq=0
+      // and trigger a full state re-upload. This is correct because account reset
+      // (e.g., encryption password change) requires ALL clients to re-sync.
+      await tx.userSyncState.deleteMany({ where: { userId } });
 
       // Reset storage usage
       await tx.user.update({
