@@ -231,6 +231,29 @@ describe('limitVectorClockSize', () => {
     }
     expect(preservedCount).toBeLessThanOrEqual(MAX_VECTOR_CLOCK_SIZE);
   });
+
+  it('should break ties deterministically by client ID (lexicographic order)', () => {
+    // All entries have the same counter value — tie-breaking by client ID determines which are kept.
+    const clock: Record<string, number> = {};
+    for (let i = 0; i < MAX_VECTOR_CLOCK_SIZE + 3; i++) {
+      clock[`client_${String.fromCharCode(65 + i)}`] = 10; // client_A, client_B, ...
+    }
+
+    const result1 = limitVectorClockSize(clock);
+    const result2 = limitVectorClockSize(clock);
+
+    // Same input always produces same output
+    expect(result1).toEqual(result2);
+    expect(Object.keys(result1).length).toBe(MAX_VECTOR_CLOCK_SIZE);
+
+    // Lexicographically earliest IDs should be kept (ascending sort as secondary)
+    // client_A, client_B, ... should be kept; last 3 alphabetically should be pruned
+    const sortedIds = Object.keys(clock).sort();
+    const prunedIds = sortedIds.slice(MAX_VECTOR_CLOCK_SIZE);
+    for (const id of prunedIds) {
+      expect(result1[id]).toBeUndefined();
+    }
+  });
 });
 
 describe('limitVectorClockSize then compareVectorClocks integration', () => {
