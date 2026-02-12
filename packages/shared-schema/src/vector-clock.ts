@@ -110,8 +110,9 @@ export const limitVectorClockSize = (
 
   const alwaysPreserve = new Set(preserveClientIds);
 
-  // Sort by value descending to keep most active clients
-  entries.sort(([, a], [, b]) => b - a);
+  // Sort by value descending to keep most active clients.
+  // Secondary sort by client ID for deterministic tie-breaking when values are equal.
+  entries.sort(([keyA, a], [keyB, b]) => b - a || keyA.localeCompare(keyB));
 
   const limited: VectorClock = {};
 

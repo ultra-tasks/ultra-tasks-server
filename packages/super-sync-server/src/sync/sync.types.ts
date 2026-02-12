@@ -78,7 +78,7 @@ export type OpType = (typeof OP_TYPES)[number];
  * Validation rules:
  * - Maximum 50 entries (prevents DoS via huge clocks)
  * - Keys must be non-empty strings, max 255 characters
- * - Values must be non-negative integers, max 10 million
+ * - Values must be non-negative integers within Number.MAX_SAFE_INTEGER
  * - Invalid entries are removed (not rejected)
  */
 export const sanitizeVectorClock = (
@@ -119,7 +119,7 @@ export const sanitizeVectorClock = (
       typeof value !== 'number' ||
       !Number.isInteger(value) ||
       value < 0 ||
-      value > 10000000
+      value > Number.MAX_SAFE_INTEGER
     ) {
       strippedCount++;
       continue; // Skip invalid values
