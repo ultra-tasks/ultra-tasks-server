@@ -456,8 +456,8 @@ export class SyncService {
       // for conflict comparison. This prevents false CONCURRENT results when the client
       // builds a merged clock with MAX+1 entries during conflict resolution (all entity
       // clock IDs + its own client ID). Pruning before comparison would drop an entity
-      // clock ID, causing the pruning-aware comparison to see a non-shared key and return
-      // CONCURRENT instead of GREATER_THAN, leading to an infinite rejection loop.
+      // clock ID, causing the comparison to return CONCURRENT instead of GREATER_THAN,
+      // leading to an infinite rejection loop.
       const beforeSize = Object.keys(op.vectorClock).length;
       op.vectorClock = limitVectorClockSize(op.vectorClock, [op.clientId]);
       const afterSize = Object.keys(op.vectorClock).length;
