@@ -119,6 +119,8 @@ export const sanitizeVectorClock = (
       typeof value !== 'number' ||
       !Number.isInteger(value) ||
       value < 0 ||
+      // JSON-parsed numbers lose precision before reaching MAX_SAFE_INTEGER,
+      // so this acts as a "no corrupt data" guard rather than a strict cap.
       value > Number.MAX_SAFE_INTEGER
     ) {
       strippedCount++;

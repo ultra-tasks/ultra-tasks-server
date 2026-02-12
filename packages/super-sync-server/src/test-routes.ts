@@ -62,7 +62,9 @@ export const testRoutes = async (fastify: FastifyInstance): Promise<void> => {
             `[TEST] Returning existing user: ${email} (ID: ${userId}) - Clearing old data`,
           );
 
-          // Clear old data for this user to ensure clean state
+          // Clear old data for this user to ensure clean state.
+          // Unlike production clean-slate (which preserves lastSeq for existing clients),
+          // test reset deletes everything — no existing clients need sequence continuity.
           await prisma.$transaction([
             prisma.operation.deleteMany({ where: { userId } }),
             prisma.syncDevice.deleteMany({ where: { userId } }),

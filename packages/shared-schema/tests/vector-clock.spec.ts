@@ -327,7 +327,7 @@ describe('limitVectorClockSize then compareVectorClocks integration', () => {
     expect(Object.keys(pruned).length).toBe(MAX_VECTOR_CLOCK_SIZE);
 
     // After pruning: the 5 low-counter new_client_* entries (counter=1) are dropped.
-    // All remaining entries are shared client_0..29 with pruned dominating (10 > 5).
+    // All remaining entries are shared client_0..19 with pruned dominating (10 > 5).
     // Missing keys from pruned = 0, which is still ≤ import's 5 → GREATER_THAN preserved.
     expect(compareVectorClocks(pruned, importClock)).toBe('GREATER_THAN');
   });

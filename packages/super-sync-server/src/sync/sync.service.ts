@@ -196,8 +196,18 @@ export class SyncService {
             // Delete all devices
             await tx.syncDevice.deleteMany({ where: { userId } });
 
-            // Reset sync state (delete if exists)
-            await tx.userSyncState.deleteMany({ where: { userId } });
+            // Reset snapshot data but PRESERVE lastSeq so sequence numbers continue.
+            // If we deleted the sync state row, lastSeq would reset to 0 and new ops
+            // would reuse sequence numbers that other clients already saw — causing
+            // those clients to miss the SYNC_IMPORT and any ops that land on reused seqs.
+            await tx.userSyncState.updateMany({
+              where: { userId },
+              data: {
+                lastSnapshotSeq: null,
+                snapshotData: null,
+                snapshotAt: null,
+              },
+            });
 
             // Reset storage usage
             await tx.user.update({
@@ -912,8 +922,17 @@ export class SyncService {
       // Delete all devices
       await tx.syncDevice.deleteMany({ where: { userId } });
 
-      // Reset sync state (delete if exists)
-      await tx.userSyncState.deleteMany({ where: { userId } });
+      // Reset snapshot data but PRESERVE lastSeq so sequence numbers continue.
+      // Same rationale as clean slate in uploadOps: if we reset lastSeq,
+      // other clients' lastServerSeq would be stale and they'd miss new ops.
+      await tx.userSyncState.updateMany({
+        where: { userId },
+        data: {
+          lastSnapshotSeq: null,
+          snapshotData: null,
+          snapshotAt: null,
+        },
+      });
 
       // Reset storage usage
       await tx.user.update({

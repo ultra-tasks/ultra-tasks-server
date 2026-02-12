@@ -772,7 +772,7 @@ describe('Conflict Detection', () => {
       // producing MAX+1 entries. The server must compare BEFORE pruning,
       // so the MAX+1-entry clock is seen as GREATER_THAN the MAX-entry stored clock.
       // If the server pruned before comparison, the MAX+1-entry clock would lose one
-      // entity key, and pruning-aware comparison would return CONCURRENT → infinite loop.
+      // entity key, and comparison could return CONCURRENT → infinite loop.
       const service = getSyncService();
       const entityId = 'task-regression';
 
