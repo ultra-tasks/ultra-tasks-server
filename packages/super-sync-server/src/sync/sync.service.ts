@@ -24,6 +24,19 @@ import {
   SnapshotService,
 } from './services';
 
+/**
+ * Main sync orchestration service.
+ *
+ * IMPORTANT: Single-instance deployment assumption
+ * This service uses process-local in-memory caches for:
+ * - Rate limiting (RateLimitService)
+ * - Request deduplication (RequestDeduplicationService)
+ * - Snapshot caching (SnapshotService)
+ *
+ * For multi-instance deployment behind a load balancer, these caches
+ * would need to be moved to a shared store (e.g., Redis) to ensure
+ * consistent behavior across instances.
+ */
 export class SyncService {
   private config: SyncConfig;
   private validationService: ValidationService;
@@ -55,7 +68,12 @@ export class SyncService {
     userId: number,
     op: Operation,
     tx: Prisma.TransactionClient,
-  ): Promise<{ hasConflict: boolean; reason?: string; existingClock?: VectorClock }> {
+  ): Promise<{
+    hasConflict: boolean;
+    reason?: string;
+    conflictType?: 'concurrent' | 'superseded' | 'equal_different_client' | 'unknown';
+    existingClock?: VectorClock;
+  }> {
     // Skip conflict detection for full-state operations
     if (
       op.opType === 'SYNC_IMPORT' ||
@@ -98,7 +116,12 @@ export class SyncService {
     op: Operation,
     entityId: string,
     tx: Prisma.TransactionClient,
-  ): Promise<{ hasConflict: boolean; reason?: string; existingClock?: VectorClock }> {
+  ): Promise<{
+    hasConflict: boolean;
+    reason?: string;
+    conflictType?: 'concurrent' | 'superseded' | 'equal_different_client' | 'unknown';
+    existingClock?: VectorClock;
+  }> {
     // Get the latest operation for this entity
     const existingOp = await tx.operation.findFirst({
       where: {
@@ -137,6 +160,7 @@ export class SyncService {
     if (comparison === 'EQUAL') {
       return {
         hasConflict: true,
+        conflictType: 'equal_different_client',
         reason: `Equal vector clocks from different clients for ${op.entityType}:${entityId} (client ${op.clientId} vs ${existingOp.clientId})`,
         existingClock,
       };
@@ -146,6 +170,7 @@ export class SyncService {
     if (comparison === 'CONCURRENT') {
       return {
         hasConflict: true,
+        conflictType: 'concurrent',
         reason: `Concurrent modification detected for ${op.entityType}:${entityId}`,
         existingClock,
       };
@@ -155,6 +180,7 @@ export class SyncService {
     if (comparison === 'LESS_THAN') {
       return {
         hasConflict: true,
+        conflictType: 'superseded',
         reason: `Superseded operation: server has newer version of ${op.entityType}:${entityId}`,
         existingClock,
       };
@@ -164,6 +190,7 @@ export class SyncService {
     // But if we do, default to conflict for safety
     return {
       hasConflict: true,
+      conflictType: 'unknown',
       reason: `Unknown vector clock comparison result for ${op.entityType}:${entityId}`,
       existingClock,
     };
@@ -369,10 +396,11 @@ export class SyncService {
       // Check for conflicts with existing operations
       const conflict = await this.detectConflict(userId, op, tx);
       if (conflict.hasConflict) {
-        const isConcurrent = conflict.reason?.includes('Concurrent');
-        const errorCode = isConcurrent
-          ? SYNC_ERROR_CODES.CONFLICT_CONCURRENT
-          : SYNC_ERROR_CODES.CONFLICT_SUPERSEDED;
+        const errorCode =
+          conflict.conflictType === 'concurrent' ||
+          conflict.conflictType === 'equal_different_client'
+            ? SYNC_ERROR_CODES.CONFLICT_CONCURRENT
+            : SYNC_ERROR_CODES.CONFLICT_SUPERSEDED;
         Logger.audit({
           event: 'OP_REJECTED',
           userId,
@@ -406,10 +434,11 @@ export class SyncService {
       // isolation, this ensures no undetected concurrent modifications.
       const finalConflict = await this.detectConflict(userId, op, tx);
       if (finalConflict.hasConflict) {
-        const isConcurrent = finalConflict.reason?.includes('Concurrent');
-        const errorCode = isConcurrent
-          ? SYNC_ERROR_CODES.CONFLICT_CONCURRENT
-          : SYNC_ERROR_CODES.CONFLICT_SUPERSEDED;
+        const errorCode =
+          finalConflict.conflictType === 'concurrent' ||
+          finalConflict.conflictType === 'equal_different_client'
+            ? SYNC_ERROR_CODES.CONFLICT_CONCURRENT
+            : SYNC_ERROR_CODES.CONFLICT_SUPERSEDED;
         Logger.audit({
           event: 'OP_REJECTED',
           userId,
@@ -770,7 +799,9 @@ export class SyncService {
     }
 
     // Calculate approximate size of ops being deleted using SQL aggregate
-    // to avoid loading potentially large payloads into Node memory
+    // to avoid loading potentially large payloads into Node memory.
+    // NOTE: Column names match the Prisma `Operation` model's `@@map("operations")`
+    // and `@map(...)` annotations (see prisma/schema.prisma).
     const sizeResult = await prisma.$queryRaw<[{ total: bigint | null }]>`
       SELECT COALESCE(SUM(LENGTH(payload::text) + LENGTH(vector_clock::text)), 0) as total
       FROM operations WHERE user_id = ${userId} AND server_seq <= ${deleteUpToSeq}
@@ -842,8 +873,13 @@ export class SyncService {
     let deletedRestorePoints = 0;
     let totalDeletedOps = 0;
 
+    const MAX_CLEANUP_ITERATIONS = 50;
+    let iterations = 0;
+
     // Keep trying until we have enough space or hit minimum
-    while (true) {
+    while (iterations < MAX_CLEANUP_ITERATIONS) {
+      iterations++;
+
       // Check if we now have enough space
       const quotaCheck = await this.checkStorageQuota(userId, requiredBytes);
       if (quotaCheck.allowed) {
@@ -899,6 +935,17 @@ export class SyncService {
           `${restorePoints.length - 1} restore points remaining`,
       );
     }
+
+    // Exhausted max iterations without freeing enough space
+    Logger.warn(
+      `[user:${userId}] Storage cleanup exceeded max iterations (${MAX_CLEANUP_ITERATIONS})`,
+    );
+    return {
+      success: false,
+      freedBytes: totalFreedBytes,
+      deletedRestorePoints,
+      deletedOps: totalDeletedOps,
+    };
   }
 
   async deleteStaleDevices(beforeTime: number): Promise<number> {

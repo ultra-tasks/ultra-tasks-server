@@ -78,7 +78,7 @@ export type OpType = (typeof OP_TYPES)[number];
  * Validation rules:
  * - Maximum 50 entries (prevents DoS via huge clocks)
  * - Keys must be non-empty strings, max 255 characters
- * - Values must be non-negative integers within Number.MAX_SAFE_INTEGER
+ * - Values must be non-negative integers, capped at 100,000,000
  * - Invalid entries are removed (not rejected)
  */
 export const sanitizeVectorClock = (
@@ -119,9 +119,10 @@ export const sanitizeVectorClock = (
       typeof value !== 'number' ||
       !Number.isInteger(value) ||
       value < 0 ||
-      // JSON-parsed numbers lose precision before reaching MAX_SAFE_INTEGER,
-      // so this acts as a "no corrupt data" guard rather than a strict cap.
-      value > Number.MAX_SAFE_INTEGER
+      // Cap at 100M — impossibly large for normal use (would need ~1 op/second
+      // for 3+ years) but prevents an adversarial client from sending a huge
+      // counter that makes all other clocks LESS_THAN it.
+      value > 100_000_000
     ) {
       strippedCount++;
       continue; // Skip invalid values
