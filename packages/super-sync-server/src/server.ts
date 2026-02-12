@@ -133,6 +133,7 @@ export const createServer = (
             'Authorization',
             'Content-Type',
             'Content-Encoding',
+            'Content-Transfer-Encoding',
             'X-Expected-Rev',
             'X-Force-Overwrite',
             'X-Requested-With',

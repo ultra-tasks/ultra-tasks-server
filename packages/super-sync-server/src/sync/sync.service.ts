@@ -759,20 +759,13 @@ export class SyncService {
       return { deletedCount: 0, freedBytes: 0, success: false };
     }
 
-    // Calculate approximate size of ops being deleted
-    const opsToDelete = await prisma.operation.findMany({
-      where: {
-        userId,
-        serverSeq: { lte: deleteUpToSeq },
-      },
-      select: { payload: true, vectorClock: true },
-    });
-
-    const freedBytes = opsToDelete.reduce((sum, op) => {
-      const payloadSize = op.payload ? JSON.stringify(op.payload).length : 0;
-      const clockSize = op.vectorClock ? JSON.stringify(op.vectorClock).length : 0;
-      return sum + payloadSize + clockSize;
-    }, 0);
+    // Calculate approximate size of ops being deleted using SQL aggregate
+    // to avoid loading potentially large payloads into Node memory
+    const sizeResult = await prisma.$queryRaw<[{ total: bigint | null }]>`
+      SELECT COALESCE(SUM(LENGTH(payload::text) + LENGTH(vector_clock::text)), 0) as total
+      FROM operations WHERE user_id = ${userId} AND server_seq <= ${deleteUpToSeq}
+    `;
+    const freedBytes = Number(sizeResult[0]?.total ?? 0);
 
     // Delete the operations
     const result = await prisma.operation.deleteMany({

@@ -725,7 +725,7 @@ describe('Conflict Detection', () => {
       const result = await service.uploadOps(userId, clientA, [op1]);
       expect(result[0].accepted).toBe(true);
 
-      // Verify the clock was pruned to MAX_VECTOR_CLOCK_SIZE (30) before storage.
+      // Verify the clock was pruned to MAX_VECTOR_CLOCK_SIZE (20) before storage.
       // clientA ('client-a') is not in the clock, so only the MAX most active
       // clients are kept (the ones with highest counters).
       const ops = await service.getOpsSince(userId, 0);
@@ -767,7 +767,7 @@ describe('Conflict Detection', () => {
 
     it('should accept MAX+1 entry clock as GREATER_THAN when it dominates a MAX entry entity clock (regression: infinite loop fix)', async () => {
       // This is the core regression test for the infinite sync loop bug.
-      // Scenario: entity has MAX_VECTOR_CLOCK_SIZE (30) entries in its stored clock.
+      // Scenario: entity has MAX_VECTOR_CLOCK_SIZE (20) entries in its stored clock.
       // A client resolves the conflict by merging all entity clock IDs + its own ID,
       // producing MAX+1 entries. The server must compare BEFORE pruning,
       // so the MAX+1-entry clock is seen as GREATER_THAN the MAX-entry stored clock.
