@@ -333,6 +333,68 @@ describe('limitVectorClockSize then compareVectorClocks integration', () => {
   });
 });
 
+describe('limitVectorClockSize locale-independent sort edge cases', () => {
+  it('should sort case-sensitively by byte order (uppercase before lowercase)', () => {
+    // JavaScript's < and > operators compare by UTF-16 code unit values.
+    // Uppercase letters (A=65) come before lowercase (a=97) in byte order.
+    // This differs from localeCompare which may sort case-insensitively.
+    const clock: Record<string, number> = {};
+    // Mix uppercase and lowercase IDs, all with same counter
+    const ids = ['Alpha', 'alpha', 'Beta', 'beta', 'Gamma', 'gamma'];
+    for (const id of ids) {
+      clock[id] = 10;
+    }
+    // Add enough extra to trigger pruning
+    for (let i = 0; i < MAX_VECTOR_CLOCK_SIZE; i++) {
+      clock[`zzz_${i}`] = 10; // These sort last alphabetically
+    }
+
+    const result = limitVectorClockSize(clock);
+    expect(Object.keys(result).length).toBe(MAX_VECTOR_CLOCK_SIZE);
+
+    // Byte-order sort: uppercase letters come before lowercase
+    // So 'Alpha' < 'Beta' < 'Gamma' < 'alpha' < 'beta' < 'gamma' < 'zzz_*'
+    // The first MAX entries in sorted order should be kept, pruning the last ones
+    // All mixed-case IDs should be kept since they sort before 'zzz_*'
+    for (const id of ids) {
+      expect(result[id]).toBe(10);
+    }
+  });
+
+  it('should produce identical results across repeated invocations with mixed-case IDs', () => {
+    const clock: Record<string, number> = {};
+    // Create a mix of uppercase, lowercase, and numeric IDs all with same counter
+    const mixedIds = [
+      'clientA',
+      'ClientA',
+      'CLIENTA',
+      'client_a',
+      'clientB',
+      'ClientB',
+      'CLIENTB',
+      'client_b',
+    ];
+    for (const id of mixedIds) {
+      clock[id] = 5;
+    }
+    // Fill to exceed MAX
+    for (let i = 0; i < MAX_VECTOR_CLOCK_SIZE; i++) {
+      clock[`z_filler_${i.toString().padStart(3, '0')}`] = 5;
+    }
+
+    // Run multiple times — must always produce the same result
+    const results = [];
+    for (let i = 0; i < 5; i++) {
+      results.push(limitVectorClockSize(clock));
+    }
+
+    for (let i = 1; i < results.length; i++) {
+      expect(results[i]).toEqual(results[0]);
+    }
+    expect(Object.keys(results[0]).length).toBe(MAX_VECTOR_CLOCK_SIZE);
+  });
+});
+
 describe('mergeVectorClocks', () => {
   it('should merge by taking max of each key', () => {
     const a = { x: 3, y: 1 };
