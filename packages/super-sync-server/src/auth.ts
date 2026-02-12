@@ -98,8 +98,10 @@ export const replaceToken = async (
     return user.tokenVersion;
   });
 
+  // Use the shorter passkey expiry for replaced tokens — token replacement is a security
+  // action (compromised token), so a shorter lifetime is more conservative.
   const token = jwt.sign({ userId, email, tokenVersion: newTokenVersion }, JWT_SECRET, {
-    expiresIn: JWT_EXPIRY_MAGIC_LINK,
+    expiresIn: JWT_EXPIRY_PASSKEY,
   });
 
   Logger.info(`Token replaced for user ${userId} (new version: ${newTokenVersion})`);
