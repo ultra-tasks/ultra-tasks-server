@@ -32,11 +32,11 @@ export type VectorClockComparison = 'EQUAL' | 'LESS_THAN' | 'GREATER_THAN' | 'CO
  * Maximum number of entries in a vector clock.
  * Shared between client and server to ensure consistent pruning.
  *
- * At 6-char client IDs, a 30-entry clock is ~500 bytes — negligible bandwidth.
- * A user needs 31+ unique client IDs (reinstalls/new browsers) before pruning
+ * At 6-char client IDs, a 20-entry clock is ~333 bytes — negligible bandwidth.
+ * A user needs 21+ unique client IDs (reinstalls/new browsers) before pruning
  * triggers, which is extremely unlikely for a personal productivity app.
  */
-export const MAX_VECTOR_CLOCK_SIZE = 30;
+export const MAX_VECTOR_CLOCK_SIZE = 20;
 
 /**
  * Compare two vector clocks to determine their relationship.
@@ -45,7 +45,7 @@ export const MAX_VECTOR_CLOCK_SIZE = 30;
  * Both implementations import from this shared module to ensure consistency.
  *
  * Standard vector clock comparison: missing keys mean "genuinely zero".
- * With MAX_VECTOR_CLOCK_SIZE=30, pruning is extremely rare (needs 31+ unique
+ * With MAX_VECTOR_CLOCK_SIZE=20, pruning is extremely rare (needs 21+ unique
  * client IDs), so pruning-aware comparison is unnecessary.
  *
  * @param a First vector clock
