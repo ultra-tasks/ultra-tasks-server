@@ -208,6 +208,22 @@ describe('Magic Link Registration', () => {
         }),
       );
     });
+
+    it('should reject when verification resend cap is reached', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({
+        id: 1,
+        email: testEmail,
+        isVerified: 0,
+        verificationResendCount: 20,
+      });
+
+      await expect(registerWithMagicLink(testEmail, Date.now())).rejects.toThrow(
+        'Too many verification attempts',
+      );
+
+      expect(mockSendVerificationEmail).not.toHaveBeenCalled();
+      expect(mockPrisma.user.update).not.toHaveBeenCalled();
+    });
   });
 
   describe('Email failure cleanup', () => {

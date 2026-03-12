@@ -15,6 +15,7 @@ const MIN_JWT_SECRET_LENGTH = 32;
 export const JWT_EXPIRY = '365d';
 
 export const VERIFICATION_TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
+export const MAX_VERIFICATION_RESEND_COUNT = 20;
 const LOGIN_MAGIC_LINK_EXPIRY_MS = 15 * 60 * 1000; // 15 minutes
 
 export const getJwtSecret = (): string => {
@@ -294,6 +295,12 @@ export const registerWithMagicLink = async (
     const config = loadConfigFromEnv();
 
     if (existingUser) {
+      if (existingUser.verificationResendCount >= MAX_VERIFICATION_RESEND_COUNT) {
+        throw new Error(
+          'Too many verification attempts. Please try again later or contact support.',
+        );
+      }
+
       if (!config.testMode?.autoVerifyUsers) {
         // Send email BEFORE updating DB to avoid invalidating the old token on failure
         const emailSent = await sendVerificationEmail(normalizedEmail, verificationToken);

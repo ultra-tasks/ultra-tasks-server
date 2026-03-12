@@ -238,6 +238,7 @@ vi.mock('../src/db', () => {
 vi.mock('../src/auth', () => ({
   verifyToken: vi.fn().mockResolvedValue({ userId: 1, email: 'test@test.com' }),
   VERIFICATION_TOKEN_EXPIRY_MS: 24 * 60 * 60 * 1000,
+  MAX_VERIFICATION_RESEND_COUNT: 20,
 }));
 
 // Reset test data before each test
