@@ -16,11 +16,11 @@ import { randomBytes } from 'crypto';
 import { sendPasskeyRecoveryEmail } from './email';
 import { Prisma } from '@prisma/client';
 import { loadConfigFromEnv } from './config';
+import { VERIFICATION_TOKEN_EXPIRY_MS } from './auth';
 
 // Constants
 const CHALLENGE_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
 const RECOVERY_TOKEN_EXPIRY_MS = 60 * 60 * 1000; // 1 hour
-const VERIFICATION_TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 // WebAuthn configuration from environment
 const getWebAuthnConfig = (): { rpName: string; rpID: string; origin: string } => {
