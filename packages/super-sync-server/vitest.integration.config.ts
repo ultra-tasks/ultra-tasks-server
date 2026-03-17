@@ -5,5 +5,6 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     // No setupFiles — integration tests use a real database, not mocked Prisma
+    include: ['tests/integration/**/*.integration.spec.ts'],
   },
 });
