@@ -43,6 +43,11 @@ echo ""
 
 cd "$SERVER_DIR"
 
+# Pull latest code (scripts, docker-compose.yml, etc.)
+echo "==> Pulling latest code..."
+git pull --ff-only || { echo "WARNING: git pull failed — continuing with current files"; }
+echo ""
+
 # Load GHCR credentials from .env (for private images)
 if [ -f ".env" ]; then
     export $(grep -E '^(GHCR_USER|GHCR_TOKEN)=' ".env" 2>/dev/null | xargs)
