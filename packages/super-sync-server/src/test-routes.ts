@@ -59,7 +59,7 @@ export const testRoutes = async (fastify: FastifyInstance): Promise<void> => {
           userId = existingUser.id;
           tokenVersion = existingUser.tokenVersion ?? 0;
           Logger.info(
-            `[TEST] Returning existing user: ${email} (ID: ${userId}) - Clearing old data`,
+            `[TEST] Returning existing user (ID: ${userId}) - Clearing old data`,
           );
 
           // Clear old data for this user to ensure clean state.
@@ -85,7 +85,7 @@ export const testRoutes = async (fastify: FastifyInstance): Promise<void> => {
 
           userId = user.id;
           tokenVersion = 0;
-          Logger.info(`[TEST] Created test user: ${email} (ID: ${userId})`);
+          Logger.info(`[TEST] Created test user (ID: ${userId})`);
         }
 
         // Generate JWT token (include tokenVersion for consistency with auth.ts)

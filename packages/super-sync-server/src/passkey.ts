@@ -116,9 +116,8 @@ export const generateRegistrationOptions = async (
   storeChallenge(email, options.challenge);
 
   Logger.info(
-    `Registration options for ${email}: ${JSON.stringify({
+    `Registration options generated: ${JSON.stringify({
       rp: options.rp,
-      user: options.user,
       pubKeyCredParams: options.pubKeyCredParams,
       authenticatorSelection: options.authenticatorSelection,
       attestation: options.attestation,
@@ -152,7 +151,7 @@ export const verifyRegistration = async (
       requireUserVerification: false, // We use 'preferred', not 'required'
     });
   } catch (err) {
-    Logger.warn(`Passkey registration verification failed for ${email}: ${err}`);
+    Logger.warn(`Passkey registration verification failed: ${err}`);
     throw new Error('Passkey verification failed. Please try again.');
   }
 
@@ -166,9 +165,9 @@ export const verifyRegistration = async (
   // We need to decode it to get the actual raw credential ID bytes
   const credentialIdBase64url = Buffer.from(credentialInfo.id).toString('utf-8');
   const credentialIdRawBytes = Buffer.from(credentialIdBase64url, 'base64url');
-  Logger.info(`[DEBUG] Registration credentialId base64url: ${credentialIdBase64url}`);
-  Logger.info(
-    `[DEBUG] Registration credentialId raw bytes (hex): ${credentialIdRawBytes.toString('hex')}`,
+  Logger.debug(`Registration credentialId base64url: ${credentialIdBase64url}`);
+  Logger.debug(
+    `Registration credentialId raw bytes (hex): ${credentialIdRawBytes.toString('hex')}`,
   );
 
   const verificationToken = randomBytes(32).toString('hex');
@@ -244,7 +243,7 @@ export const verifyRegistration = async (
         },
       });
 
-      Logger.info(`Created new passkey user for ${email}`);
+      Logger.info(`Created new passkey user`);
     }
 
     // In TEST_MODE with autoVerifyUsers, skip email and auto-verify
@@ -258,7 +257,7 @@ export const verifyRegistration = async (
           verificationTokenExpiresAt: null,
         },
       });
-      Logger.info(`[TEST_MODE] Auto-verified passkey user: ${email}`);
+      Logger.info(`[TEST_MODE] Auto-verified passkey user`);
       return {
         message: 'Registration successful. Your account has been automatically verified.',
       };
@@ -275,12 +274,12 @@ export const verifyRegistration = async (
       });
       if (user && user.isVerified === 0) {
         await prisma.user.delete({ where: { id: user.id } });
-        Logger.info(`Cleaned up failed passkey registration for ${email}`);
+        Logger.info(`Cleaned up failed passkey registration (ID: ${user.id})`);
       }
       throw new Error('Failed to send verification email. Please try again later.');
     }
 
-    Logger.info(`Passkey registration initiated for ${email}`);
+    Logger.info(`Passkey registration initiated`);
     return {
       message: 'Registration successful. Please check your email to verify your account.',
     };
@@ -317,7 +316,9 @@ export const generateAuthenticationOptions = async (
 
   // Don't provide allowCredentials - let browser discover resident credentials
   // This works because we use residentKey: 'required' during registration
-  Logger.info(`Login for ${email}: using discoverable credentials (no allowCredentials)`);
+  Logger.info(
+    `Login (userId: ${user.id}): using discoverable credentials (no allowCredentials)`,
+  );
 
   const options = await webAuthnGenerateAuthentication({
     rpID,
@@ -328,7 +329,7 @@ export const generateAuthenticationOptions = async (
   storeChallenge(email, options.challenge);
 
   Logger.info(
-    `Generated passkey authentication options for ${email}: rpId=${options.rpId}, discoverable=true`,
+    `Generated passkey authentication options (userId: ${user.id}): rpId=${options.rpId}, discoverable=true`,
   );
   return options;
 };
@@ -371,7 +372,9 @@ export const verifyAuthentication = async (
 
   // Log if the email doesn't match (user selected a different account's passkey)
   if (user.email.toLowerCase() !== email.toLowerCase()) {
-    Logger.info(`User authenticated with passkey for ${user.email} but entered ${email}`);
+    Logger.info(
+      `User authenticated with passkey for a different account (userId: ${user.id})`,
+    );
   }
 
   let verification;
@@ -390,7 +393,9 @@ export const verifyAuthentication = async (
       },
     });
   } catch (err) {
-    Logger.warn(`Passkey authentication verification failed for ${email}: ${err}`);
+    Logger.warn(
+      `Passkey authentication verification failed (userId: ${user.id}): ${err}`,
+    );
     throw new Error('Invalid credentials');
   }
 

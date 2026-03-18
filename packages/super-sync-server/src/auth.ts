@@ -335,7 +335,7 @@ export const registerWithMagicLink = async (
         },
       });
 
-      Logger.info(`Created new magic-link user for ${normalizedEmail}`);
+      Logger.info(`Created new magic-link user`);
 
       if (!config.testMode?.autoVerifyUsers) {
         // Send verification email; clean up new user on failure
@@ -359,13 +359,13 @@ export const registerWithMagicLink = async (
           verificationTokenExpiresAt: null,
         },
       });
-      Logger.info(`[TEST_MODE] Auto-verified magic-link user: ${normalizedEmail}`);
+      Logger.info(`[TEST_MODE] Auto-verified magic-link user`);
       return {
         message: 'Registration successful. Your account has been automatically verified.',
       };
     }
 
-    Logger.info(`Magic-link registration initiated for ${normalizedEmail}`);
+    Logger.info(`Magic-link registration initiated`);
     return {
       message: 'Registration successful. Please check your email to verify your account.',
     };
