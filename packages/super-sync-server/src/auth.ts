@@ -1,5 +1,6 @@
 import { prisma } from './db';
 import * as jwt from 'jsonwebtoken';
+const { JsonWebTokenError, TokenExpiredError } = jwt;
 import { Logger } from './logger';
 import { randomBytes } from 'crypto';
 import { sendLoginMagicLinkEmail, sendVerificationEmail } from './email';
@@ -156,13 +157,20 @@ export const verifyToken = async (token: string): Promise<TokenVerificationResul
 
     return { valid: true, userId: payload.userId, email: payload.email };
   } catch (err) {
-    if (err instanceof Error && err.name === 'TokenExpiredError') {
+    if (err instanceof TokenExpiredError) {
       return {
         valid: false,
         reason: 'Token expired. Please log in again to get a new token.',
       };
     }
-    return { valid: false, reason: 'Invalid token' };
+    // Only treat actual JWT errors as "Invalid token" (NotBeforeError extends JsonWebTokenError).
+    // Database errors must propagate as 500s, not masquerade as auth failures.
+    if (err instanceof JsonWebTokenError) {
+      return { valid: false, reason: 'Invalid token' };
+    }
+    const errMsg = err instanceof Error ? `[${err.name}] ${err.message}` : 'non-Error value';
+    Logger.error(`Token verification failed due to unexpected error: ${errMsg}`);
+    throw err;
   }
 };
 
