@@ -108,8 +108,6 @@ services:
       - DOMAIN=${DOMAIN}
     networks:
       - internal
-    security_opt:
-      - no-new-privileges:true
     cap_drop:
       - ALL
     cap_add:
