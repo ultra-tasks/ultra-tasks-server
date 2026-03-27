@@ -22,10 +22,12 @@
     "clear-data": "ts-node scripts/clear-data.ts",
     "monitor": "node dist/scripts/monitor.js",
     "monitor:dev": "tsx scripts/monitor.ts",
-    "analyze-storage": "tsx scripts/analyze-storage.ts",
-    "monitor:all": "tsx scripts/run-all-monitoring.ts",
-    "monitor:all:quick": "tsx scripts/run-all-monitoring.ts --quick",
-    "monitor:all:save": "tsx scripts/run-all-monitoring.ts --save"
+    "analyze-storage": "node dist/scripts/analyze-storage.js",
+    "analyze-storage:dev": "tsx scripts/analyze-storage.ts",
+    "monitor:all": "node dist/scripts/run-all-monitoring.js",
+    "monitor:all:dev": "tsx scripts/run-all-monitoring.ts",
+    "monitor:all:quick": "node dist/scripts/run-all-monitoring.js --quick",
+    "monitor:all:save": "node dist/scripts/run-all-monitoring.js --save"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",
