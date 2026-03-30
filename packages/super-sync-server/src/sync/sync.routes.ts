@@ -5,6 +5,7 @@ import { promisify } from 'util';
 import { uuidv7 } from 'uuidv7';
 import { authenticate, getAuthUser } from '../middleware';
 import { getSyncService } from './sync.service';
+import { getWsConnectionService } from './services/websocket-connection.service';
 import { Logger } from '../logger';
 import { prisma } from '../db';
 import {
@@ -34,8 +35,7 @@ const createValidationErrorResponse = (
 };
 
 // Validation constants
-const CLIENT_ID_REGEX = /^[a-zA-Z0-9_-]+$/;
-const MAX_CLIENT_ID_LENGTH = 255;
+import { CLIENT_ID_REGEX, MAX_CLIENT_ID_LENGTH } from './sync.const';
 
 // Two-stage protection against zip bombs:
 // 1. Pre-check: Reject compressed data > limit (typical ratio ~10:1)
@@ -477,6 +477,11 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
           ...(hasMorePiggyback ? { hasMorePiggyback: true } : {}),
         };
 
+        // Notify other connected clients about new ops (fire-and-forget)
+        if (accepted > 0) {
+          getWsConnectionService().notifyNewOps(userId, clientId, latestSeq);
+        }
+
         return reply.send(response);
       } catch (err) {
         Logger.error(`Upload ops error: ${errorMessage(err)}`);
@@ -762,6 +767,11 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         }
 
         Logger.info(`Snapshot uploaded for user ${userId}, reason: ${reason}`);
+
+        // Notify other connected clients about snapshot upload (fire-and-forget)
+        if (result.accepted && result.serverSeq !== undefined) {
+          getWsConnectionService().notifyNewOps(userId, clientId, result.serverSeq);
+        }
 
         return reply.send({
           accepted: result.accepted,
