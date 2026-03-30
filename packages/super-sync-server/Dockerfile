@@ -50,9 +50,12 @@ COPY --from=builder --chown=supersync:nodejs /repo/packages/super-sync-server/pa
 COPY --from=builder --chown=supersync:nodejs /repo/packages/shared-schema/sp-shared-schema-*.tgz ./shared-schema.tgz
 
 # Install dependencies and generate Prisma client in single layer
+# Note: prisma CLI installed explicitly for runtime migrate deploy
+# IMPORTANT: prisma version must match @prisma/client in package.json
 RUN npm install ./shared-schema.tgz --ignore-scripts && \
     npm install --ignore-scripts --omit=dev && \
-    npx prisma@5.22.0 generate && \
+    npm install prisma@5.22.0 --ignore-scripts && \
+    npx prisma generate && \
     rm -f shared-schema.tgz && \
     npm cache clean --force
 
@@ -64,7 +67,7 @@ ENV NODE_ENV=production
 ENV PORT=1900
 ENV DATA_DIR=/app/data
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT}/health || exit 1
 
-CMD ["sh", "-c", "npx prisma@5.22.0 migrate deploy && node dist/src/index.js"]
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/src/index.js"]
