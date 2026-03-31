@@ -43,7 +43,7 @@ vi.mock('crypto', async () => {
 });
 
 // Provide Prisma namespace with PrismaClientKnownRequestError for instanceof checks
-vi.mock('@prisma/client', () => {
+vi.mock('../src/generated/prisma/client', () => {
   class PrismaClientKnownRequestError extends Error {
     code: string;
     constructor(message: string, { code }: { code: string }) {
@@ -67,7 +67,7 @@ vi.mock('../src/auth', async (importOriginal) => {
 // Import mocked modules to get references
 import { prisma } from '../src/db';
 import { sendVerificationEmail } from '../src/email';
-import { Prisma } from '@prisma/client';
+import { Prisma } from '../src/generated/prisma/client';
 
 // Import module under test
 import { registerWithMagicLink } from '../src/auth';

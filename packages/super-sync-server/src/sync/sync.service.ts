@@ -14,7 +14,7 @@ import {
 } from './sync.types';
 import { Logger } from '../logger';
 import { CURRENT_SCHEMA_VERSION } from '@sp/shared-schema';
-import { Prisma } from '@prisma/client';
+import { Prisma } from '../generated/prisma/client';
 import {
   ValidationService,
   ALLOWED_ENTITY_TYPES,

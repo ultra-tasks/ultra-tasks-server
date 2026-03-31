@@ -5,7 +5,7 @@ import { Logger } from './logger';
 import { randomBytes } from 'crypto';
 import { sendLoginMagicLinkEmail, sendVerificationEmail } from './email';
 import { loadConfigFromEnv } from './config';
-import { Prisma } from '@prisma/client';
+import { Prisma } from './generated/prisma/client';
 
 // Auth constants
 const MIN_JWT_SECRET_LENGTH = 32;
@@ -168,7 +168,8 @@ export const verifyToken = async (token: string): Promise<TokenVerificationResul
     if (err instanceof JsonWebTokenError) {
       return { valid: false, reason: 'Invalid token' };
     }
-    const errMsg = err instanceof Error ? `[${err.name}] ${err.message}` : 'non-Error value';
+    const errMsg =
+      err instanceof Error ? `[${err.name}] ${err.message}` : 'non-Error value';
     Logger.error(`Token verification failed due to unexpected error: ${errMsg}`);
     throw err;
   }

@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { uuidv7 } from 'uuidv7';
-import { Prisma } from '@prisma/client';
+import { Prisma } from '../src/generated/prisma/client';
 import { testState, resetTestState } from './sync.service.test-state';
 
 // Mock the database module with Prisma mocks
 vi.mock('../src/db', async () => {
   const { testState: state } = await import('./sync.service.test-state');
-  const { Prisma: PrismaModule } = await import('@prisma/client');
+  const { Prisma: PrismaModule } = await import('../src/generated/prisma/client');
 
   const createTxMock = () => ({
     operation: {

@@ -15,7 +15,8 @@
  *   DATABASE_URL=postgresql://... npx vitest run tests/integration/snapshot-vector-clock-sql.integration.spec.ts
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from '../../src/generated/prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
 import { VectorClock, MAX_VECTOR_CLOCK_SIZE } from '../../src/sync/sync.types';
 
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -81,7 +82,8 @@ describeWithDb('Snapshot Vector Clock SQL Aggregate (PostgreSQL)', () => {
   };
 
   beforeAll(async () => {
-    prisma = new PrismaClient({ datasources: { db: { url: DATABASE_URL } } });
+    const adapter = new PrismaPg({ connectionString: DATABASE_URL! });
+    prisma = new PrismaClient({ adapter });
     await prisma.$connect();
 
     // Create test user

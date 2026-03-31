@@ -14,7 +14,7 @@ import { prisma } from './db';
 import { Logger } from './logger';
 import { randomBytes } from 'crypto';
 import { sendPasskeyRecoveryEmail } from './email';
-import { Prisma } from '@prisma/client';
+import { Prisma } from './generated/prisma/client';
 import { loadConfigFromEnv } from './config';
 import { VERIFICATION_TOKEN_EXPIRY_MS, MAX_VERIFICATION_RESEND_COUNT } from './auth';
 
@@ -386,8 +386,8 @@ export const verifyAuthentication = async (
       expectedRPID: rpID,
       requireUserVerification: false, // We use 'preferred', not 'required'
       credential: {
-        id: passkey.credentialId.toString('base64url'),
-        publicKey: new Uint8Array(passkey.publicKey),
+        id: Buffer.from(passkey.credentialId).toString('base64url'),
+        publicKey: passkey.publicKey,
         counter: Number(passkey.counter),
         transports: passkey.transports ? JSON.parse(passkey.transports) : undefined,
       },

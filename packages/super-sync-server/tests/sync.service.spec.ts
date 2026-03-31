@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { uuidv7 } from 'uuidv7';
-import { Prisma } from '@prisma/client';
+import { Prisma } from '../src/generated/prisma/client';
 import { testState, resetTestState } from './sync.service.test-state';
 
 // Mock the database module with Prisma mocks
 vi.mock('../src/db', async () => {
   // Import testState from separate module to avoid circular import
   const { testState: state } = await import('./sync.service.test-state');
-  const { Prisma: PrismaModule } = await import('@prisma/client');
+  const { Prisma: PrismaModule } = await import('../src/generated/prisma/client');
 
   const createTxMock = () => ({
     operation: {
@@ -458,7 +458,9 @@ vi.mock('../src/db', async () => {
 
 // Mock auth module
 vi.mock('../src/auth', () => ({
-  verifyToken: vi.fn().mockResolvedValue({ valid: true, userId: 1, email: 'test@test.com' }),
+  verifyToken: vi
+    .fn()
+    .mockResolvedValue({ valid: true, userId: 1, email: 'test@test.com' }),
 }));
 
 // Import AFTER mocking

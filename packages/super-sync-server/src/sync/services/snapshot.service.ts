@@ -135,7 +135,7 @@ export class SnapshotService {
     await prisma.userSyncState.update({
       where: { userId },
       data: {
-        snapshotData: compressed,
+        snapshotData: new Uint8Array(compressed),
         lastSnapshotSeq: serverSeq,
         snapshotAt: BigInt(now),
         snapshotSchemaVersion: CURRENT_SCHEMA_VERSION,
@@ -290,7 +290,7 @@ export class SnapshotService {
           await tx.userSyncState.update({
             where: { userId },
             data: {
-              snapshotData: compressed,
+              snapshotData: new Uint8Array(compressed),
               lastSnapshotSeq: latestSeq,
               snapshotAt: BigInt(generatedAt),
               snapshotSchemaVersion: CURRENT_SCHEMA_VERSION,

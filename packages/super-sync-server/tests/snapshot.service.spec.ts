@@ -103,7 +103,7 @@ describe('SnapshotService', () => {
       expect(prisma.userSyncState.update).toHaveBeenCalledWith({
         where: { userId: 1 },
         data: {
-          snapshotData: expect.any(Buffer),
+          snapshotData: expect.any(Uint8Array),
           lastSnapshotSeq: 10,
           snapshotAt: BigInt(now),
           snapshotSchemaVersion: expect.any(Number),
