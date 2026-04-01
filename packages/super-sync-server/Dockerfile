@@ -47,7 +47,6 @@ COPY --from=builder --chown=supersync:nodejs /repo/packages/super-sync-server/pr
 COPY --from=builder --chown=supersync:nodejs /repo/packages/super-sync-server/scripts ./scripts
 COPY --from=builder --chown=supersync:nodejs /repo/packages/super-sync-server/src ./src
 COPY --from=builder --chown=supersync:nodejs /repo/packages/super-sync-server/package.json ./package.json
-COPY --from=builder --chown=supersync:nodejs /repo/packages/super-sync-server/prisma.config.ts ./prisma.config.ts
 COPY --from=builder --chown=supersync:nodejs /repo/packages/shared-schema/sp-shared-schema-*.tgz ./shared-schema.tgz
 
 # Install dependencies and generate Prisma client in single layer
@@ -55,7 +54,7 @@ COPY --from=builder --chown=supersync:nodejs /repo/packages/shared-schema/sp-sha
 # IMPORTANT: prisma version must match @prisma/client in package.json
 RUN npm install ./shared-schema.tgz --ignore-scripts && \
     npm install --ignore-scripts --omit=dev && \
-    npm install prisma@7.6.0 --ignore-scripts && \
+    npm install prisma@5.22.0 --ignore-scripts && \
     npx prisma generate && \
     rm -f shared-schema.tgz && \
     npm cache clean --force

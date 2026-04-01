@@ -6,7 +6,7 @@ import { Operation } from '../src/sync/sync.types';
 // Mock the database module with Prisma mocks
 vi.mock('../src/db', async () => {
   const { testState: state } = await import('./sync.service.test-state');
-  const { Prisma: PrismaModule } = await import('../src/generated/prisma/client');
+  const { Prisma: PrismaModule } = await import('@prisma/client');
 
   const createTxMock = () => ({
     operation: {
