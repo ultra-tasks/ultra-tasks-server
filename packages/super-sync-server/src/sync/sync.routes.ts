@@ -1,6 +1,11 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { uuidv7 } from 'uuidv7';
+import {
+  SuperSyncDownloadOpsQuerySchema,
+  SuperSyncUploadOpsRequestSchema,
+  SuperSyncUploadSnapshotRequestSchema,
+} from '@sp/shared-schema';
 import { authenticate, getAuthUser } from '../middleware';
 import { getSyncService } from './sync.service';
 import { getWsConnectionService } from './services/websocket-connection.service';
@@ -12,8 +17,6 @@ import {
   DownloadOpsResponse,
   SnapshotResponse,
   SyncStatusResponse,
-  DEFAULT_SYNC_CONFIG,
-  OP_TYPES,
   SYNC_ERROR_CODES,
 } from './sync.types';
 import {
@@ -34,9 +37,6 @@ const createValidationErrorResponse = (
   return { error: 'Validation failed', details: zodIssues };
 };
 
-// Validation constants
-import { CLIENT_ID_REGEX, MAX_CLIENT_ID_LENGTH } from './sync.const';
-
 // Two-stage protection against zip bombs:
 // 1. Pre-check: Reject compressed data > limit (typical ratio ~10:1)
 // 2. Post-check: Reject decompressed data > limit (catches edge cases)
@@ -47,76 +47,6 @@ import { CLIENT_ID_REGEX, MAX_CLIENT_ID_LENGTH } from './sync.const';
 const MAX_COMPRESSED_SIZE_OPS = 10 * 1024 * 1024; // 10MB for /ops
 const MAX_COMPRESSED_SIZE_SNAPSHOT = 30 * 1024 * 1024; // 30MB for /snapshot (matches bodyLimit)
 const MAX_DECOMPRESSED_SIZE = 100 * 1024 * 1024; // 100MB - catches malicious high-ratio compression
-
-// Zod Schemas
-const ClientIdSchema = z
-  .string()
-  .min(1)
-  .max(MAX_CLIENT_ID_LENGTH)
-  .regex(CLIENT_ID_REGEX, 'clientId must be alphanumeric with underscores/hyphens only');
-
-const OperationSchema = z.object({
-  id: z.string().min(1).max(255),
-  clientId: ClientIdSchema,
-  actionType: z.string().min(1).max(255),
-  opType: z.enum(OP_TYPES),
-  entityType: z.string().min(1).max(255),
-  entityId: z.string().max(255).optional(),
-  entityIds: z.array(z.string().max(255)).optional(), // For batch operations
-  payload: z.unknown(),
-  vectorClock: z.record(z.string(), z.number()),
-  timestamp: z.number(),
-  schemaVersion: z.number(),
-  isPayloadEncrypted: z.boolean().optional(), // True if payload is E2E encrypted
-  syncImportReason: z
-    .enum([
-      'PASSWORD_CHANGED',
-      'FILE_IMPORT',
-      'BACKUP_RESTORE',
-      'FORCE_UPLOAD',
-      'SERVER_MIGRATION',
-      'REPAIR',
-    ])
-    .optional(),
-});
-
-const UploadOpsSchema = z.object({
-  ops: z.array(OperationSchema).min(1).max(DEFAULT_SYNC_CONFIG.maxOpsPerUpload),
-  clientId: ClientIdSchema,
-  lastKnownServerSeq: z.number().optional(),
-  requestId: z.string().min(1).max(64).optional(), // For request deduplication
-  isCleanSlate: z.boolean().optional(), // If true, server deletes all user data before accepting ops
-});
-
-const DownloadOpsQuerySchema = z.object({
-  sinceSeq: z.coerce.number().int().min(0),
-  limit: z.coerce.number().int().min(1).max(1000).optional(),
-  excludeClient: ClientIdSchema.optional(),
-});
-
-const UploadSnapshotSchema = z.object({
-  state: z.unknown(),
-  clientId: ClientIdSchema,
-  reason: z.enum(['initial', 'recovery', 'migration']),
-  vectorClock: z.record(z.string(), z.number()),
-  schemaVersion: z.number().optional(),
-  isPayloadEncrypted: z.boolean().optional(),
-  syncImportReason: z
-    .enum([
-      'PASSWORD_CHANGED',
-      'FILE_IMPORT',
-      'BACKUP_RESTORE',
-      'FORCE_UPLOAD',
-      'SERVER_MIGRATION',
-      'REPAIR',
-    ])
-    .optional(),
-  // Client's operation ID - server MUST use this to prevent ID mismatch bugs
-  opId: z.string().uuid().optional(),
-  isCleanSlate: z.boolean().optional(),
-  // Client-provided opType for correct operation typing (optional for backward compat)
-  snapshotOpType: z.enum(['SYNC_IMPORT', 'BACKUP_IMPORT', 'REPAIR']).optional(),
-});
 
 // Error helper
 const errorMessage = (err: unknown): string =>
@@ -296,7 +226,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         }
 
         // Validate request body
-        const parseResult = UploadOpsSchema.safeParse(body);
+        const parseResult = SuperSyncUploadOpsRequestSchema.safeParse(body);
         if (!parseResult.success) {
           Logger.warn(
             `[user:${userId}] Upload validation failed`,
@@ -504,7 +434,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         const userId = getAuthUser(req).userId;
 
         // Validate query params
-        const parseResult = DownloadOpsQuerySchema.safeParse(req.query);
+        const parseResult = SuperSyncDownloadOpsQuerySchema.safeParse(req.query);
         if (!parseResult.success) {
           Logger.warn(
             `[user:${userId}] Download validation failed`,
@@ -640,7 +570,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         }
 
         // Validate request body
-        const parseResult = UploadSnapshotSchema.safeParse(body);
+        const parseResult = SuperSyncUploadSnapshotRequestSchema.safeParse(body);
         if (!parseResult.success) {
           Logger.warn(
             `[user:${userId}] Snapshot upload validation failed`,
