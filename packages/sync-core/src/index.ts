@@ -43,6 +43,18 @@ export type {
   SyncFilePrefixParamsOutput,
 } from './sync-file-prefix';
 
+// Gzip compression helpers.
+export {
+  compressWithGzip,
+  compressWithGzipToString,
+  decompressGzipFromString,
+  sanitizeBase64,
+  CompressionApiUnavailableError,
+  GzipCompressError,
+  GzipDecompressError,
+} from './compression';
+export type { GzipCompressionLogMessages, GzipCompressionOptions } from './compression';
+
 // Generic error helpers.
 export { extractErrorMessage } from './error.util';
 
