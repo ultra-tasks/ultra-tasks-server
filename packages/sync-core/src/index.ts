@@ -101,6 +101,7 @@ export {
   planDownloadFullStateUpload,
   planDownloadGapReset,
   planDownloadedDataEncryptionState,
+  planSnapshotHydration,
 } from './download-planning';
 export type {
   DownloadFullStateUploadPlan,
@@ -109,6 +110,9 @@ export type {
   PlanDownloadFullStateUploadOptions,
   PlanDownloadGapResetOptions,
   PlanDownloadedDataEncryptionStateOptions,
+  PlanSnapshotHydrationOptions,
+  SnapshotHydrationPlan,
+  SnapshotHydrationPlanReason,
 } from './download-planning';
 
 // Port contracts for app-side orchestration adapters.

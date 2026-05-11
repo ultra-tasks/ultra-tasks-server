@@ -3,6 +3,7 @@ import {
   planDownloadFullStateUpload,
   planDownloadGapReset,
   planDownloadedDataEncryptionState,
+  planSnapshotHydration,
 } from '../src/download-planning';
 
 describe('planDownloadGapReset', () => {
@@ -104,5 +105,83 @@ describe('planDownloadedDataEncryptionState', () => {
         sawEncryptedOp: false,
       }),
     ).toEqual({ serverHasOnlyUnencryptedData: false });
+  });
+});
+
+describe('planSnapshotHydration', () => {
+  it('skips hydration when the local clock dominates the snapshot clock', () => {
+    expect(
+      planSnapshotHydration({
+        localVectorClock: { local: 5, remote: 1 },
+        snapshotVectorClock: { remote: 1 },
+      }),
+    ).toEqual({
+      shouldSkipHydration: true,
+      reason: 'local-dominates-snapshot',
+      comparison: 'GREATER_THAN',
+    });
+  });
+
+  it('skips hydration when clocks are equal and non-empty', () => {
+    expect(
+      planSnapshotHydration({
+        localVectorClock: { remote: 1 },
+        snapshotVectorClock: { remote: 1 },
+      }),
+    ).toEqual({
+      shouldSkipHydration: true,
+      reason: 'same-clock-as-snapshot',
+      comparison: 'EQUAL',
+    });
+  });
+
+  it('does not skip hydration when the remote snapshot has newer data', () => {
+    expect(
+      planSnapshotHydration({
+        localVectorClock: { remote: 1 },
+        snapshotVectorClock: { remote: 2 },
+      }),
+    ).toEqual({
+      shouldSkipHydration: false,
+      reason: 'remote-has-newer-data',
+      comparison: 'LESS_THAN',
+    });
+  });
+
+  it('does not skip hydration when clocks are concurrent', () => {
+    expect(
+      planSnapshotHydration({
+        localVectorClock: { local: 1 },
+        snapshotVectorClock: { remote: 1 },
+      }),
+    ).toEqual({
+      shouldSkipHydration: false,
+      reason: 'concurrent-with-snapshot',
+      comparison: 'CONCURRENT',
+    });
+  });
+
+  it('does not skip hydration for an empty remote clock', () => {
+    expect(
+      planSnapshotHydration({
+        localVectorClock: { local: 1 },
+        snapshotVectorClock: {},
+      }),
+    ).toEqual({
+      shouldSkipHydration: false,
+      reason: 'empty-snapshot-clock',
+    });
+  });
+
+  it('does not skip hydration for a missing local clock', () => {
+    expect(
+      planSnapshotHydration({
+        localVectorClock: null,
+        snapshotVectorClock: { remote: 1 },
+      }),
+    ).toEqual({
+      shouldSkipHydration: false,
+      reason: 'missing-local-clock',
+    });
   });
 });

@@ -1,3 +1,6 @@
+import { compareVectorClocks } from './vector-clock';
+import type { VectorClock, VectorClockComparison } from './vector-clock';
+
 export interface PlanDownloadGapResetOptions {
   gapDetected?: boolean;
   hasResetForGap: boolean;
@@ -113,3 +116,83 @@ export const planDownloadedDataEncryptionState = ({
 } => ({
   serverHasOnlyUnencryptedData: sawAnyOps && !sawEncryptedOp,
 });
+
+export type SnapshotHydrationPlanReason =
+  | 'local-dominates-snapshot'
+  | 'same-clock-as-snapshot'
+  | 'missing-snapshot-clock'
+  | 'empty-snapshot-clock'
+  | 'missing-local-clock'
+  | 'empty-local-clock'
+  | 'remote-has-newer-data'
+  | 'concurrent-with-snapshot';
+
+export interface PlanSnapshotHydrationOptions {
+  localVectorClock?: VectorClock | null;
+  snapshotVectorClock?: VectorClock | null;
+}
+
+export interface SnapshotHydrationPlan {
+  shouldSkipHydration: boolean;
+  reason: SnapshotHydrationPlanReason;
+  comparison?: VectorClockComparison;
+}
+
+/**
+ * Plans whether a snapshot state can be ignored because local history already
+ * contains everything represented by the remote snapshot.
+ *
+ * Empty clocks deliberately do not skip hydration: legacy snapshots may carry
+ * real state without a populated vector clock.
+ */
+export const planSnapshotHydration = ({
+  localVectorClock,
+  snapshotVectorClock,
+}: PlanSnapshotHydrationOptions): SnapshotHydrationPlan => {
+  if (!snapshotVectorClock) {
+    return { shouldSkipHydration: false, reason: 'missing-snapshot-clock' };
+  }
+
+  if (isVectorClockEmpty(snapshotVectorClock)) {
+    return { shouldSkipHydration: false, reason: 'empty-snapshot-clock' };
+  }
+
+  if (!localVectorClock) {
+    return { shouldSkipHydration: false, reason: 'missing-local-clock' };
+  }
+
+  if (isVectorClockEmpty(localVectorClock)) {
+    return { shouldSkipHydration: false, reason: 'empty-local-clock' };
+  }
+
+  const comparison = compareVectorClocks(localVectorClock, snapshotVectorClock);
+  switch (comparison) {
+    case 'EQUAL':
+      return {
+        shouldSkipHydration: true,
+        reason: 'same-clock-as-snapshot',
+        comparison,
+      };
+    case 'GREATER_THAN':
+      return {
+        shouldSkipHydration: true,
+        reason: 'local-dominates-snapshot',
+        comparison,
+      };
+    case 'LESS_THAN':
+      return {
+        shouldSkipHydration: false,
+        reason: 'remote-has-newer-data',
+        comparison,
+      };
+    case 'CONCURRENT':
+      return {
+        shouldSkipHydration: false,
+        reason: 'concurrent-with-snapshot',
+        comparison,
+      };
+  }
+};
+
+const isVectorClockEmpty = (clock: VectorClock): boolean =>
+  Object.keys(clock).length === 0;
