@@ -7,7 +7,8 @@
 # This script:
 #   1. Validates Caddyfile syntax
 #   2. Pulls latest image from GHCR (or builds locally with --build)
-#   3. Restarts containers and waits for health checks
+#   3. Applies database migrations before replacing the app container
+#   4. Restarts containers and waits for health checks
 #
 # Options:
 #   --build    Build locally instead of pulling from registry
@@ -101,10 +102,36 @@ else
     docker compose $COMPOSE_FILES pull supersync
 fi
 
-# Start containers and wait for all health checks (up to 60s)
+# Run migrations before replacing the app container. This keeps the currently
+# running app available while online index builds run, and it fails the deploy
+# before the app is restarted if Prisma cannot apply a migration.
+POSTGRES_WAIT_TIMEOUT="${POSTGRES_WAIT_TIMEOUT:-60}"
+POSTGRES_SERVICE="${POSTGRES_SERVICE:-postgres}"
 echo ""
-echo "==> Starting containers..."
-if ! docker compose $COMPOSE_FILES up -d --wait --wait-timeout 60 2>&1; then
+if [ -n "$POSTGRES_SERVICE" ]; then
+    echo "==> Ensuring $POSTGRES_SERVICE is running (wait timeout: ${POSTGRES_WAIT_TIMEOUT}s)..."
+    docker compose $COMPOSE_FILES up -d --wait --wait-timeout "$POSTGRES_WAIT_TIMEOUT" "$POSTGRES_SERVICE"
+else
+    echo "==> Skipping compose database startup (POSTGRES_SERVICE is empty)..."
+fi
+
+echo ""
+echo "==> Applying database migrations before app restart..."
+docker compose $COMPOSE_FILES run --rm --no-deps supersync npx prisma migrate deploy
+
+# The migration above already ran while the old app was still serving. Disable
+# startup migrations for this compose update so the replacement app starts
+# immediately after image creation. Direct docker-compose users keep the image
+# default unless they also set RUN_MIGRATIONS_ON_STARTUP=false.
+export RUN_MIGRATIONS_ON_STARTUP="${RUN_MIGRATIONS_ON_STARTUP:-false}"
+
+# Start containers and wait for all health checks. Online index migrations should
+# already be applied, but the longer timeout still covers slow image starts and
+# no-op migration checks in the app container entrypoint.
+WAIT_TIMEOUT="${DEPLOY_WAIT_TIMEOUT:-900}"
+echo ""
+echo "==> Starting containers (wait timeout: ${WAIT_TIMEOUT}s)..."
+if ! docker compose $COMPOSE_FILES up -d --wait --wait-timeout "$WAIT_TIMEOUT" 2>&1; then
     echo ""
     echo "==> Container startup failed!"
 

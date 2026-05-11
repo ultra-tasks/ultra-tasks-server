@@ -192,18 +192,25 @@ vi.mock('../src/db', () => {
         }),
         update: vi.fn().mockResolvedValue({}),
       },
-      $queryRaw: vi.fn().mockImplementation(async () => {
-        // Compute total bytes from test operations (mirrors SQL aggregate).
-        // NOTE: This mock ignores WHERE clause params (e.g. server_seq filter),
-        // returning the total size of ALL operations — acceptable for unit tests.
-        let total = BigInt(0);
-        for (const op of testOperations.values()) {
-          const payloadSize = op.payload ? JSON.stringify(op.payload).length : 0;
-          const clockSize = op.vectorClock ? JSON.stringify(op.vectorClock).length : 0;
-          total += BigInt(payloadSize + clockSize);
-        }
-        return [{ total }];
-      }),
+      $queryRaw: vi
+        .fn()
+        .mockImplementation(async (_query, userIdArg, deleteUpToSeqArg) => {
+          // Compute total bytes from test operations that match the SQL WHERE params.
+          let total = BigInt(0);
+          for (const op of testOperations.values()) {
+            if (typeof userIdArg === 'number' && op.userId !== userIdArg) {
+              continue;
+            }
+            if (typeof deleteUpToSeqArg === 'number' && op.serverSeq > deleteUpToSeqArg) {
+              continue;
+            }
+
+            const payloadSize = op.payload ? JSON.stringify(op.payload).length : 0;
+            const clockSize = op.vectorClock ? JSON.stringify(op.vectorClock).length : 0;
+            total += BigInt(payloadSize + clockSize);
+          }
+          return [{ total }];
+        }),
     },
     initDb: vi.fn(),
     getDb: vi.fn(),
@@ -212,7 +219,9 @@ vi.mock('../src/db', () => {
 
 // Mock auth module
 vi.mock('../src/auth', () => ({
-  verifyToken: vi.fn().mockResolvedValue({ valid: true, userId: 1, email: 'test@test.com' }),
+  verifyToken: vi
+    .fn()
+    .mockResolvedValue({ valid: true, userId: 1, email: 'test@test.com' }),
 }));
 
 // Mock zlib for snapshot compression
@@ -336,6 +345,34 @@ describe('Storage Quota Cleanup', () => {
       expect(result.success).toBe(true);
       expect(result.deletedCount).toBe(3); // ops 1, 2, 3 (oldest restore point)
       expect(testOperations.size).toBe(4); // ops 4, 5, 6, 7 remain
+    });
+
+    it('should avoid materializing deleted JSON payloads as text', async () => {
+      const { initSyncService, getSyncService } =
+        await import('../src/sync/sync.service');
+      const { prisma } = await import('../src/db');
+      initSyncService();
+      const service = getSyncService();
+
+      createRestorePoint(clientId, userId);
+      createOp(clientId, userId);
+      createRestorePoint(clientId, userId);
+
+      await service.deleteOldestRestorePointAndOps(userId);
+
+      const [queryParts] = vi.mocked(prisma.$queryRaw).mock.calls[0] as unknown as [
+        TemplateStringsArray,
+        number,
+        number,
+      ];
+      const query = Array.from(queryParts).join('');
+
+      expect(query).toContain('pg_column_size(payload)');
+      expect(query).toContain('pg_column_size(vector_clock)');
+      expect(query).toMatch(/WHERE user_id =/);
+      expect(query).toMatch(/server_seq <=/);
+      expect(query).not.toContain('payload::text');
+      expect(query).not.toContain('vector_clock::text');
     });
 
     it('should keep single restore point but delete ops before it', async () => {
