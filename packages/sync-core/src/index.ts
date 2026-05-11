@@ -1,11 +1,5 @@
 // Operation log primitives — the generic, app-agnostic core of the sync engine.
-export {
-  OpType,
-  FULL_STATE_OP_TYPES,
-  isFullStateOpType,
-  isMultiEntityPayload,
-  extractActionPayload,
-} from './operation.types';
+export { OpType, isMultiEntityPayload, extractActionPayload } from './operation.types';
 export type {
   VectorClock,
   Operation,
@@ -34,6 +28,14 @@ export type {
   SyncImportFilterInvalidateReason,
   SyncImportFilterKeepReason,
 } from './sync-import-filter';
+
+// Full-state operation classification helper. Hosts supply their own op strings.
+export {
+  FULL_STATE_OP_TYPES,
+  createFullStateOpTypeHelpers,
+  isFullStateOpType,
+} from './full-state-op-types';
+export type { FullStateOpTypeHelpers } from './full-state-op-types';
 
 // LWW (Last-Writer-Wins) update action-type helpers — factory parameterized by
 // the host application's entity-type list, so the lib stays domain-agnostic.

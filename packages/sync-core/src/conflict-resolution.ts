@@ -24,7 +24,7 @@ export interface DeepEqualOptions {
 }
 
 export interface EntityFrontierContext {
-  localOpsForEntity: Pick<Operation, 'vectorClock'>[];
+  localOpsForEntity: Pick<Operation<string>, 'vectorClock'>[];
   appliedFrontier: VectorClock | undefined;
   snapshotVectorClock: VectorClock | undefined;
   snapshotEntityKeys: ReadonlySet<string> | undefined;
@@ -41,7 +41,7 @@ export interface ClockCorruptionAdjustmentOptions {
 }
 
 export interface LwwConflictResolutionPlan<
-  TConflict extends EntityConflict = EntityConflict,
+  TConflict extends EntityConflictLike<Operation<string>> = EntityConflict,
 > {
   conflict: TConflict;
   winner: LwwConflictResolutionWinner;
@@ -51,25 +51,29 @@ export interface LwwConflictResolutionPlan<
   remoteMaxTimestamp?: number;
 }
 
-export interface LwwConflictResolutionPlanningOptions {
-  isArchiveAction: (op: Operation) => boolean;
+export interface LwwConflictResolutionPlanningOptions<
+  TOperation extends Operation<string> = Operation,
+> {
+  isArchiveAction: (op: TOperation) => boolean;
   toEntityKey?: (entityType: string, entityId: string) => string;
 }
 
-export interface LocalDeleteRemoteUpdateConversionOptions {
+export interface LocalDeleteRemoteUpdateConversionOptions<
+  TOperation extends Operation<string> = Operation,
+> {
   payloadKey: string | ((entityType: string) => string);
   toLwwUpdateActionType: (entityType: string) => string;
   isSingletonEntityId?: (entityId: string) => boolean;
   onMissingBaseEntity?: (ctx: {
-    conflict: EntityConflict;
-    localDeleteOp: Operation | undefined;
-    remoteOp: Operation;
+    conflict: EntityConflictLike<TOperation>;
+    localDeleteOp: TOperation | undefined;
+    remoteOp: TOperation;
     localDeletePayloadKeys: string[] | undefined;
   }) => void;
 }
 
-export type EntityConflictLike<TOperation extends Operation> = Omit<
-  EntityConflict,
+export type EntityConflictLike<TOperation extends Operation<string>> = Omit<
+  EntityConflict<Operation<string>>,
   'localOps' | 'remoteOps'
 > & {
   localOps: TOperation[];
@@ -77,7 +81,7 @@ export type EntityConflictLike<TOperation extends Operation> = Omit<
 };
 
 export interface LwwResolvedConflict<
-  TOperation extends Operation = Operation,
+  TOperation extends Operation<string> = Operation,
   TConflict extends EntityConflictLike<TOperation> = EntityConflictLike<TOperation>,
 > {
   conflict: TConflict;
@@ -86,14 +90,16 @@ export interface LwwResolvedConflict<
 }
 
 export interface LwwResolutionPartitionOptions<
-  TOperation extends Operation,
+  TOperation extends Operation<string>,
   TConflict extends EntityConflictLike<TOperation> = EntityConflictLike<TOperation>,
 > {
   processRemoteWinnerOps?: (conflict: TConflict) => TOperation[];
   toEntityKey?: (entityType: string, entityId: string) => string;
 }
 
-export interface LwwResolutionPartitions<TOperation extends Operation = Operation> {
+export interface LwwResolutionPartitions<
+  TOperation extends Operation<string> = Operation,
+> {
   localWinsCount: number;
   remoteWinsCount: number;
   remoteWinsOps: TOperation[];
@@ -106,7 +112,7 @@ export interface LwwResolutionPartitions<TOperation extends Operation = Operatio
 
 const resolvePayloadKey = (
   entityType: string,
-  payloadKey: LocalDeleteRemoteUpdateConversionOptions['payloadKey'],
+  payloadKey: LocalDeleteRemoteUpdateConversionOptions<Operation<string>>['payloadKey'],
 ): string => (typeof payloadKey === 'function' ? payloadKey(entityType) : payloadKey);
 
 const getPayloadKeys = (payload: unknown): string[] | undefined => {
@@ -166,10 +172,10 @@ export const extractUpdateChanges = (
  * and singleton-id semantics so the core remains domain-agnostic.
  */
 export const convertLocalDeleteRemoteUpdatesToLww = <
-  TOperation extends Operation = Operation,
+  TOperation extends Operation<string> = Operation,
 >(
   conflict: EntityConflictLike<TOperation>,
-  options: LocalDeleteRemoteUpdateConversionOptions,
+  options: LocalDeleteRemoteUpdateConversionOptions<TOperation>,
 ): TOperation[] => {
   const localDeleteOp = conflict.localOps.find((op) => op.opType === OpType.Delete);
 
@@ -281,7 +287,7 @@ export const deepEqual = (
  * the same resulting state.
  */
 export const isIdenticalConflict = (
-  conflict: EntityConflict,
+  conflict: EntityConflict<Operation<string>>,
   logger: SyncLogger = NOOP_SYNC_LOGGER,
 ): boolean => {
   const { localOps, remoteOps } = conflict;
@@ -324,9 +330,9 @@ export const isIdenticalConflict = (
 /**
  * Suggests a conservative default conflict resolution for the UI/orchestrator.
  */
-export const suggestConflictResolution = (
-  localOps: Operation[],
-  remoteOps: Operation[],
+export const suggestConflictResolution = <TOperation extends Operation<string>>(
+  localOps: TOperation[],
+  remoteOps: TOperation[],
 ): ConflictResolutionSuggestion => {
   if (localOps.length === 0) return 'remote';
   if (remoteOps.length === 0) return 'local';
@@ -363,10 +369,11 @@ export const suggestConflictResolution = (
  * be created and which app-side factory should create it.
  */
 export const planLwwConflictResolutions = <
-  TConflict extends EntityConflict = EntityConflict,
+  TOperation extends Operation<string> = Operation,
+  TConflict extends EntityConflictLike<TOperation> = EntityConflictLike<TOperation>,
 >(
   conflicts: TConflict[],
-  options: LwwConflictResolutionPlanningOptions,
+  options: LwwConflictResolutionPlanningOptions<TOperation>,
 ): Array<LwwConflictResolutionPlan<TConflict>> => {
   const toEntityKey =
     options.toEntityKey ??
@@ -443,7 +450,7 @@ export const planLwwConflictResolutions = <
  * pending local ops are superseded.
  */
 export const partitionLwwResolutions = <
-  TOperation extends Operation = Operation,
+  TOperation extends Operation<string> = Operation,
   TConflict extends EntityConflictLike<TOperation> = EntityConflictLike<TOperation>,
   TResolution extends LwwResolvedConflict<TOperation, TConflict> = LwwResolvedConflict<
     TOperation,

@@ -8,15 +8,24 @@ export enum OpType {
   Delete = 'DEL',
   Move = 'MOV', // For list reordering
   Batch = 'BATCH', // For bulk operations (import, mass update)
-  /** Replaces entire app state from remote sync. All concurrent ops are discarded. */
+  /**
+   * Host-defined full-state compatibility string used by Super Productivity.
+   * Reusable core logic must receive full-state classification from the host.
+   */
   SyncImport = 'SYNC_IMPORT',
-  /** Replaces entire app state from backup file. All concurrent ops are discarded. */
+  /**
+   * Host-defined full-state compatibility string used by Super Productivity.
+   * Reusable core logic must receive full-state classification from the host.
+   */
   BackupImport = 'BACKUP_IMPORT',
-  /** Auto-repair operation containing full repaired state. */
+  /**
+   * Host-defined full-state compatibility string used by Super Productivity.
+   * Reusable core logic must receive full-state classification from the host.
+   */
   Repair = 'REPAIR',
 }
 
-export interface Operation {
+export interface Operation<TOpType extends string = OpType> {
   /**
    * Unique identifier for the operation.
    * Should be a UUID v7 (time-ordered) to allow for rough chronological sorting
@@ -36,7 +45,7 @@ export interface Operation {
    * High-level operation category (Create, Update, Delete, etc.).
    * Used for broad logic handling like persistence strategies or conflict resolution rules.
    */
-  opType: OpType;
+  opType: TOpType;
 
   // SCOPE
   /**
@@ -92,7 +101,7 @@ export interface Operation {
   schemaVersion: number;
 }
 
-export interface OperationLogEntry {
+export interface OperationLogEntry<TOperation extends Operation<string> = Operation> {
   /**
    * Local, monotonic auto-increment integer (IndexedDB primary key).
    * Strictly orders operations as they arrived or were generated on THIS specific device.
@@ -102,7 +111,7 @@ export interface OperationLogEntry {
   /**
    * The operation data itself (the synchronized part).
    */
-  op: Operation;
+  op: TOperation;
 
   /**
    * Local timestamp (epoch ms) indicating when this operation was written to the LOCAL database.
@@ -141,38 +150,19 @@ export interface OperationLogEntry {
   retryCount?: number;
 }
 
-export interface EntityConflict {
+export interface EntityConflict<TOperation extends Operation<string> = Operation> {
   entityType: string;
   entityId: string;
-  localOps: Operation[];
-  remoteOps: Operation[];
+  localOps: TOperation[];
+  remoteOps: TOperation[];
   suggestedResolution: 'local' | 'remote' | 'merge' | 'manual';
   mergedPayload?: unknown;
 }
 
-export interface ConflictResult {
-  nonConflicting: Operation[];
-  conflicts: EntityConflict[];
+export interface ConflictResult<TOperation extends Operation<string> = Operation> {
+  nonConflicting: TOperation[];
+  conflicts: EntityConflict<TOperation>[];
 }
-
-// =============================================================================
-// FULL-STATE OPERATION HELPERS
-// =============================================================================
-
-/**
- * OpTypes that contain full application state in their payload.
- */
-export const FULL_STATE_OP_TYPES = new Set<OpType>([
-  OpType.SyncImport,
-  OpType.BackupImport,
-  OpType.Repair,
-]);
-
-/**
- * Type guard to check if an operation is a full-state operation.
- */
-export const isFullStateOpType = (opType: OpType | string): boolean =>
-  FULL_STATE_OP_TYPES.has(opType as OpType);
 
 // =============================================================================
 // MULTI-ENTITY OPERATIONS
@@ -181,10 +171,10 @@ export const isFullStateOpType = (opType: OpType | string): boolean =>
 /**
  * Represents a single entity change within a multi-entity operation.
  */
-export interface EntityChange {
+export interface EntityChange<TOpType extends string = OpType> {
   entityType: string;
   entityId: string;
-  opType: OpType;
+  opType: TOpType;
   /**
    * The actual changes:
    * - For Create: Full entity object
@@ -198,9 +188,9 @@ export interface EntityChange {
  * Payload wrapper for multi-entity operations.
  * Contains the original action payload plus all entity changes computed from state diff.
  */
-export interface MultiEntityPayload {
+export interface MultiEntityPayload<TOpType extends string = OpType> {
   actionPayload: Record<string, unknown>;
-  entityChanges: EntityChange[];
+  entityChanges: EntityChange<TOpType>[];
 }
 
 /**
