@@ -25,6 +25,16 @@ export {
 } from './vector-clock';
 export type { VectorClockComparison } from './vector-clock';
 
+// Full-state import clean-slate vector-clock decisions.
+export { classifyOpAgainstSyncImport } from './sync-import-filter';
+export type {
+  SyncImportFilterClockSource,
+  SyncImportFilterDecision,
+  SyncImportFilterDecisionReason,
+  SyncImportFilterInvalidateReason,
+  SyncImportFilterKeepReason,
+} from './sync-import-filter';
+
 // LWW (Last-Writer-Wins) update action-type helpers — factory parameterized by
 // the host application's entity-type list, so the lib stays domain-agnostic.
 export { createLwwUpdateActionTypeHelpers } from './lww-update-action-types';
