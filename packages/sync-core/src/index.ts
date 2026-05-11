@@ -33,6 +33,36 @@ export type { LwwUpdateActionTypeHelpers } from './lww-update-action-types';
 // Apply-operation result and option types.
 export type { ApplyOperationsResult, ApplyOperationsOptions } from './apply.types';
 
+// Conflict-resolution helpers.
+export {
+  adjustForClockCorruption,
+  buildEntityFrontier,
+  convertLocalDeleteRemoteUpdatesToLww,
+  deepEqual,
+  extractEntityFromPayload,
+  extractUpdateChanges,
+  isIdenticalConflict,
+  partitionLwwResolutions,
+  planLwwConflictResolutions,
+  suggestConflictResolution,
+} from './conflict-resolution';
+export type {
+  ClockCorruptionAdjustmentOptions,
+  ConflictResolutionSuggestion,
+  DeepEqualOptions,
+  EntityConflictLike,
+  EntityFrontierContext,
+  LocalDeleteRemoteUpdateConversionOptions,
+  LwwConflictResolutionPlan,
+  LwwConflictResolutionPlanningOptions,
+  LwwConflictResolutionReason,
+  LwwConflictResolutionWinner,
+  LwwLocalWinOperationKind,
+  LwwResolutionPartitionOptions,
+  LwwResolutionPartitions,
+  LwwResolvedConflict,
+} from './conflict-resolution';
+
 // Entity-registry contracts.
 export {
   getEntityConfig,
