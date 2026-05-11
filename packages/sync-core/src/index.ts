@@ -29,6 +29,23 @@ export type {
   SyncImportFilterKeepReason,
 } from './sync-import-filter';
 
+// Host-configured sync file prefix helpers.
+export {
+  createSyncFilePrefixHelpers,
+  SyncFilePrefixError,
+  SyncFilePrefixVersionError,
+} from './sync-file-prefix';
+export type {
+  SyncFilePrefixConfig,
+  SyncFilePrefixHelpers,
+  SyncFilePrefixInvalidPrefixDetails,
+  SyncFilePrefixParams,
+  SyncFilePrefixParamsOutput,
+} from './sync-file-prefix';
+
+// Generic error helpers.
+export { extractErrorMessage } from './error.util';
+
 // Full-state operation classification helper. Hosts supply their own op strings.
 export {
   FULL_STATE_OP_TYPES,
