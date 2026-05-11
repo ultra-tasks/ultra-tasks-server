@@ -1,10 +1,6 @@
-/**
- * Vector clock data structure.
- * Maps client IDs to their respective monotonically-increasing clock values.
- *
- * Defined locally so the lib has no dependency on application-specific schema.
- */
-export type VectorClock = Record<string, number>;
+import type { VectorClock } from './vector-clock';
+
+export type { VectorClock } from './vector-clock';
 
 export enum OpType {
   Create = 'CRT',

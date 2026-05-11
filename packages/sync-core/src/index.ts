@@ -16,6 +16,15 @@ export type {
   MultiEntityPayload,
 } from './operation.types';
 
+// Vector-clock algorithms — single source of truth for client/server parity.
+export {
+  compareVectorClocks,
+  mergeVectorClocks,
+  limitVectorClockSize,
+  MAX_VECTOR_CLOCK_SIZE,
+} from './vector-clock';
+export type { VectorClockComparison } from './vector-clock';
+
 // LWW (Last-Writer-Wins) update action-type helpers — factory parameterized by
 // the host application's entity-type list, so the lib stays domain-agnostic.
 export { createLwwUpdateActionTypeHelpers } from './lww-update-action-types';

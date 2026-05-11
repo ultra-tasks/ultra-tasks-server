@@ -7,6 +7,7 @@ RUN apk add --no-cache openssl libc6-compat
 
 # Root package + lock (for workspace install)
 COPY package.json package-lock.json ./
+COPY packages/sync-core/package.json ./packages/sync-core/
 COPY packages/shared-schema/package.json ./packages/shared-schema/
 COPY packages/super-sync-server/package.json ./packages/super-sync-server/
 
@@ -15,10 +16,15 @@ COPY packages/super-sync-server/package.json ./packages/super-sync-server/
 RUN npm ci --ignore-scripts
 
 # Copy source code
+COPY packages/sync-core/ ./packages/sync-core/
 COPY packages/shared-schema/ ./packages/shared-schema/
 COPY packages/super-sync-server/ ./packages/super-sync-server/
 
-# Build shared-schema
+# Build sync-core, then shared-schema
+WORKDIR /repo/packages/sync-core
+RUN npm run build
+RUN npm pack
+
 WORKDIR /repo/packages/shared-schema
 RUN npm run build
 # Pack shared-schema to tgz for installation in production
@@ -47,16 +53,17 @@ COPY --from=builder --chown=supersync:nodejs /repo/packages/super-sync-server/pr
 COPY --from=builder --chown=supersync:nodejs /repo/packages/super-sync-server/scripts ./scripts
 COPY --from=builder --chown=supersync:nodejs /repo/packages/super-sync-server/src ./src
 COPY --from=builder --chown=supersync:nodejs /repo/packages/super-sync-server/package.json ./package.json
+COPY --from=builder --chown=supersync:nodejs /repo/packages/sync-core/sp-sync-core-*.tgz ./sync-core.tgz
 COPY --from=builder --chown=supersync:nodejs /repo/packages/shared-schema/sp-shared-schema-*.tgz ./shared-schema.tgz
 
 # Install dependencies and generate Prisma client in single layer
 # Note: prisma CLI installed explicitly for runtime migrate deploy
 # IMPORTANT: prisma version must match @prisma/client in package.json
-RUN npm install ./shared-schema.tgz --ignore-scripts && \
+RUN npm install ./sync-core.tgz ./shared-schema.tgz --ignore-scripts && \
     npm install --ignore-scripts --omit=dev && \
     npm install prisma@5.22.0 --ignore-scripts && \
     npx prisma generate && \
-    rm -f shared-schema.tgz && \
+    rm -f sync-core.tgz shared-schema.tgz && \
     npm cache clean --force
 
 USER supersync

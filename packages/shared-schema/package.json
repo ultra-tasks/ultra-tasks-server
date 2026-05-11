@@ -18,6 +18,7 @@
     }
   },
   "dependencies": {
+    "@sp/sync-core": "*",
     "zod": "^4.4.3"
   },
   "scripts": {
