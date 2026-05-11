@@ -121,6 +121,10 @@ export class SyncService {
         entityType: op.entityType,
         entityId,
       },
+      select: {
+        clientId: true,
+        vectorClock: true,
+      },
       orderBy: {
         serverSeq: 'desc',
       },
@@ -186,6 +190,28 @@ export class SyncService {
       reason: `Unknown vector clock comparison result for ${op.entityType}:${entityId}`,
       existingClock,
     };
+  }
+
+  private isSameDuplicateOperation(
+    existingOp: {
+      userId: number;
+      clientId: string;
+      actionType: string;
+      opType: string;
+      entityType: string;
+      entityId: string | null;
+    },
+    userId: number,
+    op: Operation,
+  ): boolean {
+    return (
+      existingOp.userId === userId &&
+      existingOp.clientId === op.clientId &&
+      existingOp.actionType === op.actionType &&
+      existingOp.opType === op.opType &&
+      existingOp.entityType === op.entityType &&
+      existingOp.entityId === (op.entityId ?? null)
+    );
   }
 
   // === Upload Operations ===
@@ -303,6 +329,8 @@ export class SyncService {
         errorMessage.includes('40001') ||
         errorMessage.includes('40P01') ||
         errorMessage.toLowerCase().includes('serialization') ||
+        errorMessage.toLowerCase().includes('could not serialize') ||
+        errorMessage.toLowerCase().includes('serialize access') ||
         errorMessage.toLowerCase().includes('deadlock');
 
       // Check if this is a timeout error (common for large payloads)
@@ -345,27 +373,63 @@ export class SyncService {
     now: number,
     tx: Prisma.TransactionClient,
   ): Promise<UploadResult> {
-    try {
-      // Clamp future timestamps instead of rejecting them (prevents silent data loss)
-      const maxAllowedTimestamp = now + this.config.maxClockDriftMs;
-      if (op.timestamp > maxAllowedTimestamp) {
-        const originalTimestamp = op.timestamp;
-        op.timestamp = maxAllowedTimestamp;
-        Logger.audit({
-          event: 'TIMESTAMP_CLAMPED',
-          userId,
-          clientId,
-          opId: op.id,
-          entityType: op.entityType,
-          originalTimestamp,
-          clampedTo: maxAllowedTimestamp,
-          driftMs: originalTimestamp - now,
-        });
-      }
+    // Clamp future timestamps instead of rejecting them (prevents silent data loss)
+    const maxAllowedTimestamp = now + this.config.maxClockDriftMs;
+    if (op.timestamp > maxAllowedTimestamp) {
+      const originalTimestamp = op.timestamp;
+      op.timestamp = maxAllowedTimestamp;
+      Logger.audit({
+        event: 'TIMESTAMP_CLAMPED',
+        userId,
+        clientId,
+        opId: op.id,
+        entityType: op.entityType,
+        originalTimestamp,
+        clampedTo: maxAllowedTimestamp,
+        driftMs: originalTimestamp - now,
+      });
+    }
 
-      // Validate operation (including clientId match)
-      const validation = this.validationService.validateOp(op, clientId);
-      if (!validation.valid) {
+    // Validate operation (including clientId match)
+    const validation = this.validationService.validateOp(op, clientId);
+    if (!validation.valid) {
+      Logger.audit({
+        event: 'OP_REJECTED',
+        userId,
+        clientId,
+        opId: op.id,
+        entityType: op.entityType,
+        entityId: op.entityId,
+        errorCode: validation.errorCode,
+        reason: validation.error,
+        opType: op.opType,
+      });
+      return {
+        opId: op.id,
+        accepted: false,
+        error: validation.error,
+        errorCode: validation.errorCode,
+      };
+    }
+
+    // Check for duplicate operation before conflict checks and sequence allocation.
+    // This avoids expensive conflict work on retries and prevents rejected duplicates
+    // from advancing lastSeq.
+    const existingOp = await tx.operation.findUnique({
+      where: { id: op.id },
+      select: {
+        id: true,
+        userId: true,
+        clientId: true,
+        actionType: true,
+        opType: true,
+        entityType: true,
+        entityId: true,
+      },
+    });
+
+    if (existingOp) {
+      if (!this.isSameDuplicateOperation(existingOp, userId, op)) {
         Logger.audit({
           event: 'OP_REJECTED',
           userId,
@@ -373,133 +437,127 @@ export class SyncService {
           opId: op.id,
           entityType: op.entityType,
           entityId: op.entityId,
-          errorCode: validation.errorCode,
-          reason: validation.error,
+          errorCode: SYNC_ERROR_CODES.INVALID_OP_ID,
+          reason: 'Operation ID already belongs to a different operation',
           opType: op.opType,
         });
         return {
           opId: op.id,
           accepted: false,
-          error: validation.error,
-          errorCode: validation.errorCode,
+          error: 'Operation ID already belongs to a different operation',
+          errorCode: SYNC_ERROR_CODES.INVALID_OP_ID,
         };
       }
 
-      // Check for conflicts with existing operations
-      const conflict = await this.detectConflict(userId, op, tx);
-      if (conflict.hasConflict) {
-        const errorCode =
-          conflict.conflictType === 'concurrent' ||
-          conflict.conflictType === 'equal_different_client'
-            ? SYNC_ERROR_CODES.CONFLICT_CONCURRENT
-            : SYNC_ERROR_CODES.CONFLICT_SUPERSEDED;
-        Logger.audit({
-          event: 'OP_REJECTED',
-          userId,
-          clientId,
-          opId: op.id,
-          entityType: op.entityType,
-          entityId: op.entityId,
-          errorCode,
-          reason: conflict.reason,
-          opType: op.opType,
-        });
-        return {
-          opId: op.id,
-          accepted: false,
-          error: conflict.reason,
-          errorCode,
-          existingClock: conflict.existingClock,
-        };
-      }
+      Logger.audit({
+        event: 'OP_REJECTED',
+        userId,
+        clientId,
+        opId: op.id,
+        entityType: op.entityType,
+        entityId: op.entityId,
+        errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
+        reason: 'Duplicate operation ID (pre-check)',
+        opType: op.opType,
+      });
+      return {
+        opId: op.id,
+        accepted: false,
+        error: 'Duplicate operation ID',
+        errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
+      };
+    }
 
-      // Get next sequence number
-      const updatedState = await tx.userSyncState.update({
+    // Check for conflicts with existing operations
+    const conflict = await this.detectConflict(userId, op, tx);
+    if (conflict.hasConflict) {
+      const errorCode =
+        conflict.conflictType === 'concurrent' ||
+        conflict.conflictType === 'equal_different_client'
+          ? SYNC_ERROR_CODES.CONFLICT_CONCURRENT
+          : SYNC_ERROR_CODES.CONFLICT_SUPERSEDED;
+      Logger.audit({
+        event: 'OP_REJECTED',
+        userId,
+        clientId,
+        opId: op.id,
+        entityType: op.entityType,
+        entityId: op.entityId,
+        errorCode,
+        reason: conflict.reason,
+        opType: op.opType,
+      });
+      return {
+        opId: op.id,
+        accepted: false,
+        error: conflict.reason,
+        errorCode,
+        existingClock: conflict.existingClock,
+      };
+    }
+
+    // Get next sequence number
+    const updatedState = await tx.userSyncState.update({
+      where: { userId },
+      data: { lastSeq: { increment: 1 } },
+    });
+    const serverSeq = updatedState.lastSeq;
+
+    // FIX 1.5: Re-check for conflicts after sequence allocation.
+    // This catches races where another request inserted an operation for the same
+    // entity between our initial conflict check and now. Combined with REPEATABLE_READ
+    // isolation, this ensures no undetected concurrent modifications.
+    const finalConflict = await this.detectConflict(userId, op, tx);
+    if (finalConflict.hasConflict) {
+      await tx.userSyncState.update({
         where: { userId },
-        data: { lastSeq: { increment: 1 } },
-      });
-      const serverSeq = updatedState.lastSeq;
-
-      // FIX 1.5: Re-check for conflicts after sequence allocation.
-      // This catches races where another request inserted an operation for the same
-      // entity between our initial conflict check and now. Combined with REPEATABLE_READ
-      // isolation, this ensures no undetected concurrent modifications.
-      const finalConflict = await this.detectConflict(userId, op, tx);
-      if (finalConflict.hasConflict) {
-        const errorCode =
-          finalConflict.conflictType === 'concurrent' ||
-          finalConflict.conflictType === 'equal_different_client'
-            ? SYNC_ERROR_CODES.CONFLICT_CONCURRENT
-            : SYNC_ERROR_CODES.CONFLICT_SUPERSEDED;
-        Logger.audit({
-          event: 'OP_REJECTED',
-          userId,
-          clientId,
-          opId: op.id,
-          entityType: op.entityType,
-          entityId: op.entityId,
-          errorCode,
-          reason: `[RACE] ${finalConflict.reason}`,
-          opType: op.opType,
-        });
-        return {
-          opId: op.id,
-          accepted: false,
-          error: finalConflict.reason,
-          errorCode,
-          existingClock: finalConflict.existingClock,
-        };
-      }
-
-      // FIX: Check for duplicate operation BEFORE attempting insert.
-      // If we let the insert fail with P2002 (unique constraint), PostgreSQL aborts the
-      // entire transaction, causing all subsequent operations in the batch to fail with
-      // error code 25P02 ("transaction is aborted"). By checking first, we avoid this
-      // and can properly return DUPLICATE_OPERATION for just this op while continuing
-      // to process the rest of the batch.
-      const existingOp = await tx.operation.findUnique({
-        where: { id: op.id },
-        select: { id: true }, // Only need to check existence
+        data: { lastSeq: { decrement: 1 } },
       });
 
-      if (existingOp) {
-        Logger.audit({
-          event: 'OP_REJECTED',
-          userId,
-          clientId,
-          opId: op.id,
-          entityType: op.entityType,
-          entityId: op.entityId,
-          errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
-          reason: 'Duplicate operation ID (pre-check)',
-          opType: op.opType,
-        });
-        return {
-          opId: op.id,
-          accepted: false,
-          error: 'Duplicate operation ID',
-          errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
-        };
-      }
+      const errorCode =
+        finalConflict.conflictType === 'concurrent' ||
+        finalConflict.conflictType === 'equal_different_client'
+          ? SYNC_ERROR_CODES.CONFLICT_CONCURRENT
+          : SYNC_ERROR_CODES.CONFLICT_SUPERSEDED;
+      Logger.audit({
+        event: 'OP_REJECTED',
+        userId,
+        clientId,
+        opId: op.id,
+        entityType: op.entityType,
+        entityId: op.entityId,
+        errorCode,
+        reason: `[RACE] ${finalConflict.reason}`,
+        opType: op.opType,
+      });
+      return {
+        opId: op.id,
+        accepted: false,
+        error: finalConflict.reason,
+        errorCode,
+        existingClock: finalConflict.existingClock,
+      };
+    }
 
-      // Prune vector clock AFTER conflict detection but BEFORE storage.
-      // Moved from ValidationService to here so that the full (unpruned) clock is used
-      // for conflict comparison. This prevents false CONCURRENT results when the client
-      // builds a merged clock with MAX+1 entries during conflict resolution (all entity
-      // clock IDs + its own client ID). Pruning before comparison would drop an entity
-      // clock ID, causing the comparison to return CONCURRENT instead of GREATER_THAN,
-      // leading to an infinite rejection loop.
-      const beforeSize = Object.keys(op.vectorClock).length;
-      op.vectorClock = limitVectorClockSize(op.vectorClock, [op.clientId]);
-      const afterSize = Object.keys(op.vectorClock).length;
-      if (afterSize < beforeSize) {
-        Logger.debug(
-          `[client:${op.clientId}] Vector clock pruned from ${beforeSize} to ${afterSize} before storage`,
-        );
-      }
+    // Prune vector clock AFTER conflict detection but BEFORE storage.
+    // Moved from ValidationService to here so that the full (unpruned) clock is used
+    // for conflict comparison. This prevents false CONCURRENT results when the client
+    // builds a merged clock with MAX+1 entries during conflict resolution (all entity
+    // clock IDs + its own client ID). Pruning before comparison would drop an entity
+    // clock ID, causing the comparison to return CONCURRENT instead of GREATER_THAN,
+    // leading to an infinite rejection loop.
+    const beforeSize = Object.keys(op.vectorClock).length;
+    op.vectorClock = limitVectorClockSize(op.vectorClock, [op.clientId]);
+    const afterSize = Object.keys(op.vectorClock).length;
+    if (afterSize < beforeSize) {
+      Logger.debug(
+        `[client:${op.clientId}] Vector clock pruned from ${beforeSize} to ${afterSize} before storage`,
+      );
+    }
 
-      await tx.operation.create({
-        data: {
+    const createResult = await tx.operation.createMany({
+      data: [
+        {
           id: op.id,
           userId,
           clientId,
@@ -516,20 +574,39 @@ export class SyncService {
           isPayloadEncrypted: op.isPayloadEncrypted ?? false,
           syncImportReason: op.syncImportReason ?? null,
         },
+      ],
+      skipDuplicates: true,
+    });
+
+    // A concurrent retry can pass the duplicate pre-check and then lose the
+    // insert race. `createMany(..., skipDuplicates)` maps that to count=0
+    // instead of aborting the PostgreSQL transaction with P2002/25P02.
+    if (createResult.count === 0) {
+      const duplicateOp = await tx.operation.findUnique({
+        where: { id: op.id },
+        select: {
+          id: true,
+          userId: true,
+          clientId: true,
+          actionType: true,
+          opType: true,
+          entityType: true,
+          entityId: true,
+        },
       });
 
-      return {
-        opId: op.id,
-        accepted: true,
-        serverSeq,
-      };
-    } catch (err: unknown) {
-      // Duplicate ID - fallback in case of race condition between check and insert.
-      // This should be rare now that we pre-check, but kept for safety.
-      if (
-        err instanceof Prisma.PrismaClientKnownRequestError &&
-        err.code === 'P2002' // Unique constraint violation
-      ) {
+      if (!duplicateOp) {
+        throw new Error(
+          `Operation insert skipped by non-id unique constraint (userId=${userId}, opId=${op.id}, serverSeq=${serverSeq})`,
+        );
+      }
+
+      await tx.userSyncState.update({
+        where: { userId },
+        data: { lastSeq: { decrement: 1 } },
+      });
+
+      if (!this.isSameDuplicateOperation(duplicateOp, userId, op)) {
         Logger.audit({
           event: 'OP_REJECTED',
           userId,
@@ -537,20 +614,42 @@ export class SyncService {
           opId: op.id,
           entityType: op.entityType,
           entityId: op.entityId,
-          errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
-          reason: 'Duplicate operation ID (race)',
+          errorCode: SYNC_ERROR_CODES.INVALID_OP_ID,
+          reason: 'Operation ID already belongs to a different operation',
           opType: op.opType,
         });
         return {
           opId: op.id,
           accepted: false,
-          error: 'Duplicate operation ID',
-          errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
+          error: 'Operation ID already belongs to a different operation',
+          errorCode: SYNC_ERROR_CODES.INVALID_OP_ID,
         };
       }
-      // Re-throw unexpected errors to trigger transaction rollback
-      throw err;
+
+      Logger.audit({
+        event: 'OP_REJECTED',
+        userId,
+        clientId,
+        opId: op.id,
+        entityType: op.entityType,
+        entityId: op.entityId,
+        errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
+        reason: 'Duplicate operation ID (insert race)',
+        opType: op.opType,
+      });
+      return {
+        opId: op.id,
+        accepted: false,
+        error: 'Duplicate operation ID',
+        errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
+      };
     }
+
+    return {
+      opId: op.id,
+      accepted: true,
+      serverSeq,
+    };
   }
 
   // === Download Operations ===
@@ -796,7 +895,7 @@ export class SyncService {
     // NOTE: Column names match the Prisma `Operation` model's `@@map("operations")`
     // and `@map(...)` annotations (see prisma/schema.prisma).
     const sizeResult = await prisma.$queryRaw<[{ total: bigint | null }]>`
-      SELECT COALESCE(SUM(LENGTH(payload::text) + LENGTH(vector_clock::text)), 0) as total
+      SELECT COALESCE(SUM(pg_column_size(payload) + pg_column_size(vector_clock)), 0) as total
       FROM operations WHERE user_id = ${userId} AND server_seq <= ${deleteUpToSeq}
     `;
     const freedBytes = Number(sizeResult[0]?.total ?? 0);

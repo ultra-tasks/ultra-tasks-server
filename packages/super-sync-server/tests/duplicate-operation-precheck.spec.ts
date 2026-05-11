@@ -11,6 +11,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SyncService } from '../src/sync/sync.service';
 import { SYNC_ERROR_CODES } from '../src/sync/sync.types';
+import { prisma } from '../src/db';
 
 // Test data for creating mock operations
 const createTestOp = (overrides: Record<string, any> = {}) => ({
@@ -36,24 +37,47 @@ describe('Duplicate Operation Pre-check', () => {
 
   describe('uploadOps with duplicate operation', () => {
     it('should return DUPLICATE_OPERATION error without aborting batch', async () => {
-      // Scenario: Upload 3 ops where first is a duplicate
-      // Expected: First op gets DUPLICATE_OPERATION, other two succeed
+      const existingOp = createTestOp({
+        id: 'dup-op-1',
+        entityId: 'task-1',
+        vectorClock: { 'client-1': 1 },
+      });
+      await syncService.uploadOps(1, 'client-1', [existingOp]);
+
       const ops = [
-        createTestOp({ id: 'dup-op-1', entityId: 'task-1' }),
-        createTestOp({ id: 'new-op-2', entityId: 'task-2' }),
-        createTestOp({ id: 'new-op-3', entityId: 'task-3' }),
+        createTestOp({
+          id: 'dup-op-1',
+          entityId: 'task-1',
+          vectorClock: { 'client-1': 1 },
+        }),
+        createTestOp({
+          id: 'new-op-2',
+          entityId: 'task-2',
+          vectorClock: { 'client-1': 2 },
+        }),
+        createTestOp({
+          id: 'new-op-3',
+          entityId: 'task-3',
+          vectorClock: { 'client-1': 3 },
+        }),
       ];
 
-      // The mock in setup.ts handles this - it will simulate the pre-check
-      // by allowing us to set up existing operations
       const results = await syncService.uploadOps(1, 'client-1', ops);
 
-      // All 3 should have results (not all INTERNAL_ERROR due to transaction abort)
       expect(results).toHaveLength(3);
-
-      // At minimum, ops 2 and 3 should succeed (they're not duplicates)
-      const successCount = results.filter((r) => r.accepted).length;
-      expect(successCount).toBeGreaterThanOrEqual(2);
+      expect(results[0]).toMatchObject({
+        accepted: false,
+        errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
+      });
+      expect(results[0].serverSeq).toBeUndefined();
+      expect(results[1]).toMatchObject({
+        accepted: true,
+        serverSeq: 2,
+      });
+      expect(results[2]).toMatchObject({
+        accepted: true,
+        serverSeq: 3,
+      });
     });
 
     it('should detect duplicate operation via pre-check and return proper error code', async () => {
@@ -72,6 +96,40 @@ describe('Duplicate Operation Pre-check', () => {
       expect(duplicateResult[0].error).toContain('Duplicate');
     });
 
+    it('should not advance server sequence for duplicate retries', async () => {
+      const originalOp = createTestOp({
+        id: 'seq-original',
+        entityId: 'task-seq-original',
+        vectorClock: { 'client-1': 1 },
+      });
+
+      const firstResult = await syncService.uploadOps(1, 'client-1', [originalOp]);
+      expect(firstResult[0]).toMatchObject({
+        accepted: true,
+        serverSeq: 1,
+      });
+
+      const duplicateResult = await syncService.uploadOps(1, 'client-1', [originalOp]);
+      expect(duplicateResult[0]).toMatchObject({
+        accepted: false,
+        errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
+      });
+      expect(duplicateResult[0].serverSeq).toBeUndefined();
+
+      const nextResult = await syncService.uploadOps(1, 'client-1', [
+        createTestOp({
+          id: 'seq-next',
+          entityId: 'task-seq-next',
+          vectorClock: { 'client-1': 2 },
+        }),
+      ]);
+
+      expect(nextResult[0]).toMatchObject({
+        accepted: true,
+        serverSeq: 2,
+      });
+    });
+
     it('should not abort transaction when duplicate is in the middle of batch', async () => {
       // Upload first op to make it a "duplicate" for later
       const existingOp = createTestOp({ id: 'existing-op', entityId: 'task-existing' });
@@ -79,25 +137,330 @@ describe('Duplicate Operation Pre-check', () => {
 
       // Now upload batch where middle op is a duplicate
       const batchOps = [
-        createTestOp({ id: 'new-op-1', entityId: 'task-1' }),
-        createTestOp({ id: 'existing-op', entityId: 'task-existing' }), // Duplicate!
-        createTestOp({ id: 'new-op-3', entityId: 'task-3' }),
+        createTestOp({
+          id: 'new-op-1',
+          entityId: 'task-1',
+          vectorClock: { 'client-1': 2 },
+        }),
+        createTestOp({
+          id: 'existing-op',
+          entityId: 'task-existing',
+          vectorClock: { 'client-1': 1 },
+        }), // Duplicate!
+        createTestOp({
+          id: 'new-op-3',
+          entityId: 'task-3',
+          vectorClock: { 'client-1': 3 },
+        }),
       ];
 
       const results = await syncService.uploadOps(1, 'client-1', batchOps);
 
-      // Check each result individually
       expect(results).toHaveLength(3);
+      expect(results[0]).toMatchObject({
+        accepted: true,
+        serverSeq: 2,
+      });
+      expect(results[1]).toMatchObject({
+        accepted: false,
+        errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
+      });
+      expect(results[1].serverSeq).toBeUndefined();
+      expect(results[2]).toMatchObject({
+        accepted: true,
+        serverSeq: 3,
+      });
+    });
 
-      // First op should succeed (not a duplicate)
-      expect(results[0].accepted).toBe(true);
+    it('should prefer duplicate rejection over conflicts for older duplicate retries', async () => {
+      const olderOp = createTestOp({
+        id: 'older-op',
+        entityId: 'task-same',
+        vectorClock: { 'client-1': 1 },
+      });
+      const newerOp = createTestOp({
+        id: 'newer-op',
+        entityId: 'task-same',
+        vectorClock: { 'client-1': 2 },
+      });
 
-      // Second op should fail with DUPLICATE_OPERATION
-      expect(results[1].accepted).toBe(false);
-      expect(results[1].errorCode).toBe(SYNC_ERROR_CODES.DUPLICATE_OPERATION);
+      await syncService.uploadOps(1, 'client-1', [olderOp, newerOp]);
 
-      // Third op should succeed (transaction NOT aborted by duplicate)
-      expect(results[2].accepted).toBe(true);
+      const results = await syncService.uploadOps(1, 'client-1', [olderOp]);
+
+      expect(results[0]).toMatchObject({
+        accepted: false,
+        errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
+      });
+      expect(results[0].serverSeq).toBeUndefined();
+    });
+
+    it('should not treat another user operation with the same ID as duplicate success', async () => {
+      await syncService.uploadOps(1, 'client-1', [
+        createTestOp({
+          id: 'cross-user-collision',
+          clientId: 'client-1',
+          entityId: 'task-user-1',
+          vectorClock: { 'client-1': 1 },
+        }),
+      ]);
+
+      const collisionResult = await syncService.uploadOps(2, 'client-2', [
+        createTestOp({
+          id: 'cross-user-collision',
+          clientId: 'client-2',
+          entityId: 'task-user-2',
+          vectorClock: { 'client-2': 1 },
+        }),
+      ]);
+
+      expect(collisionResult[0]).toMatchObject({
+        accepted: false,
+        errorCode: SYNC_ERROR_CODES.INVALID_OP_ID,
+      });
+      expect(collisionResult[0].errorCode).not.toBe(SYNC_ERROR_CODES.DUPLICATE_OPERATION);
+      expect(collisionResult[0].serverSeq).toBeUndefined();
+
+      const nextResult = await syncService.uploadOps(2, 'client-2', [
+        createTestOp({
+          id: 'user-2-next',
+          clientId: 'client-2',
+          entityId: 'task-user-2-next',
+          vectorClock: { 'client-2': 2 },
+        }),
+      ]);
+
+      expect(nextResult[0]).toMatchObject({
+        accepted: true,
+        serverSeq: 1,
+      });
+    });
+
+    it('should handle duplicate insert races without aborting the transaction', async () => {
+      const tx = {
+        operation: {
+          deleteMany: vi.fn(),
+          findUnique: vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({
+            id: 'race-op',
+            userId: 1,
+            clientId: 'client-1',
+            actionType: '[Test] Action',
+            opType: 'UPD',
+            entityType: 'TASK',
+            entityId: 'task-race',
+          }),
+          findFirst: vi.fn().mockResolvedValue(null),
+          createMany: vi.fn().mockResolvedValue({ count: 0 }),
+        },
+        userSyncState: {
+          upsert: vi.fn().mockResolvedValue({ userId: 1, lastSeq: 0 }),
+          update: vi
+            .fn()
+            .mockResolvedValueOnce({ userId: 1, lastSeq: 1 })
+            .mockResolvedValueOnce({ userId: 1, lastSeq: 0 }),
+        },
+        syncDevice: {
+          upsert: vi.fn().mockResolvedValue({}),
+          deleteMany: vi.fn(),
+        },
+        user: {
+          update: vi.fn(),
+        },
+      };
+
+      vi.mocked(prisma.$transaction).mockImplementationOnce(async (callback: any) =>
+        callback(tx),
+      );
+
+      const results = await syncService.uploadOps(1, 'client-1', [
+        createTestOp({ id: 'race-op', entityId: 'task-race' }),
+      ]);
+
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({
+        accepted: false,
+        errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
+      });
+      expect(results[0].serverSeq).toBeUndefined();
+      expect(tx.operation.createMany).toHaveBeenCalledWith(
+        expect.objectContaining({ skipDuplicates: true }),
+      );
+      expect(tx.userSyncState.update).toHaveBeenNthCalledWith(1, {
+        where: { userId: 1 },
+        data: { lastSeq: { increment: 1 } },
+      });
+      expect(tx.userSyncState.update).toHaveBeenNthCalledWith(2, {
+        where: { userId: 1 },
+        data: { lastSeq: { decrement: 1 } },
+      });
+      expect(tx.syncDevice.upsert).toHaveBeenCalled();
+    });
+
+    it('should reject insert-race ID collisions instead of marking them synced', async () => {
+      const tx = {
+        operation: {
+          deleteMany: vi.fn(),
+          findUnique: vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({
+            id: 'collision-race-op',
+            userId: 2,
+            clientId: 'client-2',
+            actionType: '[Test] Action',
+            opType: 'UPD',
+            entityType: 'TASK',
+            entityId: 'task-other-user',
+          }),
+          findFirst: vi.fn().mockResolvedValue(null),
+          createMany: vi.fn().mockResolvedValue({ count: 0 }),
+        },
+        userSyncState: {
+          upsert: vi.fn().mockResolvedValue({ userId: 1, lastSeq: 0 }),
+          update: vi
+            .fn()
+            .mockResolvedValueOnce({ userId: 1, lastSeq: 1 })
+            .mockResolvedValueOnce({ userId: 1, lastSeq: 0 }),
+        },
+        syncDevice: {
+          upsert: vi.fn().mockResolvedValue({}),
+          deleteMany: vi.fn(),
+        },
+        user: {
+          update: vi.fn(),
+        },
+      };
+
+      vi.mocked(prisma.$transaction).mockImplementationOnce(async (callback: any) =>
+        callback(tx),
+      );
+
+      const results = await syncService.uploadOps(1, 'client-1', [
+        createTestOp({ id: 'collision-race-op', entityId: 'task-race' }),
+      ]);
+
+      expect(results[0]).toMatchObject({
+        accepted: false,
+        errorCode: SYNC_ERROR_CODES.INVALID_OP_ID,
+      });
+      expect(results[0].errorCode).not.toBe(SYNC_ERROR_CODES.DUPLICATE_OPERATION);
+      expect(tx.userSyncState.update).toHaveBeenNthCalledWith(2, {
+        where: { userId: 1 },
+        data: { lastSeq: { decrement: 1 } },
+      });
+      expect(tx.syncDevice.upsert).toHaveBeenCalled();
+    });
+
+    it('should not report non-id insert skips as duplicate operations', async () => {
+      const tx = {
+        operation: {
+          deleteMany: vi.fn(),
+          findUnique: vi.fn().mockResolvedValue(null),
+          findFirst: vi.fn().mockResolvedValue(null),
+          createMany: vi.fn().mockResolvedValue({ count: 0 }),
+        },
+        userSyncState: {
+          upsert: vi.fn().mockResolvedValue({ userId: 1, lastSeq: 0 }),
+          update: vi.fn().mockResolvedValue({ userId: 1, lastSeq: 1 }),
+        },
+        syncDevice: {
+          upsert: vi.fn().mockResolvedValue({}),
+          deleteMany: vi.fn(),
+        },
+        user: {
+          update: vi.fn(),
+        },
+      };
+
+      vi.mocked(prisma.$transaction).mockImplementationOnce(async (callback: any) =>
+        callback(tx),
+      );
+
+      const results = await syncService.uploadOps(1, 'client-1', [
+        createTestOp({ id: 'seq-conflict-op', entityId: 'task-seq-conflict' }),
+      ]);
+
+      expect(results[0]).toMatchObject({
+        accepted: false,
+        errorCode: SYNC_ERROR_CODES.INTERNAL_ERROR,
+      });
+      expect(results[0].error).toContain('non-id unique constraint');
+      expect(tx.userSyncState.update).toHaveBeenCalledTimes(1);
+      expect(tx.syncDevice.upsert).not.toHaveBeenCalled();
+    });
+
+    it('should classify PostgreSQL repeatable-read serialization failures as retryable', async () => {
+      vi.mocked(prisma.$transaction).mockRejectedValueOnce(
+        new Error('could not serialize access due to concurrent update'),
+      );
+
+      const results = await syncService.uploadOps(1, 'client-1', [
+        createTestOp({ id: 'serialization-op', entityId: 'task-serialization' }),
+      ]);
+
+      expect(results[0]).toMatchObject({
+        accepted: false,
+        errorCode: SYNC_ERROR_CODES.INTERNAL_ERROR,
+      });
+      expect(results[0].error).toContain('Concurrent transaction conflict');
+    });
+
+    it('should roll back sequence allocation when final conflict check rejects', async () => {
+      const tx = {
+        operation: {
+          deleteMany: vi.fn(),
+          findUnique: vi.fn().mockResolvedValue(null),
+          findFirst: vi
+            .fn()
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce({
+              clientId: 'client-2',
+              vectorClock: { 'client-2': 1 },
+            }),
+          createMany: vi.fn(),
+        },
+        userSyncState: {
+          upsert: vi.fn().mockResolvedValue({ userId: 1, lastSeq: 0 }),
+          update: vi
+            .fn()
+            .mockResolvedValueOnce({ userId: 1, lastSeq: 1 })
+            .mockResolvedValueOnce({ userId: 1, lastSeq: 0 }),
+        },
+        syncDevice: {
+          upsert: vi.fn().mockResolvedValue({}),
+          deleteMany: vi.fn(),
+        },
+        user: {
+          update: vi.fn(),
+        },
+      };
+
+      vi.mocked(prisma.$transaction).mockImplementationOnce(async (callback: any) =>
+        callback(tx),
+      );
+
+      const results = await syncService.uploadOps(1, 'client-1', [
+        createTestOp({
+          id: 'final-conflict-op',
+          entityId: 'task-final-conflict',
+          vectorClock: { 'client-1': 1 },
+        }),
+      ]);
+
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({
+        accepted: false,
+        errorCode: SYNC_ERROR_CODES.CONFLICT_CONCURRENT,
+        existingClock: { 'client-2': 1 },
+      });
+      expect(results[0].serverSeq).toBeUndefined();
+      expect(tx.operation.createMany).not.toHaveBeenCalled();
+      expect(tx.userSyncState.update).toHaveBeenNthCalledWith(1, {
+        where: { userId: 1 },
+        data: { lastSeq: { increment: 1 } },
+      });
+      expect(tx.userSyncState.update).toHaveBeenNthCalledWith(2, {
+        where: { userId: 1 },
+        data: { lastSeq: { decrement: 1 } },
+      });
+      expect(tx.syncDevice.upsert).toHaveBeenCalled();
     });
   });
 

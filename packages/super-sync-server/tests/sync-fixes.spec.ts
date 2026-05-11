@@ -19,6 +19,27 @@ let requestCache: Map<string, any>;
 
 // Mock the database module with Prisma mocks
 vi.mock('../src/db', () => {
+  const applySelect = (op: any, select?: Record<string, boolean>) => {
+    if (!op || !select) {
+      return op;
+    }
+
+    return Object.fromEntries(
+      Object.entries(select)
+        .filter(([, shouldSelect]) => shouldSelect)
+        .map(([key]) => [key, op[key]]),
+    );
+  };
+
+  const hasUniqueConflict = (row: any) =>
+    Array.from(testOperations.values()).some(
+      (op) =>
+        op.id === row.id ||
+        (op.userId === row.userId &&
+          row.serverSeq !== undefined &&
+          op.serverSeq === row.serverSeq),
+    );
+
   return {
     prisma: {
       $transaction: vi.fn().mockImplementation(async (callback: any) => {
@@ -34,10 +55,37 @@ vi.mock('../src/db', () => {
               testOperations.set(args.data.id, op);
               return op;
             }),
+            createMany: vi.fn().mockImplementation(async (args: any) => {
+              const rows = Array.isArray(args.data) ? args.data : [args.data];
+              let count = 0;
+
+              for (const row of rows) {
+                if (hasUniqueConflict(row)) {
+                  if (args.skipDuplicates) {
+                    continue;
+                  }
+                  throw new Error('Unique constraint failed');
+                }
+
+                if (row.serverSeq === undefined) {
+                  serverSeqCounter++;
+                }
+                testOperations.set(row.id, {
+                  ...row,
+                  serverSeq: row.serverSeq ?? serverSeqCounter,
+                  receivedAt: row.receivedAt ?? BigInt(Date.now()),
+                });
+                count++;
+              }
+
+              return { count };
+            }),
             findFirst: vi.fn().mockImplementation(async (args: any) => {
               // Find by ID
               if (args.where?.id) {
-                return testOperations.get(args.where.id) || null;
+                return (
+                  applySelect(testOperations.get(args.where.id), args.select) || null
+                );
               }
               // Find full-state operation
               if (args.where?.opType?.in) {
@@ -46,7 +94,7 @@ vi.mock('../src/db', () => {
                     args.where.opType.in.includes(op.opType) &&
                     args.where.userId === op.userId
                   ) {
-                    return op;
+                    return applySelect(op, args.select);
                   }
                 }
               }
@@ -76,7 +124,9 @@ vi.mock('../src/db', () => {
             aggregate: vi.fn().mockResolvedValue({ _min: { serverSeq: 1 } }),
             findUnique: vi.fn().mockImplementation(async (args: any) => {
               if (args.where?.id) {
-                return testOperations.get(args.where.id) || null;
+                return (
+                  applySelect(testOperations.get(args.where.id), args.select) || null
+                );
               }
               return null;
             }),
@@ -84,7 +134,14 @@ vi.mock('../src/db', () => {
           userSyncState: {
             findUnique: vi.fn().mockResolvedValue({ lastSeq: serverSeqCounter }),
             upsert: vi.fn().mockResolvedValue({}),
-            update: vi.fn().mockResolvedValue({}),
+            update: vi.fn().mockImplementation(async (args: any) => {
+              if (args.data?.lastSeq?.increment !== undefined) {
+                serverSeqCounter += args.data.lastSeq.increment;
+              } else if (args.data?.lastSeq?.decrement !== undefined) {
+                serverSeqCounter -= args.data.lastSeq.decrement;
+              }
+              return { lastSeq: serverSeqCounter };
+            }),
           },
           syncDevice: {
             upsert: vi.fn().mockResolvedValue({}),
@@ -117,7 +174,7 @@ vi.mock('../src/db', () => {
         aggregate: vi.fn().mockResolvedValue({ _min: { serverSeq: 1 } }),
         findUnique: vi.fn().mockImplementation(async (args: any) => {
           if (args.where?.id) {
-            return testOperations.get(args.where.id) || null;
+            return applySelect(testOperations.get(args.where.id), args.select) || null;
           }
           return null;
         }),

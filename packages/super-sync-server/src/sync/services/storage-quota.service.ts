@@ -24,9 +24,11 @@ export class StorageQuotaService {
     snapshotBytes: number;
     totalBytes: number;
   }> {
-    // Use raw SQL for efficient aggregation of JSON payload sizes
+    // Use PostgreSQL's binary JSONB size. Casting payloads to text here forces
+    // PostgreSQL to materialize every user payload and can make small uploads wait
+    // behind a full historical payload scan.
     const opsResult = await prisma.$queryRaw<[{ total: bigint | null }]>`
-      SELECT COALESCE(SUM(LENGTH(payload::text) + LENGTH(vector_clock::text)), 0) as total
+      SELECT COALESCE(SUM(pg_column_size(payload) + pg_column_size(vector_clock)), 0) as total
       FROM operations WHERE user_id = ${userId}
     `;
 
@@ -37,11 +39,12 @@ export class StorageQuotaService {
 
     const operationsBytes = Number(opsResult[0]?.total ?? 0);
     const snapshotBytes = snapshotResult?.snapshotData?.length ?? 0;
+    const totalBytes = operationsBytes + snapshotBytes;
 
     return {
       operationsBytes,
       snapshotBytes,
-      totalBytes: operationsBytes + snapshotBytes,
+      totalBytes,
     };
   }
 

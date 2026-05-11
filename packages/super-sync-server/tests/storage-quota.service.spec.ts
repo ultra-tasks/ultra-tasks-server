@@ -68,6 +68,26 @@ describe('StorageQuotaService', () => {
         totalBytes: 1000,
       });
     });
+
+    it('should avoid materializing JSON payloads as text', async () => {
+      vi.mocked(prisma.$queryRaw).mockResolvedValue([{ total: BigInt(1000) }]);
+      vi.mocked(prisma.userSyncState.findUnique).mockResolvedValue({
+        snapshotData: null,
+      } as any);
+
+      await service.calculateStorageUsage(1);
+
+      const [queryParts] = vi.mocked(prisma.$queryRaw).mock.calls[0] as unknown as [
+        TemplateStringsArray,
+        number,
+      ];
+      const query = Array.from(queryParts).join('');
+
+      expect(query).toContain('pg_column_size(payload)');
+      expect(query).toContain('pg_column_size(vector_clock)');
+      expect(query).not.toContain('payload::text');
+      expect(query).not.toContain('vector_clock::text');
+    });
   });
 
   describe('checkStorageQuota', () => {
