@@ -74,6 +74,17 @@ export type { LwwUpdateActionTypeHelpers } from './lww-update-action-types';
 // Apply-operation result and option types.
 export type { ApplyOperationsResult, ApplyOperationsOptions } from './apply.types';
 
+// Port contracts for app-side orchestration adapters.
+export type {
+  ActionDispatchPort,
+  ArchiveSideEffectPort,
+  DeferredLocalActionsPort,
+  OperationApplyPort,
+  OperationStorePort,
+  RemoteApplyWindowPort,
+  SyncActionLike,
+} from './ports';
+
 // Conflict-resolution helpers.
 export {
   adjustForClockCorruption,
