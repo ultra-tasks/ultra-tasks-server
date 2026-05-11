@@ -83,6 +83,19 @@ export type {
   RemoteOperationApplyStorePort,
 } from './remote-apply';
 
+// Upload planning helpers.
+export {
+  planRegularOpsAfterFullStateUpload,
+  planUploadLastServerSeqUpdate,
+} from './upload-planning';
+export type {
+  PlanRegularOpsAfterFullStateUploadOptions,
+  PlanUploadLastServerSeqUpdateOptions,
+  RegularOpsAfterFullStateUploadPlan,
+  UploadLastServerSeqUpdatePlan,
+  UploadLastServerSeqUpdateReason,
+} from './upload-planning';
+
 // Port contracts for app-side orchestration adapters.
 export type {
   ActionDispatchPort,
