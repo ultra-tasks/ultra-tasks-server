@@ -24,6 +24,35 @@ export type { LwwUpdateActionTypeHelpers } from './lww-update-action-types';
 // Apply-operation result and option types.
 export type { ApplyOperationsResult, ApplyOperationsOptions } from './apply.types';
 
+// Entity-registry contracts.
+export {
+  getEntityConfig,
+  getPayloadKey,
+  isAdapterEntity,
+  isSingletonEntity,
+  isMapEntity,
+  isArrayEntity,
+  isVirtualEntity,
+  getAllPayloadKeys,
+} from './entity-registry.types';
+export type {
+  EntityStoragePattern,
+  BaseEntity,
+  EntityDictionary,
+  StateSelector,
+  PropsStateSelector,
+  SelectByIdFactory,
+  EntityUpdateLike,
+  EntityAdapterLike,
+  SelectById,
+  EntityConfig,
+  EntityRegistry,
+} from './entity-registry.types';
+
+// Privacy-aware logger port.
+export { NOOP_SYNC_LOGGER, toSyncLogError } from './sync-logger';
+export type { SyncLogError, SyncLogMeta, SyncLogger } from './sync-logger';
+
 // Entity key encoding helpers.
 export { toEntityKey, parseEntityKey } from './entity-key.util';
 
