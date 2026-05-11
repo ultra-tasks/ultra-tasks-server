@@ -96,6 +96,21 @@ export type {
   UploadLastServerSeqUpdateReason,
 } from './upload-planning';
 
+// Download planning helpers.
+export {
+  planDownloadFullStateUpload,
+  planDownloadGapReset,
+  planDownloadedDataEncryptionState,
+} from './download-planning';
+export type {
+  DownloadFullStateUploadPlan,
+  DownloadFullStateUploadReason,
+  DownloadGapResetPlan,
+  PlanDownloadFullStateUploadOptions,
+  PlanDownloadGapResetOptions,
+  PlanDownloadedDataEncryptionStateOptions,
+} from './download-planning';
+
 // Port contracts for app-side orchestration adapters.
 export type {
   ActionDispatchPort,
