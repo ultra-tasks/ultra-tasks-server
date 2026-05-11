@@ -74,6 +74,15 @@ export type { LwwUpdateActionTypeHelpers } from './lww-update-action-types';
 // Apply-operation result and option types.
 export type { ApplyOperationsResult, ApplyOperationsOptions } from './apply.types';
 
+// Remote operation application coordinator.
+export { applyRemoteOperations } from './remote-apply';
+export type {
+  ApplyRemoteOperationsOptions,
+  RemoteApplyOperationsResult,
+  RemoteOperationAppendResult,
+  RemoteOperationApplyStorePort,
+} from './remote-apply';
+
 // Port contracts for app-side orchestration adapters.
 export type {
   ActionDispatchPort,
