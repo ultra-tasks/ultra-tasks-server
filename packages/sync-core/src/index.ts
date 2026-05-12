@@ -119,11 +119,18 @@ export type {
 export type {
   ActionDispatchPort,
   ArchiveSideEffectPort,
+  ConflictUiDialogRequest,
+  ConflictUiNotification,
+  ConflictUiNotificationSeverity,
+  ConflictUiPort,
   DeferredLocalActionsPort,
   OperationApplyPort,
   OperationStorePort,
   RemoteApplyWindowPort,
   SyncActionLike,
+  SyncConfigPort,
+  SyncConfigSnapshot,
+  SyncPortMeta,
 } from './ports';
 
 // Conflict-resolution helpers.
