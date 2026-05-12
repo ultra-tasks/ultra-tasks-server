@@ -7,6 +7,7 @@
  * Note: Complex cleanup/freeing operations remain in SyncService as they
  * orchestrate multiple operations including deleting restore points.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { prisma } from '../../db';
 
 /**
@@ -16,6 +17,17 @@ const DEFAULT_STORAGE_QUOTA_BYTES = 100 * 1024 * 1024;
 
 export class StorageQuotaService {
   /**
+   * Per-user in-process mutex for storage usage mutation windows.
+   *
+   * This service is documented as single-instance. Within that constraint, the
+   * mutex prevents exact reconciles from racing with the two-phase upload path
+   * (persist operation, then update the advisory counter). Without this, a slow
+   * reconcile can overwrite or double-count concurrent upload deltas.
+   */
+  private storageUsageLocks: Map<number, Promise<void>> = new Map();
+  private storageUsageLockContext = new AsyncLocalStorage<Set<number>>();
+
+  /**
    * Per-user in-flight reconcile promises. When multiple concurrent requests
    * for the same user hit the quota cache-miss path, only the first triggers
    * the slow SUM(pg_column_size) scan; the rest await the same promise. Cap
@@ -23,6 +35,35 @@ export class StorageQuotaService {
    * calls are unaffected (entry is deleted in `finally` before resolve).
    */
   private inflightReconciles: Map<number, Promise<void>> = new Map();
+
+  async runWithStorageUsageLock<T>(userId: number, fn: () => Promise<T>): Promise<T> {
+    const activeLocks = this.storageUsageLockContext.getStore();
+    if (activeLocks?.has(userId)) {
+      return fn();
+    }
+
+    const previous = this.storageUsageLocks.get(userId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queued = previous.catch(() => undefined).then(() => current);
+    this.storageUsageLocks.set(userId, queued);
+
+    await previous.catch(() => undefined);
+
+    const nextLocks = new Set(activeLocks ?? []);
+    nextLocks.add(userId);
+
+    try {
+      return await this.storageUsageLockContext.run(nextLocks, fn);
+    } finally {
+      release();
+      if (this.storageUsageLocks.get(userId) === queued) {
+        this.storageUsageLocks.delete(userId);
+      }
+    }
+  }
 
   /**
    * Calculate actual storage usage for a user by summing on-disk payload sizes.
@@ -68,6 +109,15 @@ export class StorageQuotaService {
    * Rejects non-finite / non-positive inputs so `BigInt(...)` never throws.
    */
   async incrementStorageUsage(userId: number, deltaBytes: number): Promise<void> {
+    return this.runWithStorageUsageLock(userId, () =>
+      this.incrementStorageUsageUnlocked(userId, deltaBytes),
+    );
+  }
+
+  private async incrementStorageUsageUnlocked(
+    userId: number,
+    deltaBytes: number,
+  ): Promise<void> {
     if (!Number.isFinite(deltaBytes) || deltaBytes <= 0) return;
     const delta = BigInt(Math.floor(deltaBytes));
     await prisma.user.update({
@@ -83,6 +133,15 @@ export class StorageQuotaService {
    * the floor protects against negative drift from rough estimates.
    */
   async decrementStorageUsage(userId: number, deltaBytes: number): Promise<void> {
+    return this.runWithStorageUsageLock(userId, () =>
+      this.decrementStorageUsageUnlocked(userId, deltaBytes),
+    );
+  }
+
+  private async decrementStorageUsageUnlocked(
+    userId: number,
+    deltaBytes: number,
+  ): Promise<void> {
     if (!Number.isFinite(deltaBytes) || deltaBytes <= 0) return;
     const delta = BigInt(Math.floor(deltaBytes));
     await prisma.$executeRaw`
@@ -128,19 +187,21 @@ export class StorageQuotaService {
     const existing = this.inflightReconciles.get(userId);
     if (existing) return existing;
 
-    const promise = (async () => {
-      try {
-        const { totalBytes } = await this.calculateStorageUsage(userId);
-        await prisma.user.update({
-          where: { id: userId },
-          data: { storageUsedBytes: BigInt(totalBytes) },
-        });
-      } finally {
+    const promise = this.runWithStorageUsageLock(userId, async () => {
+      const { totalBytes } = await this.calculateStorageUsage(userId);
+      await prisma.user.update({
+        where: { id: userId },
+        data: { storageUsedBytes: BigInt(totalBytes) },
+      });
+    });
+    this.inflightReconciles.set(userId, promise);
+    try {
+      return await promise;
+    } finally {
+      if (this.inflightReconciles.get(userId) === promise) {
         this.inflightReconciles.delete(userId);
       }
-    })();
-    this.inflightReconciles.set(userId, promise);
-    return promise;
+    }
   }
 
   /**

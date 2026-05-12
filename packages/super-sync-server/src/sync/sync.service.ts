@@ -811,6 +811,10 @@ export class SyncService {
     return this.storageQuotaService.decrementStorageUsage(userId, deltaBytes);
   }
 
+  async runWithStorageUsageLock<T>(userId: number, fn: () => Promise<T>): Promise<T> {
+    return this.storageQuotaService.runWithStorageUsageLock(userId, fn);
+  }
+
   async getStorageInfo(userId: number): Promise<{
     storageUsedBytes: number;
     storageQuotaBytes: number;
@@ -854,13 +858,10 @@ export class SyncService {
         if (result.count > 0) {
           totalDeleted += result.count;
           affectedUserIds.push(state.userId);
-          // Decrement the cached counter approximately so it stays roughly in
-          // sync with reality. Drift is corrected by the next reconcile inside
-          // freeStorageForUpload (or an offline admin pass).
-          await this.decrementStorageUsage(
-            state.userId,
-            result.count * APPROX_BYTES_PER_OP,
-          );
+          // Deliberately leave storageUsedBytes stale-high here. A count-based
+          // approximate decrement can undercount users with many tiny ops and
+          // let them bypass quota indefinitely. The quota-miss path performs one
+          // exact reconcile for the affected user before rejecting uploads.
         }
       }
     }
@@ -1134,6 +1135,7 @@ export class SyncService {
     // Clear caches
     this.rateLimitService.clearForUser(userId);
     this.snapshotService.clearForUser(userId);
+    this.storageQuotaService.clearForUser(userId);
   }
 
   async isDeviceOwner(userId: number, clientId: string): Promise<boolean> {

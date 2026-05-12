@@ -16,6 +16,7 @@ import {
   ServerOperation,
   UploadOpsRequest,
   UploadOpsResponse,
+  UploadResult,
   DownloadOpsResponse,
   SnapshotResponse,
   SyncStatusResponse,
@@ -411,20 +412,49 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
           }
         }
 
-        // Check storage quota before processing (after dedup to allow retries).
-        // Use Buffer.byteLength so multi-byte UTF-8 content is measured in bytes,
-        // not UTF-16 code units (under-counts non-ASCII by up to 3x).
-        const payloadSize = Buffer.byteLength(JSON.stringify(body), 'utf8');
-        const quotaOk = await enforceStorageQuota(userId, payloadSize, reply);
-        if (!quotaOk) return;
-
-        // Process operations - cast to Operation[] since Zod validates the structure
-        const results = await syncService.uploadOps(
+        const results = await syncService.runWithStorageUsageLock<UploadResult[] | null>(
           userId,
-          clientId,
-          ops as unknown as Operation[],
-          isCleanSlate,
+          async () => {
+            // Check storage quota before processing (after dedup to allow retries).
+            // Use Buffer.byteLength so multi-byte UTF-8 content is measured in bytes,
+            // not UTF-16 code units (under-counts non-ASCII by up to 3x).
+            const payloadSize = Buffer.byteLength(JSON.stringify(body), 'utf8');
+            const quotaOk = await enforceStorageQuota(userId, payloadSize, reply);
+            if (!quotaOk) return null;
+
+            // Process operations - cast to Operation[] since Zod validates the structure
+            const uploadResults = await syncService.uploadOps(
+              userId,
+              clientId,
+              ops as unknown as Operation[],
+              isCleanSlate,
+            );
+
+            // Update storage usage cache with the locally-computed delta of accepted
+            // ops. Replaces the previous full-table SUM(pg_column_size) recalc that
+            // was DoS'ing the server. Wrapped in try/catch — ops have already been
+            // accepted and persisted, so a counter update failure must not 500 the
+            // response (would cause client retry + double-upload).
+            const acceptedOps: Operation[] = [];
+            const typedOps = ops as unknown as Operation[];
+            for (let i = 0; i < typedOps.length; i++) {
+              if (uploadResults[i]?.accepted) acceptedOps.push(typedOps[i]);
+            }
+            const deltaBytes = computeOpsStorageBytes(acceptedOps);
+            if (deltaBytes > 0) {
+              try {
+                await syncService.incrementStorageUsage(userId, deltaBytes);
+              } catch (err) {
+                Logger.warn(
+                  `[user:${userId}] Failed to increment storage usage cache: ${errorMessage(err)}`,
+                );
+              }
+            }
+
+            return uploadResults;
+          },
         );
+        if (!results) return;
 
         // Cache results for deduplication if requestId was provided
         if (requestId) {
@@ -442,31 +472,6 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
             `[user:${userId}] Rejected ops:`,
             results.filter((r) => !r.accepted),
           );
-        }
-
-        // Update storage usage cache with the locally-computed delta of accepted
-        // ops. Replaces the previous full-table SUM(pg_column_size) recalc that
-        // was DoS'ing the server. Wrapped in try/catch — ops have already been
-        // accepted and persisted, so a counter update failure must not 500 the
-        // response (would cause client retry + double-upload).
-        if (accepted > 0) {
-          // results[i] corresponds to ops[i] (uploadOps preserves order).
-          // Zip rather than rebuild a Set — avoids two extra passes + alloc.
-          const typedOps = ops as unknown as Operation[];
-          const acceptedOps: Operation[] = [];
-          for (let i = 0; i < typedOps.length; i++) {
-            if (results[i]?.accepted) acceptedOps.push(typedOps[i]);
-          }
-          const deltaBytes = computeOpsStorageBytes(acceptedOps);
-          if (deltaBytes > 0) {
-            try {
-              await syncService.incrementStorageUsage(userId, deltaBytes);
-            } catch (err) {
-              Logger.warn(
-                `[user:${userId}] Failed to increment storage usage cache: ${errorMessage(err)}`,
-              );
-            }
-          }
         }
 
         // Optionally include new ops from other clients (with atomic latestSeq read)
@@ -736,88 +741,102 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         const preparedSnapshot = syncService.prepareSnapshotCache(state);
         const estimatedOpStorageBytes =
           preparedSnapshot.stateBytes + computeJsonStorageBytes(op.vectorClock, {});
-        const previousSnapshotBytes =
-          !isCleanSlate && preparedSnapshot.cacheable
-            ? await syncService.getCachedSnapshotBytes(userId)
-            : 0;
-        const estimatedSnapshotCacheDelta = preparedSnapshot.cacheable
-          ? preparedSnapshot.bytes - previousSnapshotBytes
-          : 0;
 
-        // Check storage quota before processing. For clean-slate uploads, use a
-        // zero-current-usage baseline because uploadOps will wipe existing data
-        // and reset storageUsedBytes inside its transaction. For regular
-        // snapshots, include the operation payload plus the cached snapshot
-        // replacement delta; checking only the request body can under-count by
-        // nearly 2x because the server stores both the op and snapshot cache.
-        if (isCleanSlate) {
-          const finalStorageBytes =
-            estimatedOpStorageBytes +
-            (preparedSnapshot.cacheable ? preparedSnapshot.bytes : 0);
-          const quotaOk = await enforceCleanSlateStorageQuota(
-            userId,
-            finalStorageBytes,
-            reply,
-          );
-          if (!quotaOk) return;
-        } else {
-          const additionalBytes = estimatedOpStorageBytes + estimatedSnapshotCacheDelta;
-          const quotaOk = await enforceStorageQuota(userId, additionalBytes, reply);
-          if (!quotaOk) return;
-        }
+        const result = await syncService.runWithStorageUsageLock<UploadResult | null>(
+          userId,
+          async () => {
+            // Check storage quota before processing. For clean-slate uploads, use a
+            // zero-current-usage baseline because uploadOps will wipe existing data
+            // and reset storageUsedBytes inside its transaction. For regular
+            // snapshots, include the operation payload plus the cached snapshot
+            // replacement delta; checking only the request body can under-count by
+            // nearly 2x because the server stores both the op and snapshot cache.
+            if (isCleanSlate) {
+              const finalStorageBytes =
+                estimatedOpStorageBytes +
+                (preparedSnapshot.cacheable ? preparedSnapshot.bytes : 0);
+              const quotaOk = await enforceCleanSlateStorageQuota(
+                userId,
+                finalStorageBytes,
+                reply,
+              );
+              if (!quotaOk) return null;
+            } else {
+              const previousSnapshotBytes = preparedSnapshot.cacheable
+                ? await syncService.getCachedSnapshotBytes(userId)
+                : 0;
+              const estimatedSnapshotCacheDelta = preparedSnapshot.cacheable
+                ? preparedSnapshot.bytes - previousSnapshotBytes
+                : 0;
+              const additionalBytes =
+                estimatedOpStorageBytes + estimatedSnapshotCacheDelta;
+              const quotaOk = await enforceStorageQuota(userId, additionalBytes, reply);
+              if (!quotaOk) return null;
+            }
 
-        // FIX: Reject duplicate SYNC_IMPORT to prevent data loss
-        // Only the FIRST client to sync with an empty server should create SYNC_IMPORT.
-        // Subsequent clients should download existing data and upload their ops as regular ops.
-        // Exceptions that bypass this check:
-        // - 'recovery': Explicit backup restore or repair (user action)
-        // - 'migration': Legacy data migration (should be allowed to override)
-        // - 'isCleanSlate': Password change or explicit clean slate request
-        // Only 'initial' (first-time server migration) should be rejected if one exists.
-        if (reason === 'initial' && !isCleanSlate) {
-          const existingImport = await prisma.operation.findFirst({
-            where: {
+            // FIX: Reject duplicate SYNC_IMPORT to prevent data loss
+            // Only the FIRST client to sync with an empty server should create SYNC_IMPORT.
+            // Subsequent clients should download existing data and upload their ops as regular ops.
+            // Exceptions that bypass this check:
+            // - 'recovery': Explicit backup restore or repair (user action)
+            // - 'migration': Legacy data migration (should be allowed to override)
+            // - 'isCleanSlate': Password change or explicit clean slate request
+            // Only 'initial' (first-time server migration) should be rejected if one exists.
+            if (reason === 'initial' && !isCleanSlate) {
+              const existingImport = await prisma.operation.findFirst({
+                where: {
+                  userId,
+                  opType: { in: ['SYNC_IMPORT', 'BACKUP_IMPORT', 'REPAIR'] },
+                },
+                select: { id: true, clientId: true },
+              });
+
+              if (existingImport) {
+                Logger.warn(
+                  `[user:${userId}] Rejecting duplicate SYNC_IMPORT from client ${clientId}. ` +
+                    `Existing import from client ${existingImport.clientId} (id: ${existingImport.id}). ` +
+                    `Client should download and merge instead.`,
+                );
+                reply.status(409).send({
+                  error: 'SYNC_IMPORT_EXISTS',
+                  errorCode: 'SYNC_IMPORT_EXISTS',
+                  message:
+                    'A SYNC_IMPORT already exists. Download existing data and upload your changes as regular operations.',
+                  existingImportId: existingImport.id,
+                });
+                return null;
+              }
+            }
+
+            const results = await syncService.uploadOps(
               userId,
-              opType: { in: ['SYNC_IMPORT', 'BACKUP_IMPORT', 'REPAIR'] },
-            },
-            select: { id: true, clientId: true },
-          });
-
-          if (existingImport) {
-            Logger.warn(
-              `[user:${userId}] Rejecting duplicate SYNC_IMPORT from client ${clientId}. ` +
-                `Existing import from client ${existingImport.clientId} (id: ${existingImport.id}). ` +
-                `Client should download and merge instead.`,
+              clientId,
+              [op],
+              isCleanSlate,
             );
-            return reply.status(409).send({
-              error: 'SYNC_IMPORT_EXISTS',
-              errorCode: 'SYNC_IMPORT_EXISTS',
-              message:
-                'A SYNC_IMPORT already exists. Download existing data and upload your changes as regular operations.',
-              existingImportId: existingImport.id,
-            });
-          }
-        }
+            const uploadResult = results[0];
 
-        const results = await syncService.uploadOps(userId, clientId, [op], isCleanSlate);
-        const result = results[0];
+            if (uploadResult.accepted && uploadResult.serverSeq !== undefined) {
+              // Cache the snapshot
+              const cacheResult = await syncService.cacheSnapshot(
+                userId,
+                state,
+                uploadResult.serverSeq,
+                preparedSnapshot,
+              );
+              const storedOpBytes =
+                preparedSnapshot.stateBytes + computeJsonStorageBytes(op.vectorClock, {});
+              await applyStorageUsageDelta(
+                userId,
+                storedOpBytes + cacheResult.deltaBytes,
+                'after snapshot',
+              );
+            }
 
-        if (result.accepted && result.serverSeq !== undefined) {
-          // Cache the snapshot
-          const cacheResult = await syncService.cacheSnapshot(
-            userId,
-            state,
-            result.serverSeq,
-            preparedSnapshot,
-          );
-          const storedOpBytes =
-            preparedSnapshot.stateBytes + computeJsonStorageBytes(op.vectorClock, {});
-          await applyStorageUsageDelta(
-            userId,
-            storedOpBytes + cacheResult.deltaBytes,
-            'after snapshot',
-          );
-        }
+            return uploadResult;
+          },
+        );
+        if (!result) return;
 
         Logger.info(`Snapshot uploaded for user ${userId}, reason: ${reason}`);
 

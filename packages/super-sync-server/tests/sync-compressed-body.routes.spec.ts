@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => {
     updateStorageUsage: vi.fn(),
     incrementStorageUsage: vi.fn(),
     decrementStorageUsage: vi.fn(),
+    runWithStorageUsageLock: vi.fn(),
     getLatestSeq: vi.fn(),
     getOpsSinceWithSeq: vi.fn(),
     getStorageInfo: vi.fn(),
@@ -95,6 +96,9 @@ describe('Sync compressed body routes', () => {
     mocks.syncService.updateStorageUsage.mockResolvedValue(undefined);
     mocks.syncService.incrementStorageUsage.mockResolvedValue(undefined);
     mocks.syncService.decrementStorageUsage.mockResolvedValue(undefined);
+    mocks.syncService.runWithStorageUsageLock.mockImplementation(
+      async (_userId: number, fn: () => Promise<unknown>) => fn(),
+    );
     mocks.syncService.getLatestSeq.mockResolvedValue(1);
     mocks.syncService.getOpsSinceWithSeq.mockResolvedValue({
       ops: [],

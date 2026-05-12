@@ -98,8 +98,8 @@ describe('Cleanup Jobs', () => {
     it('should not call full-scan updateStorageUsage after op cleanup', async () => {
       // The daily cleanup used to call updateStorageUsage(userId) for every
       // affected user, which forced a full-payload TOAST scan and caused the
-      // production disk-I/O DoS. Counter decrement now happens incrementally
-      // inside deleteOldSyncedOpsForAllUsers via decrementStorageUsage.
+      // production disk-I/O DoS. The cached counter is deliberately left
+      // stale-high until a quota miss reconciles that user's exact usage.
       mockSyncService.deleteOldSyncedOpsForAllUsers.mockResolvedValueOnce({
         totalDeleted: 100,
         affectedUserIds: [1, 2, 3],

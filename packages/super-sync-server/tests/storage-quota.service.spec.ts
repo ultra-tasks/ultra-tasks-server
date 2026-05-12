@@ -18,6 +18,11 @@ vi.mock('../src/db', () => ({
 
 import { prisma } from '../src/db';
 
+const flushPromises = async (): Promise<void> => {
+  await Promise.resolve();
+  await Promise.resolve();
+};
+
 describe('StorageQuotaService', () => {
   let service: StorageQuotaService;
 
@@ -217,6 +222,76 @@ describe('StorageQuotaService', () => {
       vi.mocked(prisma.$queryRaw).mockResolvedValueOnce([{ total: BigInt(0) }]);
       await expect(service.updateStorageUsage(1)).resolves.toBeUndefined();
       expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+    });
+
+    it('should wait for an active storage mutation window before exact reconcile', async () => {
+      const events: string[] = [];
+      let releaseWindow: () => void = () => undefined;
+
+      const activeWindow = service.runWithStorageUsageLock(1, async () => {
+        events.push('upload-start');
+        await new Promise<void>((resolve) => {
+          releaseWindow = resolve;
+        });
+        events.push('upload-end');
+      });
+      await flushPromises();
+
+      vi.mocked(prisma.$queryRaw).mockImplementation(async () => {
+        events.push('scan');
+        return [{ total: BigInt(123) }];
+      });
+      vi.mocked(prisma.userSyncState.findUnique).mockResolvedValue({
+        snapshotData: null,
+      } as any);
+      vi.mocked(prisma.user.update).mockImplementation(async () => {
+        events.push('write');
+        return {} as any;
+      });
+
+      const reconcile = service.updateStorageUsage(1);
+      await flushPromises();
+
+      expect(events).toEqual(['upload-start']);
+      releaseWindow();
+      await Promise.all([activeWindow, reconcile]);
+      expect(events).toEqual(['upload-start', 'upload-end', 'scan', 'write']);
+    });
+  });
+
+  describe('runWithStorageUsageLock', () => {
+    it('should serialize callbacks for the same user', async () => {
+      const events: string[] = [];
+      let releaseFirst: () => void = () => undefined;
+
+      const first = service.runWithStorageUsageLock(1, async () => {
+        events.push('first-start');
+        await new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        });
+        events.push('first-end');
+        return 'first';
+      });
+      await flushPromises();
+
+      const second = service.runWithStorageUsageLock(1, async () => {
+        events.push('second-start');
+        return 'second';
+      });
+      await flushPromises();
+
+      expect(events).toEqual(['first-start']);
+      releaseFirst();
+      await expect(Promise.all([first, second])).resolves.toEqual(['first', 'second']);
+      expect(events).toEqual(['first-start', 'first-end', 'second-start']);
+    });
+
+    it('should allow nested callbacks for the same user', async () => {
+      const result = await service.runWithStorageUsageLock(1, () =>
+        service.runWithStorageUsageLock(1, async () => 'nested'),
+      );
+
+      expect(result).toBe('nested');
     });
   });
 
