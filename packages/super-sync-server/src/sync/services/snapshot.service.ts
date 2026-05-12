@@ -7,16 +7,9 @@
  * CRITICAL: FIX 1.7 - Uses in-memory locks to prevent concurrent snapshot
  * generation for the same user. This prevents duplicate expensive computation.
  */
-import * as zlib from 'zlib';
-import { promisify } from 'util';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../../db';
 import { Logger } from '../../logger';
-
-const gzipAsync = promisify(zlib.gzip) as (buf: zlib.InputType) => Promise<Buffer>;
-const gunzipAsync = promisify(zlib.gunzip) as (
-  buf: zlib.InputType,
-  opts?: zlib.ZlibOptions,
-) => Promise<Buffer>;
 import {
   CURRENT_SCHEMA_VERSION,
   migrateState,
@@ -26,6 +19,7 @@ import {
 } from '@sp/shared-schema';
 import { Operation } from '../sync.types';
 import { ALLOWED_ENTITY_TYPES } from './validation.service';
+import { gunzipAsync, gzipAsync } from '../gzip';
 
 /**
  * Maximum operations to process during snapshot generation.
@@ -55,6 +49,26 @@ const MAX_REPLAY_STATE_SIZE_BYTES = 100 * 1024 * 1024;
  * How often to check state size during replay (every N operations).
  */
 const REPLAY_SIZE_CHECK_INTERVAL = 1000;
+
+const encryptedOpsNotSupportedMessage = (encryptedOpCount: number): string =>
+  `ENCRYPTED_OPS_NOT_SUPPORTED: Cannot generate snapshot - ${encryptedOpCount} operations have encrypted payloads. ` +
+  `Server-side restore is not available when E2E encryption is enabled. ` +
+  `Alternative: Use the client app's "Sync Now" button which can decrypt and restore locally.`;
+
+/**
+ * Typed error thrown when snapshot generation hits encrypted ops the server
+ * cannot decrypt. Route handlers should `instanceof`-check this instead of
+ * substring-matching the message, and must NOT echo `message` back to the
+ * client — it contains the encrypted-op count (data-volume side-channel).
+ */
+export class EncryptedOpsNotSupportedError extends Error {
+  readonly encryptedOpCount: number;
+  constructor(encryptedOpCount: number) {
+    super(encryptedOpsNotSupportedMessage(encryptedOpCount));
+    this.name = 'EncryptedOpsNotSupportedError';
+    this.encryptedOpCount = encryptedOpCount;
+  }
+}
 
 const REPLAY_OPERATION_SELECT = {
   id: true,
@@ -145,50 +159,12 @@ export class SnapshotService {
   }
 
   /**
-   * Get cached snapshot for a user.
-   */
-  async getCachedSnapshot(userId: number): Promise<SnapshotResult | null> {
-    const row = await prisma.userSyncState.findUnique({
-      where: { userId },
-      select: {
-        snapshotData: true,
-        lastSnapshotSeq: true,
-        snapshotAt: true,
-        snapshotSchemaVersion: true,
-      },
-    });
-
-    if (!row?.snapshotData) return null;
-
-    try {
-      // Decompress snapshot off the synchronous fast path so a large snapshot
-      // does not stall the event loop for all other tenants.
-      const decompressed = (
-        await gunzipAsync(row.snapshotData, {
-          maxOutputLength: MAX_SNAPSHOT_DECOMPRESSED_BYTES,
-        })
-      ).toString('utf-8');
-      return {
-        state: JSON.parse(decompressed),
-        serverSeq: row.lastSnapshotSeq ?? 0,
-        generatedAt: Number(row.snapshotAt) ?? 0,
-        schemaVersion: row.snapshotSchemaVersion ?? 1,
-      };
-    } catch (err) {
-      Logger.error(
-        `[user:${userId}] Failed to decompress cached snapshot: ${(err as Error).message}`,
-      );
-      return null;
-    }
-  }
-
-  /**
    * Serialize + gzip a snapshot off the event loop. Returns the prepared blob
    * plus byte accounting needed by quota tracking.
    */
   async prepareSnapshotCache(state: unknown): Promise<PreparedSnapshotCache> {
     const serialized = JSON.stringify(state);
-    const data = await gzipAsync(serialized);
+    const data = await gzipAsync(Buffer.from(serialized, 'utf-8'));
     return {
       data,
       bytes: data.length,
@@ -205,6 +181,94 @@ export class SnapshotService {
     return Number(result[0]?.bytes ?? 0);
   }
 
+  /**
+   * Get cached snapshot for a user.
+   */
+  async getCachedSnapshot(userId: number): Promise<SnapshotResult | null> {
+    const row = await prisma.userSyncState.findUnique({
+      where: { userId },
+      select: {
+        snapshotData: true,
+        lastSnapshotSeq: true,
+        snapshotAt: true,
+        snapshotSchemaVersion: true,
+      },
+    });
+
+    if (!row?.snapshotData) return null;
+
+    try {
+      const decompressed = (
+        await gunzipAsync(row.snapshotData, {
+          maxOutputLength: MAX_SNAPSHOT_DECOMPRESSED_BYTES,
+        })
+      ).toString('utf-8');
+      return {
+        state: JSON.parse(decompressed),
+        serverSeq: row.lastSnapshotSeq ?? 0,
+        generatedAt: Number(row.snapshotAt) ?? 0,
+        schemaVersion: row.snapshotSchemaVersion ?? 1,
+      };
+    } catch (err) {
+      // Without this clear the same error would be logged on every cache read
+      // until a new snapshot is generated.
+      Logger.error(
+        `[user:${userId}] Failed to decompress cached snapshot, invalidating: ${(err as Error).message}`,
+      );
+      await this._invalidateCachedSnapshot(userId);
+      return null;
+    }
+  }
+
+  private async _invalidateCachedSnapshot(userId: number): Promise<void> {
+    try {
+      await prisma.userSyncState.update({
+        where: { userId },
+        data: {
+          snapshotData: null,
+          lastSnapshotSeq: null,
+          snapshotAt: null,
+          snapshotSchemaVersion: null,
+        },
+      });
+    } catch (err) {
+      // Row may have been deleted concurrently — best-effort cleanup.
+      Logger.warn(
+        `[user:${userId}] Failed to invalidate cached snapshot: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * Cache a snapshot only when it's replayable by the server.
+   * Encrypted payloads remain available as ops but cannot back snapshot
+   * replay (server cannot decrypt). Owning this invariant here keeps HTTP
+   * routes from having to remember the rule.
+   */
+  async cacheSnapshotIfReplayable(
+    userId: number,
+    state: unknown,
+    serverSeq: number,
+    isPayloadEncrypted: boolean,
+    preparedSnapshot?: PreparedSnapshotCache,
+  ): Promise<CacheSnapshotResult | null> {
+    if (isPayloadEncrypted) return null;
+    return this.cacheSnapshot(userId, state, serverSeq, preparedSnapshot);
+  }
+
+  /**
+   * Cache a snapshot for a user.
+   *
+   * Guards against stale-overwrite races between concurrent uploads: only
+   * writes when no row exists yet or the cached `lastSnapshotSeq` is older
+   * than `serverSeq`. The op append itself is serialized by the DB; the cache
+   * write is not, so without this guard a later request finishing first could
+   * be clobbered by an earlier one.
+   *
+   * Returns byte accounting so callers can keep the storage usage counter in
+   * sync with `snapshotData` writes. `deltaBytes` is 0 when nothing was
+   * written (race lost) so storage accounting stays self-consistent.
+   */
   async cacheSnapshot(
     userId: number,
     state: unknown,
@@ -220,13 +284,16 @@ export class SnapshotService {
         `[user:${userId}] Snapshot too large: ${prepared.bytes} bytes ` +
           `(max ${MAX_SNAPSHOT_SIZE_BYTES}). Clearing stale cache.`,
       );
-      // Drop any previously-cached snapshot so callers don't see an outdated
-      // blob alongside ops the new (rejected) snapshot was supposed to cover.
-      // Returns the negative delta so storage accounting credits the freed
-      // space.
+      // Race-safe clear: only when our serverSeq is newer than what is
+      // cached, so we don't clobber a smaller, still-valid snapshot that
+      // won the race.
+      let cleared = 0;
       if (previousBytes > 0) {
-        await prisma.userSyncState.update({
-          where: { userId },
+        const clearResult = await prisma.userSyncState.updateMany({
+          where: {
+            userId,
+            OR: [{ lastSnapshotSeq: null }, { lastSnapshotSeq: { lt: serverSeq } }],
+          },
           data: {
             snapshotData: null,
             lastSnapshotSeq: null,
@@ -234,43 +301,69 @@ export class SnapshotService {
             snapshotSchemaVersion: null,
           },
         });
+        cleared = clearResult.count;
       }
       return {
         cached: false,
         bytesWritten: 0,
         previousBytes,
-        // Avoid producing -0 when there was no previous snapshot.
-        deltaBytes: previousBytes > 0 ? -previousBytes : 0,
+        deltaBytes: cleared > 0 ? -previousBytes : 0,
       };
     }
 
-    await prisma.userSyncState.update({
-      where: { userId },
-      data: {
-        snapshotData: prepared.data,
-        lastSnapshotSeq: serverSeq,
-        snapshotAt: BigInt(now),
-        snapshotSchemaVersion: CURRENT_SCHEMA_VERSION,
+    const data = {
+      snapshotData: prepared.data,
+      lastSnapshotSeq: serverSeq,
+      snapshotAt: BigInt(now),
+      snapshotSchemaVersion: CURRENT_SCHEMA_VERSION,
+    };
+
+    // Conditional update — does nothing when no row exists OR when cached
+    // lastSnapshotSeq is already >= serverSeq.
+    const updateResult = await prisma.userSyncState.updateMany({
+      where: {
+        userId,
+        OR: [{ lastSnapshotSeq: null }, { lastSnapshotSeq: { lt: serverSeq } }],
       },
+      data,
     });
 
-    return {
-      cached: true,
-      bytesWritten: prepared.bytes,
-      previousBytes,
-      deltaBytes: prepared.bytes - previousBytes,
-    };
+    if (updateResult.count > 0) {
+      return {
+        cached: true,
+        bytesWritten: prepared.bytes,
+        previousBytes,
+        deltaBytes: prepared.bytes - previousBytes,
+      };
+    }
+
+    // Either no row exists yet (first-time-user path) or a newer snapshot
+    // already won the race. Try a create — if a row was inserted between
+    // the updateMany and now, the unique-userId constraint throws P2002
+    // and we treat that as "newer snapshot won; nothing to do".
+    try {
+      await prisma.userSyncState.create({ data: { userId, ...data } });
+      return {
+        cached: true,
+        bytesWritten: prepared.bytes,
+        previousBytes,
+        deltaBytes: prepared.bytes - previousBytes,
+      };
+    } catch (err) {
+      if ((err as { code?: string }).code !== 'P2002') throw err;
+      return { cached: false, bytesWritten: 0, previousBytes, deltaBytes: 0 };
+    }
   }
 
   /**
    * Generate a snapshot for a user at the latest sequence.
    * Uses FIX 1.7 lock to prevent concurrent generation for the same user.
    *
-   * `onCacheDelta` (optional) is invoked with the byte change applied to the
-   * `snapshotData` column when the cache is rewritten. Callers should use this
-   * to keep the storage usage counter in sync with on-disk reality — otherwise
-   * `GET /snapshot` can grow `snapshotData` by up to ~MAX_SNAPSHOT_SIZE_BYTES
-   * without the counter noticing.
+   * `onCacheDelta` is invoked after the transaction commits with the byte
+   * change applied to the `snapshotData` column when the cache was rewritten.
+   * Callers should use it to keep the storage usage counter in sync with
+   * on-disk reality — otherwise `GET /snapshot` can grow `snapshotData` by up
+   * to ~MAX_SNAPSHOT_SIZE_BYTES without the counter noticing.
    */
   async generateSnapshot(
     userId: number,
@@ -301,11 +394,10 @@ export class SnapshotService {
    * Internal implementation of snapshot generation.
    * Called only when no concurrent generation is in progress.
    *
-   * If a counter delta needs applying (cache was rewritten), the delta is
-   * captured by the closure into `cacheDelta` and applied AFTER the
-   * transaction commits via the optional `onCacheDelta` callback. This keeps
-   * the slow counter update out of the snapshot transaction window while
-   * still letting storage accounting self-heal.
+   * If the cache was rewritten the byte delta is captured in `cacheDelta` and
+   * applied AFTER the transaction commits via the optional `onCacheDelta`
+   * callback. This keeps the slow counter update out of the snapshot
+   * transaction window while letting storage accounting self-heal.
    */
   private async _generateSnapshotImpl(
     userId: number,
@@ -353,6 +445,9 @@ export class SnapshotService {
           }
         }
 
+        // Fast path: cached snapshot is already at the latest seq AND in the
+        // current schema version. No replay needed → skip the encrypted-op
+        // probes (they cost a findFirst + count per call).
         if (
           startSeq >= latestSeq &&
           cachedRow?.snapshotData &&
@@ -366,7 +461,7 @@ export class SnapshotService {
           };
         }
 
-        const previousCachedBytes = cachedRow?.snapshotData?.length ?? 0;
+        await this._assertCachedSnapshotBaseReplayable(tx, userId, startSeq);
 
         // Migrate snapshot if needed
         if (stateNeedsMigration(snapshotSchemaVersion, CURRENT_SCHEMA_VERSION)) {
@@ -393,23 +488,7 @@ export class SnapshotService {
           );
         }
 
-        if (totalOpsToProcess > 0) {
-          // Server-side snapshots cannot safely replay encrypted payloads.
-          const encryptedOpCount = await tx.operation.count({
-            where: {
-              userId,
-              serverSeq: { gt: startSeq, lte: latestSeq },
-              isPayloadEncrypted: true,
-            },
-          });
-
-          if (encryptedOpCount > 0) {
-            throw new Error(
-              `ENCRYPTED_OPS_NOT_SUPPORTED: Cannot generate snapshot - ${encryptedOpCount} operations have encrypted payloads. ` +
-                `Server-side snapshots are not available when E2E encryption is enabled.`,
-            );
-          }
-        }
+        await this._assertNoEncryptedOps(tx, userId, startSeq, latestSeq);
 
         const BATCH_SIZE = 10000;
         let currentSeq = startSeq;
@@ -427,7 +506,16 @@ export class SnapshotService {
             select: REPLAY_OPERATION_SELECT,
           });
 
-          assertContiguousReplayBatch(batchOps, currentSeq + 1, latestSeq);
+          // _resolveExpectedFirstSeq permits a leading gap when the first
+          // surviving op is a full-state op (e.g. SYNC_IMPORT after a
+          // clean-slate upload), because full-state ops reset state anyway.
+          const expectedFirstSeq = this._resolveExpectedFirstSeq(
+            batchOps,
+            currentSeq,
+            startSeq,
+            latestSeq,
+          );
+          assertContiguousReplayBatch(batchOps, expectedFirstSeq, latestSeq);
 
           // Replay ops
           state = this.replayOpsToState(batchOps, state);
@@ -435,21 +523,34 @@ export class SnapshotService {
           currentSeq = batchOps[batchOps.length - 1].serverSeq;
           totalProcessed += batchOps.length;
 
-          if (totalProcessed > MAX_OPS_FOR_SNAPSHOT) break;
+          if (totalProcessed > MAX_OPS_FOR_SNAPSHOT) {
+            throw new Error(
+              `Too many operations processed (${totalProcessed}). ` +
+                `Max: ${MAX_OPS_FOR_SNAPSHOT}.`,
+            );
+          }
         }
 
         const generatedAt = Date.now();
 
-        // Update cache inside the transaction so the cached snapshot matches
-        // the returned state. Gzip is async so the event loop stays
-        // responsive for other tenants; the txn timeout (60s) is generous
-        // enough to cover it. Capture the byte delta so the storage counter
+        // Cache the generated snapshot inline so it matches the returned state.
+        // Upsert: a user that just had a snapshot generated may still have no
+        // userSyncState row (first-time path), in which case `update` throws
+        // RecordNotFound. Capture the byte delta so the storage usage counter
         // can be updated AFTER the txn commits (see `cacheDelta`).
-        const compressed = await gzipAsync(JSON.stringify(state));
+        const previousCachedBytes = cachedRow?.snapshotData?.length ?? 0;
+        const compressed = await gzipAsync(Buffer.from(JSON.stringify(state), 'utf-8'));
         if (compressed.length <= MAX_SNAPSHOT_SIZE_BYTES) {
-          await tx.userSyncState.update({
+          await tx.userSyncState.upsert({
             where: { userId },
-            data: {
+            update: {
+              snapshotData: compressed,
+              lastSnapshotSeq: latestSeq,
+              snapshotAt: BigInt(generatedAt),
+              snapshotSchemaVersion: CURRENT_SCHEMA_VERSION,
+            },
+            create: {
+              userId,
               snapshotData: compressed,
               lastSnapshotSeq: latestSeq,
               snapshotAt: BigInt(generatedAt),
@@ -468,6 +569,10 @@ export class SnapshotService {
       },
       {
         timeout: 60000, // Snapshots can take time
+        // Prevent races between `_assertNoEncryptedOps` / `_assertCachedSnapshotBaseReplayable`
+        // and the subsequent `findMany` batches: a concurrent writer must not be able to
+        // slip an encrypted op into the snapshot window after the guards have passed.
+        isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
       },
     );
 
@@ -616,6 +721,8 @@ export class SnapshotService {
           }
         }
 
+        await this._assertCachedSnapshotBaseReplayable(tx, userId, startSeq);
+
         const totalOpsToProcess = targetSeq - startSeq;
         if (totalOpsToProcess > MAX_OPS_FOR_SNAPSHOT) {
           throw new Error(
@@ -624,22 +731,7 @@ export class SnapshotService {
           );
         }
 
-        // Check for encrypted ops in the range - server cannot replay encrypted payloads
-        const encryptedOpCount = await tx.operation.count({
-          where: {
-            userId,
-            serverSeq: { gt: startSeq, lte: targetSeq },
-            isPayloadEncrypted: true,
-          },
-        });
-
-        if (encryptedOpCount > 0) {
-          throw new Error(
-            `ENCRYPTED_OPS_NOT_SUPPORTED: Cannot generate snapshot - ${encryptedOpCount} operations have encrypted payloads. ` +
-              `Server-side restore is not available when E2E encryption is enabled. ` +
-              `Alternative: Use the client app's "Sync Now" button which can decrypt and restore locally.`,
-          );
-        }
+        await this._assertNoEncryptedOps(tx, userId, startSeq, targetSeq);
 
         // Replay ops from startSeq to targetSeq
         const BATCH_SIZE = 10000;
@@ -657,7 +749,13 @@ export class SnapshotService {
             select: REPLAY_OPERATION_SELECT,
           });
 
-          assertContiguousReplayBatch(batchOps, currentSeq + 1, targetSeq);
+          const expectedFirstSeq = this._resolveExpectedFirstSeq(
+            batchOps,
+            currentSeq,
+            startSeq,
+            targetSeq,
+          );
+          assertContiguousReplayBatch(batchOps, expectedFirstSeq, targetSeq);
 
           state = this.replayOpsToState(batchOps, state);
           currentSeq = batchOps[batchOps.length - 1].serverSeq;
@@ -671,6 +769,7 @@ export class SnapshotService {
       },
       {
         timeout: 60000, // Snapshot generation can take time
+        isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
       },
     );
   }
@@ -688,18 +787,18 @@ export class SnapshotService {
     for (let i = 0; i < ops.length; i++) {
       const row = ops[i];
 
-      // Skip encrypted operations - server cannot decrypt E2E encrypted payloads
-      // This is a defensive check; generateSnapshotAtSeq should reject encrypted ops upfront
+      // Server cannot decrypt E2E payloads. Snapshot callers reject encrypted
+      // ranges upfront; this guard prevents accidental partial replays.
       if (row.isPayloadEncrypted) {
-        Logger.warn(
-          `[replayOpsToState] Skipping encrypted op ${row.id} (seq=${row.serverSeq})`,
-        );
-        continue;
+        throw new EncryptedOpsNotSupportedError(1);
       }
 
-      // Periodically check state size to prevent memory exhaustion
+      // Periodically check state size to prevent memory exhaustion.
+      // Measure in UTF-8 bytes (Buffer.byteLength) so the limit matches the
+      // constant's documented unit — JSON.stringify(state).length counts
+      // UTF-16 code units, which under-counts up to 4x for non-ASCII content.
       if (i > 0 && i % REPLAY_SIZE_CHECK_INTERVAL === 0) {
-        const estimatedSize = JSON.stringify(state).length;
+        const estimatedSize = Buffer.byteLength(JSON.stringify(state), 'utf8');
         if (estimatedSize > MAX_REPLAY_STATE_SIZE_BYTES) {
           throw new Error(
             `State too large during replay: ${Math.round(estimatedSize / 1024 / 1024)}MB ` +
@@ -769,25 +868,35 @@ export class SnapshotService {
           payload: processPayload,
         } = opToProcess;
 
-        // Handle full-state operations BEFORE entity type check
-        // These operations replace the entire state and don't use a specific entity type
+        // Handle full-state operations BEFORE entity type check.
+        // These operations REPLACE the entire state (they represent a complete
+        // snapshot of the app), so we must clear existing keys first —
+        // otherwise stale entity types from a prior state survive a "reset"
+        // and `_resolveExpectedFirstSeq`'s leading-gap acceptance becomes
+        // incorrect (the gap is only safe if the full-state op truly resets).
         if (
           processOpType === 'SYNC_IMPORT' ||
           processOpType === 'BACKUP_IMPORT' ||
           processOpType === 'REPAIR'
         ) {
-          if (
+          const fullState =
             processPayload &&
             typeof processPayload === 'object' &&
             'appDataComplete' in processPayload
-          ) {
-            Object.assign(
-              state,
-              (processPayload as { appDataComplete: unknown }).appDataComplete,
+              ? (processPayload as { appDataComplete: unknown }).appDataComplete
+              : processPayload;
+          // A malformed full-state op (null/primitive payload) would silently
+          // wipe state if we cleared first. Refuse to replay it — a corrupt
+          // SYNC_IMPORT is invariant-breaking, not a no-op.
+          if (!fullState || typeof fullState !== 'object') {
+            throw new Error(
+              `SNAPSHOT_REPLAY_INCOMPLETE: ${processOpType} op ${row.id} has non-object payload`,
             );
-          } else {
-            Object.assign(state, processPayload);
           }
+          for (const key of Object.keys(state)) {
+            delete state[key];
+          }
+          Object.assign(state, fullState);
           continue;
         }
 
@@ -846,5 +955,96 @@ export class SnapshotService {
       }
     }
     return state;
+  }
+
+  private async _assertNoEncryptedOps(
+    tx: Prisma.TransactionClient,
+    userId: number,
+    startSeq: number,
+    targetSeq: number,
+  ): Promise<void> {
+    if (startSeq >= targetSeq) return;
+
+    const encryptedOpCount = await tx.operation.count({
+      where: {
+        userId,
+        serverSeq: { gt: startSeq, lte: targetSeq },
+        isPayloadEncrypted: true,
+      },
+    });
+
+    if (encryptedOpCount > 0) {
+      throw new EncryptedOpsNotSupportedError(encryptedOpCount);
+    }
+  }
+
+  private async _assertCachedSnapshotBaseReplayable(
+    tx: Prisma.TransactionClient,
+    userId: number,
+    startSeq: number,
+  ): Promise<void> {
+    if (startSeq <= 0) return;
+
+    const latestUnencryptedFullStateOp = await tx.operation.findFirst({
+      where: {
+        userId,
+        serverSeq: { lte: startSeq },
+        opType: { in: ['SYNC_IMPORT', 'BACKUP_IMPORT', 'REPAIR'] },
+        isPayloadEncrypted: false,
+      },
+      orderBy: { serverSeq: 'desc' },
+      select: { serverSeq: true },
+    });
+
+    const encryptedOpCount = await tx.operation.count({
+      where: {
+        userId,
+        serverSeq: {
+          gt: latestUnencryptedFullStateOp?.serverSeq ?? 0,
+          lte: startSeq,
+        },
+        isPayloadEncrypted: true,
+      },
+    });
+
+    if (encryptedOpCount > 0) {
+      throw new EncryptedOpsNotSupportedError(encryptedOpCount);
+    }
+  }
+
+  /**
+   * Decide where contiguity checking should start for the current batch.
+   *
+   * The replay base may sit below the lowest op that physically exists, e.g.:
+   *   - After a clean-slate upload (`sync.service.ts` preserves `lastSeq` but deletes ops).
+   *   - After retention pruning (`deleteOldestRestorePointAndOps`) trimmed older ops.
+   * In both cases the surviving lowest-seq op is guaranteed to be a full-state op
+   * (SYNC_IMPORT / BACKUP_IMPORT / REPAIR) that resets state during replay. Accept
+   * this leading gap only on the first batch and only when that invariant holds;
+   * mid-stream gaps still indicate corruption and must throw.
+   */
+  private _resolveExpectedFirstSeq(
+    batchOps: ReplayOperationRow[],
+    currentSeq: number,
+    startSeq: number,
+    targetSeq: number,
+  ): number {
+    if (currentSeq !== startSeq || batchOps.length === 0) {
+      return currentSeq + 1;
+    }
+    const firstOp = batchOps[0];
+    if (firstOp.serverSeq <= currentSeq + 1) {
+      return currentSeq + 1;
+    }
+    const isFullStateOp =
+      firstOp.opType === 'SYNC_IMPORT' ||
+      firstOp.opType === 'BACKUP_IMPORT' ||
+      firstOp.opType === 'REPAIR';
+    if (!isFullStateOp) {
+      throw new Error(
+        `SNAPSHOT_REPLAY_INCOMPLETE: Expected operation serverSeq ${currentSeq + 1} but got ${firstOp.serverSeq} while replaying to ${targetSeq}`,
+      );
+    }
+    return firstOp.serverSeq;
   }
 }

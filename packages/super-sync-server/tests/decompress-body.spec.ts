@@ -105,6 +105,14 @@ describe('decompressBody helper', () => {
       expect(JSON.parse(decompressed.toString('utf-8'))).toEqual(largePayload);
     });
 
+    it('should reject base64 gzip when decompressed output exceeds maxOutputLength', async () => {
+      const jsonPayload = JSON.stringify(testPayload);
+      const compressed = await gzipAsync(Buffer.from(jsonPayload, 'utf-8'));
+      const rawBody = Buffer.from(compressed.toString('base64'), 'utf-8');
+
+      await expect(decompressBody(rawBody, 'base64', 1)).rejects.toThrow();
+    });
+
     it('should throw error for invalid base64 data', async () => {
       const invalidBase64 = Buffer.from('not valid base64!!!@#$%', 'utf-8');
 
@@ -310,6 +318,44 @@ describe('parseCompressedJsonBody helper', () => {
       expect(result.statusCode).toBe(400);
       expect(result.error).toBe('Failed to decompress gzip body');
       expect(result.reason).toBe('decompress-failed');
+    }
+  });
+
+  it('should return 400 with invalid-json reason when decompressed body is not JSON', async () => {
+    const compressed = await gzipAsync(Buffer.from('this is not JSON {', 'utf-8'));
+
+    const result = await parseCompressedJsonBody(compressed, undefined, {
+      maxCompressedSize: compressed.length,
+      maxDecompressedSize: 1024,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.statusCode).toBe(400);
+      expect(result.error).toBe('Invalid JSON in decompressed body');
+      expect(result.reason).toBe('invalid-json');
+    }
+  });
+
+  it('should enforce maxCompressedSize against the binary gzip size for base64 transport', async () => {
+    // A 30-byte gzip payload encodes to 40 base64 chars (rawBody.length=40).
+    // With the old base64-unaware check, a maxCompressedSize=30 would reject
+    // it (40 > 30). The fix checks the binary length instead, so a 30-byte
+    // gzip payload must be ACCEPTED at maxCompressedSize=30.
+    const compressed = await gzipAsync(Buffer.from(JSON.stringify(testPayload), 'utf-8'));
+    const rawBody = Buffer.from(compressed.toString('base64'), 'utf-8');
+
+    expect(rawBody.length).toBeGreaterThan(compressed.length);
+
+    const result = await parseCompressedJsonBody(rawBody, 'base64', {
+      maxCompressedSize: compressed.length,
+      maxDecompressedSize: 1024,
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.body).toEqual(testPayload);
+      expect(result.compressedSize).toBeLessThanOrEqual(compressed.length + 1);
     }
   });
 });

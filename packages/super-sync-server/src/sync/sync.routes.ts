@@ -27,8 +27,18 @@ import {
   type CompressedJsonBodyParseResult,
 } from './compressed-body-parser';
 import { APPROX_BYTES_PER_OP } from './sync.const';
+import { EncryptedOpsNotSupportedError } from './services/snapshot.service';
 
 type ZodIssue = z.ZodError['issues'][number];
+
+/**
+ * Static client-facing message for encrypted-op snapshot rejection.
+ * The thrown error's `message` contains the encrypted-op count and must
+ * NOT be echoed to the client (data-volume side-channel).
+ */
+const ENCRYPTED_OPS_CLIENT_MESSAGE =
+  'Server-side snapshot is unavailable because operations are end-to-end encrypted. ' +
+  'Use the client app\'s "Sync Now" button to decrypt and restore locally.';
 
 /**
  * Helper to create validation error response.
@@ -173,6 +183,10 @@ const sendCompressedBodyParseFailure = (
   } else if (failure.reason === 'decompress-failed') {
     Logger.warn(
       `[user:${userId}] Failed to decompress ${options.decompressFailureLabel}: ${errorMessage(failure.cause)}`,
+    );
+  } else if (failure.reason === 'invalid-json') {
+    Logger.warn(
+      `[user:${userId}] Decompressed ${options.decompressFailureLabel} is not valid JSON: ${errorMessage(failure.cause)}`,
     );
   }
 
@@ -676,6 +690,16 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         Logger.info(`[user:${userId}] Snapshot ready (seq=${snapshot.serverSeq})`);
         return reply.send(snapshot as SnapshotResponse);
       } catch (err) {
+        if (err instanceof EncryptedOpsNotSupportedError) {
+          Logger.info(
+            `[user:${getAuthUser(req).userId}] Snapshot blocked due to encrypted ops (count=${err.encryptedOpCount})`,
+          );
+          return reply.status(400).send({
+            error: ENCRYPTED_OPS_CLIENT_MESSAGE,
+            errorCode: SYNC_ERROR_CODES.ENCRYPTED_OPS_NOT_SUPPORTED,
+          });
+        }
+
         Logger.error(`Get snapshot error: ${errorMessage(err)}`);
         return reply.status(500).send({ error: 'Internal server error' });
       }
@@ -878,18 +902,21 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
             const uploadResult = results[0];
 
             if (uploadResult.accepted && uploadResult.serverSeq !== undefined) {
-              // Cache the snapshot
-              const cacheResult = await syncService.cacheSnapshot(
+              // Cache the snapshot — but only if the payload is server-replayable.
+              // Encrypted snapshots remain available as ops but can't back
+              // server-side restore, so we skip caching their blob.
+              const cacheResult = await syncService.cacheSnapshotIfReplayable(
                 userId,
                 state,
                 uploadResult.serverSeq,
+                op.isPayloadEncrypted,
                 preparedSnapshot,
               );
               const storedOpBytes =
                 preparedSnapshot.stateBytes + computeJsonStorageBytes(op.vectorClock, {});
               await applyStorageUsageDelta(
                 userId,
-                storedOpBytes + cacheResult.deltaBytes,
+                storedOpBytes + (cacheResult?.deltaBytes ?? 0),
                 'after snapshot',
               );
             }
@@ -1069,6 +1096,16 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
 
         return reply.send(snapshot);
       } catch (err) {
+        // Handle encrypted ops error - this is a known limitation, not a server error
+        if (err instanceof EncryptedOpsNotSupportedError) {
+          Logger.info(
+            `[user:${getAuthUser(req).userId}] Restore blocked due to encrypted ops (count=${err.encryptedOpCount})`,
+          );
+          return reply.status(400).send({
+            error: ENCRYPTED_OPS_CLIENT_MESSAGE,
+            errorCode: SYNC_ERROR_CODES.ENCRYPTED_OPS_NOT_SUPPORTED,
+          });
+        }
         const message = errorMessage(err);
         if (
           message.includes('exceeds latest sequence') ||
@@ -1078,16 +1115,6 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
             `[user:${getAuthUser(req).userId}] Invalid restore request: ${message}`,
           );
           return reply.status(400).send({ error: message });
-        }
-        // Handle encrypted ops error - this is a known limitation, not a server error
-        if (message.includes('ENCRYPTED_OPS_NOT_SUPPORTED')) {
-          Logger.info(
-            `[user:${getAuthUser(req).userId}] Restore blocked due to encrypted ops`,
-          );
-          return reply.status(400).send({
-            error: message,
-            errorCode: SYNC_ERROR_CODES.ENCRYPTED_OPS_NOT_SUPPORTED,
-          });
         }
         Logger.error(`Get restore snapshot error: ${message}`);
         return reply.status(500).send({ error: 'Internal server error' });

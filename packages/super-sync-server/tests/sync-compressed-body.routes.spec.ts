@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => {
     uploadOps: vi.fn(),
     cacheRequestResults: vi.fn(),
     cacheSnapshot: vi.fn(),
+    cacheSnapshotIfReplayable: vi.fn(),
     prepareSnapshotCache: vi.fn(),
     updateStorageUsage: vi.fn(),
     incrementStorageUsage: vi.fn(),
@@ -85,6 +86,12 @@ describe('Sync compressed body routes', () => {
       previousBytes: 0,
       deltaBytes: 0,
     });
+    mocks.syncService.cacheSnapshotIfReplayable.mockResolvedValue({
+      cached: true,
+      bytesWritten: 0,
+      previousBytes: 0,
+      deltaBytes: 0,
+    });
     mocks.syncService.prepareSnapshotCache.mockImplementation((state: unknown) => {
       const serialized = JSON.stringify(state);
       const data = zlib.gzipSync(serialized);
@@ -95,6 +102,7 @@ describe('Sync compressed body routes', () => {
         cacheable: true,
       };
     });
+    mocks.syncService.getCachedSnapshotBytes.mockResolvedValue(0);
     mocks.syncService.updateStorageUsage.mockResolvedValue(undefined);
     mocks.syncService.incrementStorageUsage.mockResolvedValue(undefined);
     mocks.syncService.decrementStorageUsage.mockResolvedValue(undefined);
@@ -332,10 +340,11 @@ describe('Sync compressed body routes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json().accepted).toBe(true);
-    expect(mocks.syncService.cacheSnapshot).toHaveBeenCalledWith(
+    expect(mocks.syncService.cacheSnapshotIfReplayable).toHaveBeenCalledWith(
       1,
       payload.state,
       1,
+      false,
       expect.anything(),
     );
     // Snapshot quota gate now accounts via estimated op + cache-delta bytes
@@ -502,7 +511,7 @@ describe('Sync compressed body routes', () => {
       cacheable: true,
     });
     mocks.syncService.uploadOps.mockResolvedValueOnce([{ accepted: true, serverSeq: 7 }]);
-    mocks.syncService.cacheSnapshot.mockResolvedValueOnce({
+    mocks.syncService.cacheSnapshotIfReplayable.mockResolvedValueOnce({
       cached: true,
       bytesWritten: 40,
       previousBytes: 10,
@@ -542,7 +551,7 @@ describe('Sync compressed body routes', () => {
     mocks.syncService.prepareSnapshotCache.mockReturnValueOnce(preparedSnapshot);
     mocks.syncService.getCachedSnapshotBytes.mockResolvedValueOnce(10);
     mocks.syncService.uploadOps.mockResolvedValueOnce([{ accepted: true, serverSeq: 7 }]);
-    mocks.syncService.cacheSnapshot.mockResolvedValueOnce({
+    mocks.syncService.cacheSnapshotIfReplayable.mockResolvedValueOnce({
       cached: true,
       bytesWritten: 40,
       previousBytes: 10,
@@ -566,10 +575,11 @@ describe('Sync compressed body routes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(mocks.syncService.checkStorageQuota).toHaveBeenCalledWith(1, expectedDelta);
-    expect(mocks.syncService.cacheSnapshot).toHaveBeenCalledWith(
+    expect(mocks.syncService.cacheSnapshotIfReplayable).toHaveBeenCalledWith(
       1,
       { TASK: { 'task-1': { id: 'task-1' } } },
       7,
+      false,
       preparedSnapshot,
     );
     expect(mocks.syncService.incrementStorageUsage).toHaveBeenCalledWith(

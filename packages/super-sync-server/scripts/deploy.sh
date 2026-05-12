@@ -13,7 +13,8 @@
 # Options:
 #   --build    Build locally instead of pulling from registry
 
-set -e
+set -euo pipefail
+shopt -s inherit_errexit 2>/dev/null || true
 
 # Check required dependencies
 for cmd in docker curl git; do
@@ -28,8 +29,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVER_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Get domain from .env file
+DOMAIN=""
 if [ -f "$SERVER_DIR/.env" ]; then
-    DOMAIN=$(grep -E '^DOMAIN=' "$SERVER_DIR/.env" | cut -d'=' -f2- | tr -d '"'"'")
+    DOMAIN=$(grep -E '^DOMAIN=' "$SERVER_DIR/.env" | cut -d'=' -f2- | tr -d '"'"'" || true)
 fi
 
 if [ -z "$DOMAIN" ]; then
@@ -41,7 +43,7 @@ fi
 
 # Parse arguments
 BUILD_LOCAL=false
-if [ "$1" = "--build" ]; then
+if [ "${1:-}" = "--build" ]; then
     BUILD_LOCAL=true
 fi
 
@@ -59,11 +61,14 @@ echo ""
 
 # Load GHCR credentials from .env (for private images)
 if [ -f ".env" ]; then
-    export $(grep -E '^(GHCR_USER|GHCR_TOKEN)=' ".env" 2>/dev/null | xargs)
+    GHCR_VARS=$(grep -E '^(GHCR_USER|GHCR_TOKEN)=' ".env" 2>/dev/null | xargs || true)
+    if [ -n "$GHCR_VARS" ]; then
+        export $GHCR_VARS
+    fi
 fi
 
 # Login to GHCR if credentials provided
-if [ -n "$GHCR_TOKEN" ] && [ -n "$GHCR_USER" ]; then
+if [ -n "${GHCR_TOKEN:-}" ] && [ -n "${GHCR_USER:-}" ]; then
     echo "==> Logging in to GHCR..."
     echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
     echo ""
@@ -76,7 +81,7 @@ if [ -f "docker-compose.monitoring.yml" ]; then
 fi
 
 # Validate Caddyfile syntax before deploying
-CADDY_IMAGE=$(grep 'image:.*caddy:' docker-compose.yml | head -1 | awk '{print $2}' | tr -d '"'"'")
+CADDY_IMAGE=$(grep 'image:.*caddy:' docker-compose.yml | head -1 | awk '{print $2}' | tr -d '"'"'" || true)
 if [ -z "$CADDY_IMAGE" ]; then
     echo "ERROR: Could not determine Caddy image from docker-compose.yml"
     exit 1
@@ -135,15 +140,18 @@ if ! docker compose $COMPOSE_FILES up -d --wait --wait-timeout "$WAIT_TIMEOUT" 2
     echo ""
     echo "==> Container startup failed!"
 
-    # Show status of non-running containers
+    # Show status of non-running containers — best-effort under pipefail so
+    # the script still reaches `exit 1` when this diagnostic block fails.
     echo "    Container status:"
-    docker compose $COMPOSE_FILES ps --format '{{.Name}}\t{{.Service}}\t{{.State}}' | while IFS=$'\t' read -r NAME SERVICE STATE; do
-        if [ -n "$STATE" ] && [ "$STATE" != "running" ]; then
-            echo "      $NAME ($STATE)"
-            echo ""
-            docker compose $COMPOSE_FILES logs --tail=10 "$SERVICE" 2>/dev/null
-        fi
-    done
+    {
+        docker compose $COMPOSE_FILES ps --format '{{.Name}}\t{{.Service}}\t{{.State}}' | while IFS=$'\t' read -r NAME SERVICE STATE; do
+            if [ -n "$STATE" ] && [ "$STATE" != "running" ]; then
+                echo "      $NAME ($STATE)"
+                echo ""
+                docker compose $COMPOSE_FILES logs --tail=10 "$SERVICE" 2>/dev/null || true
+            fi
+        done
+    } || true
     exit 1
 fi
 echo "    All containers healthy"

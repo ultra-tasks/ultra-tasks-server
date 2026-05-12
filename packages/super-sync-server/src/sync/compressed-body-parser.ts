@@ -1,10 +1,11 @@
-import * as zlib from 'zlib';
+import { gunzipAsync, isDecompressedPayloadTooLargeError } from './gzip';
 
 export type CompressedJsonBodyParseFailureReason =
   | 'expected-compressed-buffer'
   | 'compressed-payload-too-large'
   | 'decompressed-payload-too-large'
-  | 'decompress-failed';
+  | 'decompress-failed'
+  | 'invalid-json';
 
 export type CompressedJsonBodyParseResult =
   | {
@@ -29,23 +30,6 @@ export interface ParseCompressedJsonBodyOptions {
   maxDecompressedSize: number;
 }
 
-const isDecompressedPayloadTooLargeError = (cause: unknown): boolean => {
-  const code =
-    cause !== null && typeof cause === 'object' && 'code' in cause
-      ? String((cause as { code?: unknown }).code)
-      : undefined;
-
-  if (code === 'ERR_BUFFER_TOO_LARGE' || code === 'ERR_OUT_OF_RANGE') {
-    return true;
-  }
-
-  const message = cause instanceof Error ? cause.message : '';
-  return (
-    message.includes('maxOutputLength') ||
-    message.includes('Cannot create a Buffer larger than')
-  );
-};
-
 /**
  * Decompress gzip body, handling base64 encoding from Android clients.
  * Android WebView can't send binary fetch bodies, so the client sends
@@ -54,30 +38,19 @@ const isDecompressedPayloadTooLargeError = (cause: unknown): boolean => {
 export const decompressBody = async (
   rawBody: Buffer,
   contentTransferEncoding: string | undefined,
-  maxOutputLength?: number,
+  maxDecompressedSize?: number,
 ): Promise<Buffer> => {
-  const gunzipOptions: zlib.ZlibOptions =
-    maxOutputLength === undefined ? {} : { maxOutputLength };
-  const gunzipAsync = (body: Buffer): Promise<Buffer> =>
-    new Promise((resolve, reject) => {
-      const callback = (err: Error | null, result: Buffer): void => {
-        if (err) {
-          reject(err);
-          return;
-        }
-        resolve(result);
-      };
-
-      zlib.gunzip(body, gunzipOptions, callback);
-    });
+  const gunzipOptions =
+    maxDecompressedSize === undefined
+      ? undefined
+      : { maxOutputLength: maxDecompressedSize };
 
   if (contentTransferEncoding === 'base64') {
-    const base64String = rawBody.toString('utf-8');
-    const binaryData = Buffer.from(base64String, 'base64');
-    return gunzipAsync(binaryData);
+    const binaryData = Buffer.from(rawBody.toString('utf-8'), 'base64');
+    return gunzipAsync(binaryData, gunzipOptions);
   }
 
-  return gunzipAsync(rawBody);
+  return gunzipAsync(rawBody, gunzipOptions);
 };
 
 export const parseCompressedJsonBody = async (
@@ -94,41 +67,31 @@ export const parseCompressedJsonBody = async (
     };
   }
 
-  if (rawBody.length > options.maxCompressedSize) {
+  // For base64 transport, measure the BINARY gzip length, not the
+  // base64-encoded rawBody length. Otherwise `maxCompressedSize` (documented
+  // in bytes of gzip) effectively shrinks to ~75% for Android clients.
+  // Decode once here and reuse the binary buffer for the gunzip call below
+  // (avoids ~13 MB of redundant allocation per request at the 10 MB cap).
+  const isBase64 = contentTransferEncoding === 'base64';
+  const binaryBody = isBase64
+    ? Buffer.from(rawBody.toString('utf-8'), 'base64')
+    : rawBody;
+  const compressedSize = binaryBody.length;
+
+  if (compressedSize > options.maxCompressedSize) {
     return {
       ok: false,
       statusCode: 413,
       error: 'Compressed payload too large',
       reason: 'compressed-payload-too-large',
-      compressedSize: rawBody.length,
+      compressedSize,
     };
   }
 
+  const gunzipOptions = { maxOutputLength: options.maxDecompressedSize };
+  let decompressed: Buffer;
   try {
-    const decompressed = await decompressBody(
-      rawBody,
-      contentTransferEncoding,
-      options.maxDecompressedSize,
-    );
-
-    if (decompressed.length > options.maxDecompressedSize) {
-      return {
-        ok: false,
-        statusCode: 413,
-        error: 'Decompressed payload too large',
-        reason: 'decompressed-payload-too-large',
-        compressedSize: rawBody.length,
-        decompressedSize: decompressed.length,
-      };
-    }
-
-    return {
-      ok: true,
-      body: JSON.parse(decompressed.toString('utf-8')),
-      compressedSize: rawBody.length,
-      decompressedSize: decompressed.length,
-      isBase64: contentTransferEncoding === 'base64',
-    };
+    decompressed = await gunzipAsync(binaryBody, gunzipOptions);
   } catch (cause) {
     if (isDecompressedPayloadTooLargeError(cause)) {
       return {
@@ -136,7 +99,7 @@ export const parseCompressedJsonBody = async (
         statusCode: 413,
         error: 'Decompressed payload too large',
         reason: 'decompressed-payload-too-large',
-        compressedSize: rawBody.length,
+        compressedSize,
         cause,
       };
     }
@@ -146,7 +109,38 @@ export const parseCompressedJsonBody = async (
       statusCode: 400,
       error: 'Failed to decompress gzip body',
       reason: 'decompress-failed',
-      compressedSize: rawBody.length,
+      compressedSize,
+      cause,
+    };
+  }
+
+  if (decompressed.length > options.maxDecompressedSize) {
+    return {
+      ok: false,
+      statusCode: 413,
+      error: 'Decompressed payload too large',
+      reason: 'decompressed-payload-too-large',
+      compressedSize,
+      decompressedSize: decompressed.length,
+    };
+  }
+
+  try {
+    return {
+      ok: true,
+      body: JSON.parse(decompressed.toString('utf-8')),
+      compressedSize,
+      decompressedSize: decompressed.length,
+      isBase64,
+    };
+  } catch (cause) {
+    return {
+      ok: false,
+      statusCode: 400,
+      error: 'Invalid JSON in decompressed body',
+      reason: 'invalid-json',
+      compressedSize,
+      decompressedSize: decompressed.length,
       cause,
     };
   }

@@ -725,6 +725,22 @@ export class SyncService {
     return this.snapshotService.cacheSnapshot(userId, state, serverSeq, preparedSnapshot);
   }
 
+  async cacheSnapshotIfReplayable(
+    userId: number,
+    state: unknown,
+    serverSeq: number,
+    isPayloadEncrypted: boolean,
+    preparedSnapshot?: PreparedSnapshotCache,
+  ): Promise<CacheSnapshotResult | null> {
+    return this.snapshotService.cacheSnapshotIfReplayable(
+      userId,
+      state,
+      serverSeq,
+      isPayloadEncrypted,
+      preparedSnapshot,
+    );
+  }
+
   async generateSnapshot(
     userId: number,
     onCacheDelta?: (deltaBytes: number) => Promise<void>,

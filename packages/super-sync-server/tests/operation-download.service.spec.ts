@@ -488,6 +488,53 @@ describe('OperationDownloadService', () => {
       expect(result.gapDetected).toBe(true);
     });
 
+    it('should use latestSeq as a stable upper bound for snapshot and ops queries', async () => {
+      let capturedTx: any;
+
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+        capturedTx = {
+          operation: {
+            findFirst: vi.fn().mockResolvedValue(null),
+            findMany: vi.fn().mockResolvedValue([]),
+            aggregate: vi.fn().mockResolvedValue({ _min: { serverSeq: 1 } }),
+          },
+          userSyncState: {
+            findUnique: vi.fn().mockResolvedValue({ lastSeq: 42 }),
+          },
+        };
+        return fn(capturedTx);
+      });
+
+      await service.getOpsSinceWithSeq(1, 10);
+
+      expect(
+        capturedTx.userSyncState.findUnique.mock.invocationCallOrder[0],
+      ).toBeLessThan(capturedTx.operation.findFirst.mock.invocationCallOrder[0]);
+      expect(capturedTx.operation.findFirst).toHaveBeenCalledWith({
+        where: {
+          userId: 1,
+          serverSeq: { lte: 42 },
+          opType: { in: ['SYNC_IMPORT', 'BACKUP_IMPORT', 'REPAIR'] },
+        },
+        orderBy: { serverSeq: 'desc' },
+        select: { serverSeq: true, clientId: true },
+      });
+      expect(capturedTx.operation.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            userId: 1,
+            serverSeq: { gt: 10, lte: 42 },
+          },
+          orderBy: { serverSeq: 'asc' },
+          take: 500,
+        }),
+      );
+      expect(capturedTx.operation.aggregate).toHaveBeenCalledWith({
+        where: { userId: 1, serverSeq: { lte: 42 } },
+        _min: { serverSeq: true },
+      });
+    });
+
     it('should NOT detect gap when excludeClient filters cause apparent gaps', async () => {
       const mockOps = [createMockOpRow(15, 'other-client')]; // From different client
 
