@@ -635,7 +635,7 @@ describe('SnapshotService', () => {
     });
 
     it('should reject latest snapshot generation when encrypted ops are in the replay range', async () => {
-      const update = vi.fn();
+      const upsert = vi.fn();
       const findMany = vi.fn();
 
       vi.mocked(prisma.$transaction).mockImplementation(async (fn) => {
@@ -650,7 +650,7 @@ describe('SnapshotService', () => {
                 snapshotAt: null,
                 snapshotSchemaVersion: null,
               }),
-            update,
+            upsert,
           },
           operation: {
             count: vi.fn().mockResolvedValue(1),
@@ -664,11 +664,11 @@ describe('SnapshotService', () => {
         'ENCRYPTED_OPS_NOT_SUPPORTED',
       );
       expect(findMany).not.toHaveBeenCalled();
-      expect(update).not.toHaveBeenCalled();
+      expect(upsert).not.toHaveBeenCalled();
     });
 
     it('should reject latest snapshot generation when replay cannot reach latestSeq', async () => {
-      const update = vi.fn();
+      const upsert = vi.fn();
 
       vi.mocked(prisma.$transaction).mockImplementation(async (fn) => {
         const mockTx = {
@@ -682,7 +682,7 @@ describe('SnapshotService', () => {
                 snapshotAt: null,
                 snapshotSchemaVersion: null,
               }),
-            update,
+            upsert,
           },
           operation: {
             count: vi.fn().mockResolvedValue(0),
@@ -706,7 +706,7 @@ describe('SnapshotService', () => {
       await expect(service.generateSnapshot(1)).rejects.toThrow(
         'SNAPSHOT_REPLAY_INCOMPLETE',
       );
-      expect(update).not.toHaveBeenCalled();
+      expect(upsert).not.toHaveBeenCalled();
     });
 
     it('should prevent concurrent snapshot generation for same user', async () => {
