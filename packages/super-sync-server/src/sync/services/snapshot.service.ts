@@ -952,7 +952,7 @@ export class SnapshotService {
             if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
               continue;
             }
-            state[key] = fullStateRecord[key];
+            state[key] = fullStateRecord[key] as Record<string, unknown>;
           }
           continue;
         }
