@@ -783,13 +783,14 @@ export class SyncService {
   async generateSnapshot(
     userId: number,
     onCacheDelta?: (deltaBytes: number) => Promise<void>,
+    maxCacheBytes?: number,
   ): Promise<{
     state: unknown;
     serverSeq: number;
     generatedAt: number;
     schemaVersion: number;
   }> {
-    return this.snapshotService.generateSnapshot(userId, onCacheDelta);
+    return this.snapshotService.generateSnapshot(userId, onCacheDelta, maxCacheBytes);
   }
 
   async getRestorePoints(

@@ -5,7 +5,36 @@ export type CompressedJsonBodyParseFailureReason =
   | 'compressed-payload-too-large'
   | 'decompressed-payload-too-large'
   | 'decompress-failed'
-  | 'invalid-json';
+  | 'invalid-json'
+  | 'unsupported-content-encoding';
+
+/**
+ * RFC 7230 allows `Content-Encoding` to be mixed-case (`Gzip`), padded
+ * (` gzip `) or a layered list (`gzip, deflate`). Normalize for the
+ * single-token gzip check, and explicitly reject layered encodings — we only
+ * decompress one layer, so anything else risks silent data loss or bombs.
+ */
+export const normalizeContentEncoding = (
+  raw: string | string[] | undefined,
+): { value: string; layered: boolean } => {
+  const first = Array.isArray(raw) ? raw[0] : raw;
+  const value = String(first ?? '')
+    .trim()
+    .toLowerCase();
+  return { value, layered: value.includes(',') };
+};
+
+/**
+ * Returns true when the header indicates an unambiguous, single-token gzip
+ * encoding. Used by route handlers to decide whether to call the gzip parser
+ * instead of relying on case-sensitive `=== 'gzip'` comparisons.
+ */
+export const isSingleTokenGzipEncoding = (
+  raw: string | string[] | undefined,
+): boolean => {
+  const { value, layered } = normalizeContentEncoding(raw);
+  return value === 'gzip' && !layered;
+};
 
 export type CompressedJsonBodyParseResult =
   | {

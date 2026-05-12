@@ -30,8 +30,9 @@ const MAX_OPS_FOR_SNAPSHOT = 100000;
 /**
  * Maximum compressed snapshot size in bytes (50MB).
  * Prevents storage exhaustion from excessively large snapshots.
+ * Exported so route-level quota gates can size the worst-case write.
  */
-const MAX_SNAPSHOT_SIZE_BYTES = 50 * 1024 * 1024;
+export const MAX_SNAPSHOT_SIZE_BYTES = 50 * 1024 * 1024;
 
 /**
  * Maximum decompressed snapshot size in bytes (100MB).
@@ -364,10 +365,17 @@ export class SnapshotService {
    * Callers should use it to keep the storage usage counter in sync with
    * on-disk reality — otherwise `GET /snapshot` can grow `snapshotData` by up
    * to ~MAX_SNAPSHOT_SIZE_BYTES without the counter noticing.
+   *
+   * `maxCacheBytes` (B5) caps how large the persisted cache blob may be.
+   * When the freshly compressed snapshot would exceed this cap (typically set
+   * to the user's remaining quota), the cache is NOT written but the in-memory
+   * snapshot is still returned to the caller. Lets a user at quota still read
+   * their state without growing on-disk storage further.
    */
   async generateSnapshot(
     userId: number,
     onCacheDelta?: (deltaBytes: number) => Promise<void>,
+    maxCacheBytes?: number,
   ): Promise<SnapshotResult> {
     // FIX 1.7: Check if snapshot generation is already in progress for this user.
     // If so, wait for the existing generation and return its result.
@@ -379,7 +387,7 @@ export class SnapshotService {
     }
 
     // Start new generation and store the promise
-    const promise = this._generateSnapshotImpl(userId, onCacheDelta);
+    const promise = this._generateSnapshotImpl(userId, onCacheDelta, maxCacheBytes);
     this.snapshotGenerationLocks.set(userId, promise);
 
     try {
@@ -402,6 +410,7 @@ export class SnapshotService {
   private async _generateSnapshotImpl(
     userId: number,
     onCacheDelta?: (deltaBytes: number) => Promise<void>,
+    maxCacheBytes?: number,
   ): Promise<SnapshotResult> {
     let cacheDelta = 0;
     const result = await prisma.$transaction(
@@ -549,7 +558,23 @@ export class SnapshotService {
         // written.
         const previousCachedBytes = cachedRow?.snapshotData?.length ?? 0;
         const compressed = await gzipAsync(Buffer.from(JSON.stringify(state), 'utf-8'));
-        if (compressed.length <= MAX_SNAPSHOT_SIZE_BYTES) {
+        // B5: enforce a quota-aware cap on cache growth. The hard
+        // `MAX_SNAPSHOT_SIZE_BYTES` ceiling still applies; `maxCacheBytes`
+        // (when provided) tightens it to the user's remaining quota plus the
+        // previously-cached bytes (since rewriting reclaims them). When the
+        // new blob would exceed this cap, skip the cache write — the snapshot
+        // is still returned in-memory to the client.
+        const effectiveCap =
+          maxCacheBytes !== undefined
+            ? Math.min(MAX_SNAPSHOT_SIZE_BYTES, maxCacheBytes + previousCachedBytes)
+            : MAX_SNAPSHOT_SIZE_BYTES;
+        if (compressed.length > effectiveCap && maxCacheBytes !== undefined) {
+          Logger.info(
+            `[user:${userId}] Skipping snapshot cache write: ` +
+              `compressed ${compressed.length}B > cap ${effectiveCap}B (remaining quota window)`,
+          );
+        }
+        if (compressed.length <= effectiveCap) {
           const cacheData = {
             snapshotData: compressed,
             lastSnapshotSeq: latestSeq,

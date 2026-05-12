@@ -504,6 +504,63 @@ describe('SnapshotService', () => {
       expect(deltaArg).not.toBe(0);
     });
 
+    it('should skip the cache write when the new blob exceeds maxCacheBytes (B5)', async () => {
+      // Regression for B5: GET /snapshot must not grow `snapshotData` beyond
+      // the user's remaining quota. When `maxCacheBytes` is set and the new
+      // compressed blob would exceed it (accounting for the bytes the
+      // previously-cached snapshot will free), skip the cache write — the
+      // in-memory snapshot is still returned to the caller.
+      const previousBytes = 0;
+      const updateManySpy = vi.fn().mockResolvedValue({ count: 1 });
+      const createSpy = vi.fn();
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+        const mockTx = {
+          userSyncState: {
+            findUnique: vi
+              .fn()
+              .mockResolvedValueOnce({ lastSeq: 1 })
+              .mockResolvedValueOnce({
+                snapshotData: null,
+                lastSnapshotSeq: 0,
+                snapshotAt: null,
+                snapshotSchemaVersion: 1,
+              }),
+            updateMany: updateManySpy,
+            create: createSpy,
+          },
+          operation: {
+            count: vi.fn().mockResolvedValue(0),
+            findFirst: vi.fn().mockResolvedValue(null),
+            findMany: vi.fn().mockResolvedValue([
+              {
+                id: 'op-1',
+                serverSeq: 1,
+                opType: 'CRT',
+                entityType: 'TASK',
+                entityId: 'task-1',
+                payload: { title: 'T' },
+                schemaVersion: 1,
+                isPayloadEncrypted: false,
+              },
+            ]),
+          },
+        };
+        return fn(mockTx);
+      });
+
+      const onCacheDelta = vi.fn().mockResolvedValue(undefined);
+
+      // maxCacheBytes=1 forces the cap below any real gzip output, so the
+      // write must be skipped even though the snapshot itself is generated.
+      const result = await service.generateSnapshot(1, onCacheDelta, 1);
+
+      expect(result.serverSeq).toBe(1);
+      expect(updateManySpy).not.toHaveBeenCalled();
+      expect(createSpy).not.toHaveBeenCalled();
+      expect(onCacheDelta).not.toHaveBeenCalled();
+      void previousBytes;
+    });
+
     it('should not invoke onCacheDelta when the cached snapshot is already up to date', async () => {
       // When startSeq >= latestSeq the snapshot service returns the cached
       // state without rewriting snapshotData — no counter update is needed.

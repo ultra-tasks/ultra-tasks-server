@@ -539,7 +539,12 @@ describe('Sync compressed body routes', () => {
     expect(mocks.syncService.markStorageNeedsReconcile).toHaveBeenCalledWith(1);
   });
 
-  it('should count snapshot op bytes and cache replacement delta after upload', async () => {
+  it('should pre-gate the snapshot upload by op + cache-delta bytes', async () => {
+    // B3-route: the gate budget covers BOTH the op row (payload+vc) and the
+    // cache rewrite, so the user cannot squeeze through a snapshot whose
+    // op-row alone fits but whose cache delta would breach quota. The
+    // post-commit increment, however, only writes the cache portion — the
+    // op-row counter is now incremented inside `uploadOps`'s `$transaction`.
     const clientId = 'snapshot-delta-client';
     const vectorClock = { [clientId]: 1 };
     const preparedSnapshot = {
@@ -571,10 +576,11 @@ describe('Sync compressed body routes', () => {
     });
 
     const vectorClockBytes = Buffer.byteLength(JSON.stringify(vectorClock), 'utf8');
-    const expectedDelta = preparedSnapshot.stateBytes + vectorClockBytes + 30;
+    // Gate budget = op-row bytes + cache-delta bytes (40 - 10 = 30).
+    const expectedGate = preparedSnapshot.stateBytes + vectorClockBytes + 30;
 
     expect(response.statusCode).toBe(200);
-    expect(mocks.syncService.checkStorageQuota).toHaveBeenCalledWith(1, expectedDelta);
+    expect(mocks.syncService.checkStorageQuota).toHaveBeenCalledWith(1, expectedGate);
     expect(mocks.syncService.cacheSnapshotIfReplayable).toHaveBeenCalledWith(
       1,
       { TASK: { 'task-1': { id: 'task-1' } } },
@@ -582,9 +588,8 @@ describe('Sync compressed body routes', () => {
       false,
       preparedSnapshot,
     );
-    expect(mocks.syncService.incrementStorageUsage).toHaveBeenCalledWith(
-      1,
-      expectedDelta,
-    );
+    // Post-commit increment only carries the snapshot-cache portion; the
+    // op-row counter is written atomically inside `uploadOps`'s transaction.
+    expect(mocks.syncService.incrementStorageUsage).toHaveBeenCalledWith(1, 30);
   });
 });
