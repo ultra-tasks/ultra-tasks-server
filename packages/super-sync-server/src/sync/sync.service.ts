@@ -26,6 +26,22 @@ import {
   type CacheSnapshotResult,
 } from './services';
 
+interface DuplicateOperationCandidate {
+  userId: number;
+  clientId: string;
+  actionType: string;
+  opType: string;
+  entityType: string;
+  entityId: string | null;
+  payload: unknown;
+  vectorClock: unknown;
+  schemaVersion: number;
+  clientTimestamp: bigint | number | string;
+  receivedAt: bigint | number | string;
+  isPayloadEncrypted: boolean;
+  syncImportReason: string | null;
+}
+
 /**
  * Main sync orchestration service.
  *
@@ -193,25 +209,85 @@ export class SyncService {
   }
 
   private isSameDuplicateOperation(
-    existingOp: {
-      userId: number;
-      clientId: string;
-      actionType: string;
-      opType: string;
-      entityType: string;
-      entityId: string | null;
-    },
+    existingOp: DuplicateOperationCandidate,
     userId: number,
     op: Operation,
+    originalTimestamp: number = op.timestamp,
   ): boolean {
+    const storedVectorClock = limitVectorClockSize(op.vectorClock, [op.clientId]);
+
     return (
       existingOp.userId === userId &&
       existingOp.clientId === op.clientId &&
       existingOp.actionType === op.actionType &&
       existingOp.opType === op.opType &&
       existingOp.entityType === op.entityType &&
-      existingOp.entityId === (op.entityId ?? null)
+      existingOp.entityId === (op.entityId ?? null) &&
+      this.areJsonValuesEqual(existingOp.payload, op.payload) &&
+      this.areJsonValuesEqual(existingOp.vectorClock, storedVectorClock) &&
+      existingOp.schemaVersion === op.schemaVersion &&
+      this.isSameDuplicateTimestamp(
+        existingOp.clientTimestamp,
+        existingOp.receivedAt,
+        op.timestamp,
+        originalTimestamp,
+      ) &&
+      existingOp.isPayloadEncrypted === (op.isPayloadEncrypted ?? false) &&
+      existingOp.syncImportReason === (op.syncImportReason ?? null)
     );
+  }
+
+  private isSameDuplicateTimestamp(
+    existingTimestamp: bigint | number | string,
+    existingReceivedAt: bigint | number | string,
+    incomingStoredTimestamp: number,
+    incomingOriginalTimestamp: number,
+  ): boolean {
+    if (existingTimestamp.toString() === incomingStoredTimestamp.toString()) {
+      return true;
+    }
+
+    if (incomingOriginalTimestamp === incomingStoredTimestamp) {
+      return false;
+    }
+
+    // Future timestamps are clamped at receive time. A retry of the same op may
+    // be clamped to a later value, so allow exact-content duplicates whose stored
+    // timestamp came from an earlier clamp of the same original client timestamp.
+    const existingTimestampValue = BigInt(existingTimestamp);
+    const existingReceivedAtValue = BigInt(existingReceivedAt);
+    return (
+      existingTimestampValue ===
+        existingReceivedAtValue + BigInt(this.config.maxClockDriftMs) &&
+      existingTimestampValue <= BigInt(incomingOriginalTimestamp)
+    );
+  }
+
+  private areJsonValuesEqual(a: unknown, b: unknown): boolean {
+    return this.stableJsonStringify(a) === this.stableJsonStringify(b);
+  }
+
+  private stableJsonStringify(value: unknown): string {
+    return JSON.stringify(this.toStableJsonValue(value)) ?? 'undefined';
+  }
+
+  private toStableJsonValue(value: unknown): unknown {
+    if (Array.isArray(value)) {
+      return value.map((item) => this.toStableJsonValue(item));
+    }
+
+    if (value !== null && typeof value === 'object') {
+      return Object.fromEntries(
+        Object.keys(value as Record<string, unknown>)
+          .sort()
+          .map((key) => [
+            key,
+            this.toStableJsonValue((value as Record<string, unknown>)[key]),
+          ]),
+      );
+    }
+
+    return value;
   }
 
   // === Upload Operations ===
@@ -375,9 +451,9 @@ export class SyncService {
     tx: Prisma.TransactionClient,
   ): Promise<UploadResult> {
     // Clamp future timestamps instead of rejecting them (prevents silent data loss)
+    const originalTimestamp = op.timestamp;
     const maxAllowedTimestamp = now + this.config.maxClockDriftMs;
     if (op.timestamp > maxAllowedTimestamp) {
-      const originalTimestamp = op.timestamp;
       op.timestamp = maxAllowedTimestamp;
       Logger.audit({
         event: 'TIMESTAMP_CLAMPED',
@@ -426,11 +502,18 @@ export class SyncService {
         opType: true,
         entityType: true,
         entityId: true,
+        payload: true,
+        vectorClock: true,
+        schemaVersion: true,
+        clientTimestamp: true,
+        receivedAt: true,
+        isPayloadEncrypted: true,
+        syncImportReason: true,
       },
     });
 
     if (existingOp) {
-      if (!this.isSameDuplicateOperation(existingOp, userId, op)) {
+      if (!this.isSameDuplicateOperation(existingOp, userId, op, originalTimestamp)) {
         Logger.audit({
           event: 'OP_REJECTED',
           userId,
@@ -593,6 +676,13 @@ export class SyncService {
           opType: true,
           entityType: true,
           entityId: true,
+          payload: true,
+          vectorClock: true,
+          schemaVersion: true,
+          clientTimestamp: true,
+          receivedAt: true,
+          isPayloadEncrypted: true,
+          syncImportReason: true,
         },
       });
 
@@ -607,7 +697,7 @@ export class SyncService {
         data: { lastSeq: { decrement: 1 } },
       });
 
-      if (!this.isSameDuplicateOperation(duplicateOp, userId, op)) {
+      if (!this.isSameDuplicateOperation(duplicateOp, userId, op, originalTimestamp)) {
         Logger.audit({
           event: 'OP_REJECTED',
           userId,
