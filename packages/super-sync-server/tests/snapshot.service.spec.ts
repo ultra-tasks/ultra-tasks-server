@@ -215,6 +215,105 @@ describe('SnapshotService', () => {
       const result = await service.generateSnapshot(1);
       expect(result).toBeDefined();
     });
+
+    it('should reject latest snapshots when encrypted ops exist in replay range', async () => {
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn) => {
+        const mockTx = {
+          userSyncState: {
+            findUnique: vi
+              .fn()
+              .mockResolvedValueOnce({ lastSeq: 5 })
+              .mockResolvedValueOnce({ snapshotData: null, lastSnapshotSeq: null }),
+          },
+          operation: {
+            count: vi.fn().mockResolvedValue(1),
+            findMany: vi.fn(),
+          },
+        };
+        return fn(mockTx as any);
+      });
+
+      await expect(service.generateSnapshot(1)).rejects.toThrow(
+        'ENCRYPTED_OPS_NOT_SUPPORTED',
+      );
+    });
+
+    it('should bound latest snapshot replay queries by latestSeq', async () => {
+      let findManySpy: ReturnType<typeof vi.fn>;
+
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn) => {
+        findManySpy = vi.fn().mockResolvedValue([
+          {
+            id: 'op-1',
+            opType: 'CRT',
+            entityType: 'TASK',
+            entityId: 'task-1',
+            payload: { id: 'task-1' },
+            isPayloadEncrypted: false,
+            serverSeq: 1,
+            schemaVersion: 1,
+          },
+        ]);
+        const mockTx = {
+          userSyncState: {
+            findUnique: vi
+              .fn()
+              .mockResolvedValueOnce({ lastSeq: 1 })
+              .mockResolvedValueOnce({ snapshotData: null, lastSnapshotSeq: null }),
+            update: vi.fn().mockResolvedValue({}),
+          },
+          operation: {
+            count: vi.fn().mockResolvedValue(0),
+            findMany: findManySpy,
+          },
+        };
+        return fn(mockTx as any);
+      });
+
+      await service.generateSnapshot(1);
+
+      expect(findManySpy!).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            userId: 1,
+            serverSeq: { gt: 0, lte: 1 },
+          },
+        }),
+      );
+    });
+
+    it('should reject latest snapshot replay when an operation is missing', async () => {
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn) => {
+        const mockTx = {
+          userSyncState: {
+            findUnique: vi
+              .fn()
+              .mockResolvedValueOnce({ lastSeq: 2 })
+              .mockResolvedValueOnce({ snapshotData: null, lastSnapshotSeq: null }),
+          },
+          operation: {
+            count: vi.fn().mockResolvedValue(0),
+            findMany: vi.fn().mockResolvedValue([
+              {
+                id: 'op-2',
+                opType: 'CRT',
+                entityType: 'TASK',
+                entityId: 'task-2',
+                payload: { id: 'task-2' },
+                isPayloadEncrypted: false,
+                serverSeq: 2,
+                schemaVersion: 1,
+              },
+            ]),
+          },
+        };
+        return fn(mockTx as any);
+      });
+
+      await expect(service.generateSnapshot(1)).rejects.toThrow(
+        'SNAPSHOT_REPLAY_INCOMPLETE',
+      );
+    });
   });
 
   describe('clearForUser', () => {
@@ -454,6 +553,39 @@ describe('SnapshotService', () => {
         'ENCRYPTED_OPS_NOT_SUPPORTED',
       );
     });
+
+    it('should throw error when replay range is not contiguous', async () => {
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn) => {
+        const mockTx = {
+          userSyncState: {
+            findUnique: vi
+              .fn()
+              .mockResolvedValueOnce({ lastSeq: 10 })
+              .mockResolvedValueOnce({ snapshotData: null, lastSnapshotSeq: null }),
+          },
+          operation: {
+            count: vi.fn().mockResolvedValue(0),
+            findMany: vi.fn().mockResolvedValue([
+              {
+                id: 'op-2',
+                opType: 'CRT',
+                entityType: 'TASK',
+                entityId: 'task-2',
+                payload: { id: 'task-2' },
+                isPayloadEncrypted: false,
+                serverSeq: 2,
+                schemaVersion: 1,
+              },
+            ]),
+          },
+        };
+        return fn(mockTx as any);
+      });
+
+      await expect(service.generateSnapshotAtSeq(1, 5)).rejects.toThrow(
+        'SNAPSHOT_REPLAY_INCOMPLETE',
+      );
+    });
   });
 
   describe('replayOpsToState', () => {
@@ -589,7 +721,7 @@ describe('SnapshotService', () => {
       expect(result.PROJECT).toEqual({ 'proj-1': { id: 'proj-1' } });
     });
 
-    it('should skip encrypted operations', () => {
+    it('should throw for encrypted operations', () => {
       const ops = [
         {
           id: 'op-1',
@@ -603,9 +735,9 @@ describe('SnapshotService', () => {
         },
       ];
 
-      const result = service.replayOpsToState(ops as any);
-
-      expect(result).toEqual({});
+      expect(() => service.replayOpsToState(ops as any)).toThrow(
+        'ENCRYPTED_OPS_NOT_SUPPORTED',
+      );
     });
 
     it('should skip unknown entity types', () => {

@@ -49,6 +49,11 @@ const MAX_REPLAY_STATE_SIZE_BYTES = 100 * 1024 * 1024;
  */
 const REPLAY_SIZE_CHECK_INTERVAL = 1000;
 
+const encryptedOpsNotSupportedMessage = (encryptedOpCount: number): string =>
+  `ENCRYPTED_OPS_NOT_SUPPORTED: Cannot generate snapshot - ${encryptedOpCount} operations have encrypted payloads. ` +
+  `Server-side restore is not available when E2E encryption is enabled. ` +
+  `Alternative: Use the client app's "Sync Now" button which can decrypt and restore locally.`;
+
 export interface SnapshotResult {
   state: unknown;
   serverSeq: number;
@@ -254,6 +259,8 @@ export class SnapshotService {
           );
         }
 
+        await this._assertNoEncryptedOps(tx, userId, startSeq, latestSeq);
+
         const BATCH_SIZE = 10000;
         let currentSeq = startSeq;
         let totalProcessed = 0;
@@ -262,13 +269,13 @@ export class SnapshotService {
           const batchOps = await tx.operation.findMany({
             where: {
               userId,
-              serverSeq: { gt: currentSeq },
+              serverSeq: { gt: currentSeq, lte: latestSeq },
             },
             orderBy: { serverSeq: 'asc' },
             take: BATCH_SIZE,
           });
 
-          if (batchOps.length === 0) break;
+          this._assertContiguousReplayBatch(batchOps, currentSeq + 1, latestSeq);
 
           // Replay ops
           state = this.replayOpsToState(batchOps, state);
@@ -276,7 +283,12 @@ export class SnapshotService {
           currentSeq = batchOps[batchOps.length - 1].serverSeq;
           totalProcessed += batchOps.length;
 
-          if (totalProcessed > MAX_OPS_FOR_SNAPSHOT) break;
+          if (totalProcessed > MAX_OPS_FOR_SNAPSHOT) {
+            throw new Error(
+              `Too many operations processed (${totalProcessed}). ` +
+                `Max: ${MAX_OPS_FOR_SNAPSHOT}.`,
+            );
+          }
         }
 
         const generatedAt = Date.now();
@@ -449,22 +461,7 @@ export class SnapshotService {
           );
         }
 
-        // Check for encrypted ops in the range - server cannot replay encrypted payloads
-        const encryptedOpCount = await tx.operation.count({
-          where: {
-            userId,
-            serverSeq: { gt: startSeq, lte: targetSeq },
-            isPayloadEncrypted: true,
-          },
-        });
-
-        if (encryptedOpCount > 0) {
-          throw new Error(
-            `ENCRYPTED_OPS_NOT_SUPPORTED: Cannot generate snapshot - ${encryptedOpCount} operations have encrypted payloads. ` +
-              `Server-side restore is not available when E2E encryption is enabled. ` +
-              `Alternative: Use the client app's "Sync Now" button which can decrypt and restore locally.`,
-          );
-        }
+        await this._assertNoEncryptedOps(tx, userId, startSeq, targetSeq);
 
         // Replay ops from startSeq to targetSeq
         const BATCH_SIZE = 10000;
@@ -480,7 +477,7 @@ export class SnapshotService {
             take: BATCH_SIZE,
           });
 
-          if (batchOps.length === 0) break;
+          this._assertContiguousReplayBatch(batchOps, currentSeq + 1, targetSeq);
 
           state = this.replayOpsToState(batchOps, state);
           currentSeq = batchOps[batchOps.length - 1].serverSeq;
@@ -511,13 +508,10 @@ export class SnapshotService {
     for (let i = 0; i < ops.length; i++) {
       const row = ops[i];
 
-      // Skip encrypted operations - server cannot decrypt E2E encrypted payloads
-      // This is a defensive check; generateSnapshotAtSeq should reject encrypted ops upfront
+      // Server cannot decrypt E2E payloads. Snapshot callers reject encrypted
+      // ranges upfront; this guard prevents accidental partial replays.
       if (row.isPayloadEncrypted) {
-        Logger.warn(
-          `[replayOpsToState] Skipping encrypted op ${row.id} (seq=${row.serverSeq})`,
-        );
-        continue;
+        throw new Error(encryptedOpsNotSupportedMessage(1));
       }
 
       // Periodically check state size to prevent memory exhaustion
@@ -669,5 +663,58 @@ export class SnapshotService {
       }
     }
     return state;
+  }
+
+  private async _assertNoEncryptedOps(
+    tx: {
+      operation: {
+        count(args: {
+          where: {
+            userId: number;
+            serverSeq: { gt: number; lte: number };
+            isPayloadEncrypted: boolean;
+          };
+        }): Promise<number>;
+      };
+    },
+    userId: number,
+    startSeq: number,
+    targetSeq: number,
+  ): Promise<void> {
+    if (startSeq >= targetSeq) return;
+
+    const encryptedOpCount = await tx.operation.count({
+      where: {
+        userId,
+        serverSeq: { gt: startSeq, lte: targetSeq },
+        isPayloadEncrypted: true,
+      },
+    });
+
+    if (encryptedOpCount > 0) {
+      throw new Error(encryptedOpsNotSupportedMessage(encryptedOpCount));
+    }
+  }
+
+  private _assertContiguousReplayBatch(
+    batchOps: PrismaOperation[],
+    expectedFirstSeq: number,
+    targetSeq: number,
+  ): void {
+    if (batchOps.length === 0) {
+      throw new Error(
+        `SNAPSHOT_REPLAY_INCOMPLETE: Missing operation at serverSeq ${expectedFirstSeq} while replaying to ${targetSeq}`,
+      );
+    }
+
+    for (let i = 0; i < batchOps.length; i++) {
+      const expectedSeq = expectedFirstSeq + i;
+      const actualSeq = batchOps[i].serverSeq;
+      if (actualSeq !== expectedSeq) {
+        throw new Error(
+          `SNAPSHOT_REPLAY_INCOMPLETE: Expected operation serverSeq ${expectedSeq} but got ${actualSeq} while replaying to ${targetSeq}`,
+        );
+      }
+    }
   }
 }

@@ -78,11 +78,18 @@ export class OperationDownloadService {
   }> {
     return prisma.$transaction(
       async (tx) => {
+        const seqRow = await tx.userSyncState.findUnique({
+          where: { userId },
+          select: { lastSeq: true },
+        });
+        const latestSeq = seqRow?.lastSeq ?? 0;
+
         // Find the latest full-state operation (SYNC_IMPORT, BACKUP_IMPORT, REPAIR)
         // These operations supersede all previous operations
         const latestFullStateOp = await tx.operation.findFirst({
           where: {
             userId,
+            serverSeq: { lte: latestSeq },
             opType: { in: ['SYNC_IMPORT', 'BACKUP_IMPORT', 'REPAIR'] },
           },
           orderBy: { serverSeq: 'desc' },
@@ -142,7 +149,7 @@ export class OperationDownloadService {
         const ops = await tx.operation.findMany({
           where: {
             userId,
-            serverSeq: { gt: effectiveSinceSeq },
+            serverSeq: { gt: effectiveSinceSeq, lte: latestSeq },
             ...(excludeClient ? { clientId: { not: excludeClient } } : {}),
           },
           orderBy: {
@@ -151,18 +158,12 @@ export class OperationDownloadService {
           take: limit,
         });
 
-        const seqRow = await tx.userSyncState.findUnique({
-          where: { userId },
-          select: { lastSeq: true },
-        });
-
         // Get min sequence efficiently
         const minSeqAgg = await tx.operation.aggregate({
-          where: { userId },
+          where: { userId, serverSeq: { lte: latestSeq } },
           _min: { serverSeq: true },
         });
 
-        const latestSeq = seqRow?.lastSeq ?? 0;
         const minSeq = minSeqAgg._min.serverSeq ?? null;
 
         // Gap detection logic

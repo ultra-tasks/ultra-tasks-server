@@ -29,6 +29,13 @@ describe('decompressBody helper', () => {
 
       expect(JSON.parse(decompressed.toString('utf-8'))).toEqual(testPayload);
     });
+
+    it('should reject when decompressed output exceeds maxOutputLength', async () => {
+      const jsonPayload = JSON.stringify(testPayload);
+      const compressed = await gzipAsync(Buffer.from(jsonPayload, 'utf-8'));
+
+      await expect(decompressBody(compressed, undefined, 1)).rejects.toThrow();
+    });
   });
 
   describe('base64-encoded gzip (Android)', () => {
@@ -61,6 +68,14 @@ describe('decompressBody helper', () => {
       const decompressed = await decompressBody(rawBody, 'base64');
 
       expect(JSON.parse(decompressed.toString('utf-8'))).toEqual(largePayload);
+    });
+
+    it('should reject base64 gzip when decompressed output exceeds maxOutputLength', async () => {
+      const jsonPayload = JSON.stringify(testPayload);
+      const compressed = await gzipAsync(Buffer.from(jsonPayload, 'utf-8'));
+      const rawBody = Buffer.from(compressed.toString('base64'), 'utf-8');
+
+      await expect(decompressBody(rawBody, 'base64', 1)).rejects.toThrow();
     });
 
     it('should throw error for invalid base64 data', async () => {
