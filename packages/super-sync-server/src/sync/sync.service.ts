@@ -824,6 +824,8 @@ export class SyncService {
     let totalDeleted = 0;
     const affectedUserIds: number[] = [];
 
+    const APPROX_BYTES_PER_OP = 1024;
+
     for (const state of states) {
       const snapshotAt = Number(state.snapshotAt);
       const lastSnapshotSeq = state.lastSnapshotSeq ?? 0;
@@ -840,6 +842,13 @@ export class SyncService {
         if (result.count > 0) {
           totalDeleted += result.count;
           affectedUserIds.push(state.userId);
+          // Decrement the cached counter approximately so it stays roughly in
+          // sync with reality. Drift is corrected by the next reconcile inside
+          // freeStorageForUpload (or an offline admin pass).
+          await this.decrementStorageUsage(
+            state.userId,
+            result.count * APPROX_BYTES_PER_OP,
+          );
         }
       }
     }

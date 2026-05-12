@@ -122,12 +122,32 @@ async function enforceStorageQuota(
   reply: FastifyReply,
 ): Promise<boolean> {
   const syncService = getSyncService();
-  const quotaCheck = await syncService.checkStorageQuota(userId, payloadSize);
+  let quotaCheck = await syncService.checkStorageQuota(userId, payloadSize);
   if (quotaCheck.allowed) return true;
 
-  // The counter is now maintained incrementally on upload paths, so the cache
-  // is trusted here. The previous full-recalc via updateStorageUsage caused a
-  // production disk-I/O DoS (forced TOAST reads of every payload per request).
+  // Cache miss path only — reconcile once before resorting to destructive
+  // cleanup. Safe to run the slow scan here because this branch only fires for
+  // users actually near quota (rare). The DoS came from running this on every
+  // upload success, not on quota misses. Also guards against pre-deploy stale
+  // counters where the old code's pg_column_size SUM left an inflated value.
+  Logger.info(
+    `[user:${userId}] Quota cache miss (cached: ${quotaCheck.currentUsage}/${quotaCheck.quota}). Reconciling before cleanup...`,
+  );
+  try {
+    await syncService.updateStorageUsage(userId);
+    quotaCheck = await syncService.checkStorageQuota(userId, payloadSize);
+    if (quotaCheck.allowed) {
+      Logger.info(
+        `[user:${userId}] Quota OK after reconcile: ${quotaCheck.currentUsage}/${quotaCheck.quota}`,
+      );
+      return true;
+    }
+  } catch (err) {
+    Logger.warn(
+      `[user:${userId}] Reconcile failed, proceeding with cleanup: ${errorMessage(err)}`,
+    );
+  }
+
   Logger.warn(
     `[user:${userId}] Storage quota exceeded: ${quotaCheck.currentUsage}/${quotaCheck.quota} bytes. Attempting auto-cleanup...`,
   );
@@ -331,8 +351,10 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
           }
         }
 
-        // Check storage quota before processing (after dedup to allow retries)
-        const payloadSize = JSON.stringify(body).length;
+        // Check storage quota before processing (after dedup to allow retries).
+        // Use Buffer.byteLength so multi-byte UTF-8 content is measured in bytes,
+        // not UTF-16 code units (under-counts non-ASCII by up to 3x).
+        const payloadSize = Buffer.byteLength(JSON.stringify(body), 'utf8');
         const quotaOk = await enforceStorageQuota(userId, payloadSize, reply);
         if (!quotaOk) return;
 
@@ -629,10 +651,18 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         } = parseResult.data;
         const syncService = getSyncService();
 
-        // Check storage quota before processing
-        const payloadSize = JSON.stringify(body).length;
-        const quotaOk = await enforceStorageQuota(userId, payloadSize, reply);
-        if (!quotaOk) return;
+        // Check storage quota before processing.
+        // Skip the quota gate for isCleanSlate uploads — uploadOps will wipe all
+        // existing data and reset storageUsedBytes to 0 inside its tx, so any
+        // current cache value is about to become meaningless. Gating on it can
+        // trigger destructive freeStorageForUpload cleanup for storage the
+        // clean-slate would have freed anyway. Use Buffer.byteLength for
+        // accurate UTF-8 byte size (not UTF-16 code units).
+        const payloadSize = Buffer.byteLength(JSON.stringify(body), 'utf8');
+        if (!isCleanSlate) {
+          const quotaOk = await enforceStorageQuota(userId, payloadSize, reply);
+          if (!quotaOk) return;
+        }
 
         // FIX: Reject duplicate SYNC_IMPORT to prevent data loss
         // Only the FIRST client to sync with an empty server should create SYNC_IMPORT.
@@ -694,11 +724,14 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         if (result.accepted && result.serverSeq !== undefined) {
           // Cache the snapshot
           await syncService.cacheSnapshot(userId, state, result.serverSeq);
-          // Increment counter by the snapshot's request payload size (already
-          // computed above for the quota check, so no extra stringify on the
-          // ~50MB state object). For isCleanSlate uploads, uploadOps already
-          // reset the counter to 0, so this becomes the new baseline. Wrapped
-          // in try/catch — snapshot is persisted, must not 500.
+          // Increment counter by the request body size. We deliberately reuse
+          // `payloadSize` rather than re-stringify the ~50MB state object —
+          // memory pressure on a 512MB container would be severe. Slight
+          // over-count vs strict payload+vectorClock (includes a few hundred
+          // bytes of JSON envelope), acceptable for advisory quota. For
+          // isCleanSlate uploads, uploadOps already reset the counter to 0,
+          // so this becomes the new baseline. Wrapped in try/catch — snapshot
+          // is persisted, must not 500.
           if (payloadSize > 0) {
             try {
               await syncService.incrementStorageUsage(userId, payloadSize);
