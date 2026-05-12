@@ -316,6 +316,7 @@ export class SyncService {
       if (isCleanSlate) {
         this.rateLimitService.clearForUser(userId);
         this.snapshotService.clearForUser(userId);
+        this.storageQuotaService.clearForUser(userId);
       }
     } catch (err) {
       // Transaction failed - all operations were rolled back

@@ -16,6 +16,15 @@ const DEFAULT_STORAGE_QUOTA_BYTES = 100 * 1024 * 1024;
 
 export class StorageQuotaService {
   /**
+   * Per-user in-flight reconcile promises. When multiple concurrent requests
+   * for the same user hit the quota cache-miss path, only the first triggers
+   * the slow SUM(pg_column_size) scan; the rest await the same promise. Cap
+   * the number of duplicate full-table scans under a retry storm. Sequential
+   * calls are unaffected (entry is deleted in `finally` before resolve).
+   */
+  private inflightReconciles: Map<number, Promise<void>> = new Map();
+
+  /**
    * Calculate actual storage usage for a user by summing on-disk payload sizes.
    *
    * SLOW PATH — DO NOT CALL PER REQUEST. SUM(pg_column_size(payload)) forces
@@ -109,13 +118,38 @@ export class StorageQuotaService {
   /**
    * Recompute the cached storage usage from scratch via calculateStorageUsage.
    * Same slow-path warning applies — see calculateStorageUsage.
+   *
+   * Concurrent calls for the same user dedupe to a single in-flight scan; see
+   * `inflightReconciles`. Sequential callers (e.g. the cleanup loop inside
+   * `freeStorageForUpload`) still get fresh results because the lock is
+   * cleared in `finally` before the awaiter resolves.
    */
   async updateStorageUsage(userId: number): Promise<void> {
-    const { totalBytes } = await this.calculateStorageUsage(userId);
-    await prisma.user.update({
-      where: { id: userId },
-      data: { storageUsedBytes: BigInt(totalBytes) },
-    });
+    const existing = this.inflightReconciles.get(userId);
+    if (existing) return existing;
+
+    const promise = (async () => {
+      try {
+        const { totalBytes } = await this.calculateStorageUsage(userId);
+        await prisma.user.update({
+          where: { id: userId },
+          data: { storageUsedBytes: BigInt(totalBytes) },
+        });
+      } finally {
+        this.inflightReconciles.delete(userId);
+      }
+    })();
+    this.inflightReconciles.set(userId, promise);
+    return promise;
+  }
+
+  /**
+   * Clear any in-flight reconcile lock for a user. Call when user data is
+   * wiped (clean-slate, account deletion) so a stale rejected promise does
+   * not block future reconciles.
+   */
+  clearForUser(userId: number): void {
+    this.inflightReconciles.delete(userId);
   }
 
   /**

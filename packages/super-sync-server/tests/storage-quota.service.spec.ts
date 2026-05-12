@@ -162,6 +162,68 @@ describe('StorageQuotaService', () => {
         data: { storageUsedBytes: BigInt(100000) },
       });
     });
+
+    it('should dedupe concurrent reconciles for the same user', async () => {
+      // Simulate a slow SUM(pg_column_size) scan so concurrent callers
+      // overlap on the in-flight promise.
+      let releaseScan: (value: [{ total: bigint }]) => void = () => undefined;
+      vi.mocked(prisma.$queryRaw).mockReturnValueOnce(
+        new Promise((resolve) => {
+          releaseScan = resolve;
+        }) as any,
+      );
+      vi.mocked(prisma.userSyncState.findUnique).mockResolvedValue({
+        snapshotData: null,
+      } as any);
+      vi.mocked(prisma.user.update).mockResolvedValue({} as any);
+
+      const first = service.updateStorageUsage(1);
+      const second = service.updateStorageUsage(1);
+      const third = service.updateStorageUsage(1);
+
+      releaseScan([{ total: BigInt(123) }]);
+      await Promise.all([first, second, third]);
+
+      // Only one scan + one write should have run for three concurrent calls.
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+      expect(prisma.user.update).toHaveBeenCalledTimes(1);
+    });
+
+    it('should re-scan on a subsequent sequential call after the lock clears', async () => {
+      vi.mocked(prisma.$queryRaw).mockResolvedValue([{ total: BigInt(10) }]);
+      vi.mocked(prisma.userSyncState.findUnique).mockResolvedValue({
+        snapshotData: null,
+      } as any);
+      vi.mocked(prisma.user.update).mockResolvedValue({} as any);
+
+      await service.updateStorageUsage(1);
+      await service.updateStorageUsage(1);
+
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+      expect(prisma.user.update).toHaveBeenCalledTimes(2);
+    });
+
+    it('should release the lock when the scan throws', async () => {
+      vi.mocked(prisma.$queryRaw).mockRejectedValueOnce(new Error('db down'));
+      vi.mocked(prisma.userSyncState.findUnique).mockResolvedValue({
+        snapshotData: null,
+      } as any);
+      vi.mocked(prisma.user.update).mockResolvedValue({} as any);
+
+      await expect(service.updateStorageUsage(1)).rejects.toThrow('db down');
+
+      // Lock must be cleared so the next call retries the scan rather than
+      // returning the rejected promise forever.
+      vi.mocked(prisma.$queryRaw).mockResolvedValueOnce([{ total: BigInt(0) }]);
+      await expect(service.updateStorageUsage(1)).resolves.toBeUndefined();
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('clearForUser', () => {
+    it('should not throw when no lock exists', () => {
+      expect(() => service.clearForUser(42)).not.toThrow();
+    });
   });
 
   describe('incrementStorageUsage', () => {
