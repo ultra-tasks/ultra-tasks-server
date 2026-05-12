@@ -51,6 +51,11 @@ are disabled by default so app restarts cannot race the deploy migrator.
 `./scripts/deploy.sh` runs `prisma migrate deploy` once before replacing the app
 container, then brings the stack up and verifies the health endpoint.
 
+Leave `DATABASE_URL` unset when using the bundled Postgres service. The default
+connection uses `postgres:5432`; existing installs that already set
+`DATABASE_URL` with `db:5432` keep working because the Compose service exposes
+`db` as a network alias.
+
 > **Upgrade note:** because `RUN_MIGRATIONS_ON_STARTUP` defaults to `false`,
 > `docker compose pull && docker compose up -d` can leave the app running
 > against unapplied migrations. Use `./scripts/deploy.sh` for production

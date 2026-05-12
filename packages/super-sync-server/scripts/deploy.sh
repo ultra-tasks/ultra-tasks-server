@@ -59,13 +59,31 @@ echo "==> Pulling latest code..."
 git pull --ff-only || { echo "WARNING: git pull failed — continuing with current files"; }
 echo ""
 
-# Load GHCR credentials from .env (for private images)
-if [ -f ".env" ]; then
-    GHCR_VARS=$(grep -E '^(GHCR_USER|GHCR_TOKEN)=' ".env" 2>/dev/null | xargs || true)
-    if [ -n "$GHCR_VARS" ]; then
-        export $GHCR_VARS
+# Load deploy-script settings from .env when they were not already exported.
+load_env_value() {
+    local key="$1"
+    local line
+
+    if [ -n "${!key+x}" ] || [ ! -f ".env" ]; then
+        return
     fi
-fi
+
+    line=$(grep -E "^${key}=" ".env" 2>/dev/null | tail -n 1 || true)
+    if [ -z "$line" ]; then
+        return
+    fi
+
+    local value="${line#*=}"
+    value="${value%\"}"
+    value="${value#\"}"
+    value="${value%\'}"
+    value="${value#\'}"
+    export "$key=$value"
+}
+
+for env_key in GHCR_USER GHCR_TOKEN DATABASE_URL POSTGRES_SERVICE POSTGRES_WAIT_TIMEOUT MIGRATION_TIMEOUT DEPLOY_WAIT_TIMEOUT; do
+    load_env_value "$env_key"
+done
 
 # Login to GHCR if credentials provided
 if [ -n "${GHCR_TOKEN:-}" ] && [ -n "${GHCR_USER:-}" ]; then
@@ -111,7 +129,11 @@ fi
 # running app available while online index builds run, and it fails the deploy
 # before the app is restarted if Prisma cannot apply a migration.
 POSTGRES_WAIT_TIMEOUT="${POSTGRES_WAIT_TIMEOUT:-60}"
-POSTGRES_SERVICE="${POSTGRES_SERVICE:-postgres}"
+POSTGRES_SERVICE="${POSTGRES_SERVICE-postgres}"
+if [ "$POSTGRES_SERVICE" = "postgres" ] && [[ "${DATABASE_URL:-}" == *@db:5432/* ]]; then
+    export DATABASE_URL="${DATABASE_URL/@db:5432/@postgres:5432}"
+    echo "==> Rewriting legacy bundled DATABASE_URL host db to postgres for this deploy"
+fi
 echo ""
 if [ -n "$POSTGRES_SERVICE" ]; then
     echo "==> Ensuring $POSTGRES_SERVICE is running (wait timeout: ${POSTGRES_WAIT_TIMEOUT}s)..."
@@ -125,10 +147,31 @@ echo ""
 # for arbitrarily long. Wrap the migrator with a timeout so a stuck deploy fails
 # loudly instead of hanging this script forever. Exit code 124 = timed out.
 MIGRATION_TIMEOUT="${MIGRATION_TIMEOUT:-900}"
+MIGRATOR_RUN="docker compose $COMPOSE_FILES run --rm --no-deps --interactive=false -T supersync"
+echo "==> Verifying database connectivity from the supersync image..."
+set +e
+timeout "$POSTGRES_WAIT_TIMEOUT" \
+    $MIGRATOR_RUN sh -ec 'printf "SELECT 1;" | npx prisma db execute --schema prisma/schema.prisma --stdin > /dev/null'
+DB_CHECK_STATUS=$?
+set -e
+if [ "$DB_CHECK_STATUS" -eq 124 ]; then
+    echo ""
+    echo "ERROR: database connectivity check timed out after ${POSTGRES_WAIT_TIMEOUT}s."
+    echo "       Check DATABASE_URL and the compose Postgres service health."
+    exit 1
+fi
+if [ "$DB_CHECK_STATUS" -ne 0 ]; then
+    echo ""
+    echo "ERROR: database connectivity check failed (exit $DB_CHECK_STATUS)."
+    echo "       Check DATABASE_URL. For the bundled database, leave it unset or use postgres:5432."
+    exit "$DB_CHECK_STATUS"
+fi
+echo "    Database reachable"
+echo ""
 echo "==> Applying database migrations before app restart (timeout: ${MIGRATION_TIMEOUT}s)..."
 set +e
 timeout "$MIGRATION_TIMEOUT" \
-    docker compose $COMPOSE_FILES run --rm --no-deps supersync npx prisma migrate deploy
+    $MIGRATOR_RUN sh -ec 'echo "    Migrator container started"; npx prisma migrate deploy'
 MIGRATE_STATUS=$?
 set -e
 if [ "$MIGRATE_STATUS" -eq 124 ]; then

@@ -61,14 +61,20 @@ describe('performance migrations', () => {
     const deployScript = readFileSync(join(currentDir, '../scripts/deploy.sh'), 'utf8');
     const dockerfile = readFileSync(join(currentDir, '../Dockerfile'), 'utf8');
     const composeFile = readFileSync(join(currentDir, '../docker-compose.yml'), 'utf8');
-    const migrationCommand = 'run --rm --no-deps supersync npx prisma migrate deploy';
+    const migrationCommand = 'npx prisma migrate deploy';
     const startCommand = 'up -d --wait --wait-timeout "$WAIT_TIMEOUT"';
     const externalDbStartCommand =
       'up -d --wait --wait-timeout "$WAIT_TIMEOUT" --no-deps supersync caddy';
 
     expect(deployScript).toContain('POSTGRES_WAIT_TIMEOUT');
-    expect(deployScript).toContain('POSTGRES_SERVICE="${POSTGRES_SERVICE:-postgres}"');
+    expect(deployScript).toContain('load_env_value()');
+    expect(deployScript).toContain('POSTGRES_SERVICE="${POSTGRES_SERVICE-postgres}"');
+    expect(deployScript).toContain('@db:5432');
+    expect(deployScript).toContain('@postgres:5432');
+    expect(deployScript).toContain('run --rm --no-deps --interactive=false -T supersync');
+    expect(deployScript).toContain('prisma db execute');
     expect(deployScript).toContain(migrationCommand);
+    expect(deployScript).toContain('Migrator container started');
     expect(deployScript).toContain(externalDbStartCommand);
     expect(deployScript).toContain('RUN_MIGRATIONS_ON_STARTUP');
     expect(deployScript.indexOf(migrationCommand)).toBeLessThan(
@@ -78,5 +84,10 @@ describe('performance migrations', () => {
     expect(composeFile).toContain(
       'RUN_MIGRATIONS_ON_STARTUP=${RUN_MIGRATIONS_ON_STARTUP:-false}',
     );
+    expect(composeFile).toContain(
+      'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -c "SELECT 1"',
+    );
+    expect(composeFile).toContain('aliases:');
+    expect(composeFile).toContain('- db');
   });
 });

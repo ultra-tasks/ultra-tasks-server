@@ -79,10 +79,10 @@ services:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
       test:
-        [
-          'CMD-SHELL',
-          'pg_isready -U ${POSTGRES_USER:-supersync} -d ${POSTGRES_DB:-supersync}',
-        ]
+        - CMD-SHELL
+        - >
+          pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" &&
+          psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -c "SELECT 1" > /dev/null 2>&1
       interval: 10s
       timeout: 5s
       retries: 5
@@ -91,7 +91,10 @@ services:
       - no-new-privileges:true
     mem_limit: 1g
     networks:
-      - internal
+      internal:
+        aliases:
+          # Keep existing .env files with DATABASE_URL=...@db:5432/... working.
+          - db
     logging: *default-logging
 
   caddy:
