@@ -241,10 +241,17 @@ vi.mock('../src/auth', () => ({
     .mockResolvedValue({ valid: true, userId: 1, email: 'test@test.com' }),
 }));
 
-// Mock zlib for snapshot compression
+// Mock zlib for snapshot compression. Provides both sync (legacy) and async
+// callback-style functions so promisify(zlib.gzip)/promisify(zlib.gunzip)
+// work as expected in snapshot.service.ts.
 vi.mock('zlib', () => ({
   gzipSync: vi.fn().mockImplementation((data) => Buffer.from(data)),
   gunzipSync: vi.fn().mockImplementation((data) => data),
+  gzip: vi.fn().mockImplementation((data, cb) => cb(null, Buffer.from(data))),
+  gunzip: vi.fn().mockImplementation((data, optsOrCb, maybeCb) => {
+    const cb = typeof optsOrCb === 'function' ? optsOrCb : maybeCb;
+    cb(null, data);
+  }),
 }));
 
 // Helper to create operation

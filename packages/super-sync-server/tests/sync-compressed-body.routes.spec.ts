@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => {
     getOpsSinceWithSeq: vi.fn(),
     getStorageInfo: vi.fn(),
     getCachedSnapshotBytes: vi.fn(),
+    markStorageNeedsReconcile: vi.fn(),
   };
 
   return {
@@ -393,6 +394,140 @@ describe('Sync compressed body routes', () => {
     expect(response.statusCode).toBe(413);
     expect(response.json().errorCode).toBe('STORAGE_QUOTA_EXCEEDED');
     expect(mocks.syncService.uploadOps).not.toHaveBeenCalled();
+  });
+
+  it('should reconcile the counter before rejecting on the cheap snapshot pre-gate', async () => {
+    // Regression for W10: when the cached counter says we are at quota, the
+    // route reconciles once before rejecting — a stale-high counter would
+    // otherwise lock out users whose new snapshot would actually shrink
+    // their storage.
+    const clientId = 'pre-gate-reconcile-client';
+    const vectorClock = { [clientId]: 1 };
+
+    // 1st getStorageInfo returns stale-high (over quota). After reconcile,
+    // the 2nd call returns the corrected (under quota) value.
+    mocks.syncService.getStorageInfo
+      .mockResolvedValueOnce({
+        storageUsedBytes: 100 * 1024 * 1024,
+        storageQuotaBytes: 100 * 1024 * 1024,
+      })
+      .mockResolvedValue({
+        storageUsedBytes: 50_000,
+        storageQuotaBytes: 100 * 1024 * 1024,
+      });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sync/snapshot',
+      headers: { authorization: `Bearer ${authToken}` },
+      payload: {
+        state: { TASK: { 'task-1': { id: 'task-1' } } },
+        clientId,
+        reason: 'recovery',
+        vectorClock,
+      },
+    });
+
+    expect(mocks.syncService.updateStorageUsage).toHaveBeenCalledWith(1);
+    expect(response.statusCode).toBe(200);
+  });
+
+  it('should still 413 on the snapshot pre-gate when reconcile confirms over-quota', async () => {
+    // Same path as above, but reconcile does not move the counter. The
+    // rejection now uses errorCode (not code) and routes through the unified
+    // 413 helper.
+    const clientId = 'pre-gate-no-reconcile-client';
+    mocks.syncService.getStorageInfo.mockResolvedValue({
+      storageUsedBytes: 100 * 1024 * 1024,
+      storageQuotaBytes: 100 * 1024 * 1024,
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sync/snapshot',
+      headers: { authorization: `Bearer ${authToken}` },
+      payload: {
+        state: { TASK: { 'task-1': { id: 'task-1' } } },
+        clientId,
+        reason: 'recovery',
+        vectorClock: { [clientId]: 1 },
+      },
+    });
+
+    expect(response.statusCode).toBe(413);
+    const body = response.json();
+    expect(body.errorCode).toBe('STORAGE_QUOTA_EXCEEDED');
+    // No legacy `code:` key — clients dispatch on errorCode.
+    expect(body.code).toBeUndefined();
+    expect(mocks.syncService.uploadOps).not.toHaveBeenCalled();
+  });
+
+  it('should fall through gracefully when the pre-gate reconcile throws', async () => {
+    // If the reconcile fails (DB hiccup), the route logs and uses the stale
+    // cached read. Either accept (cached < quota) or reject with 413 — but
+    // never bubble a 500.
+    const clientId = 'pre-gate-reconcile-throws';
+    mocks.syncService.getStorageInfo.mockResolvedValue({
+      storageUsedBytes: 100 * 1024 * 1024,
+      storageQuotaBytes: 100 * 1024 * 1024,
+    });
+    mocks.syncService.updateStorageUsage.mockRejectedValueOnce(new Error('db down'));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sync/snapshot',
+      headers: { authorization: `Bearer ${authToken}` },
+      payload: {
+        state: { TASK: { 'task-1': { id: 'task-1' } } },
+        clientId,
+        reason: 'recovery',
+        vectorClock: { [clientId]: 1 },
+      },
+    });
+
+    expect(response.statusCode).toBe(413);
+    expect(response.json().errorCode).toBe('STORAGE_QUOTA_EXCEEDED');
+  });
+
+  it('should mark the user for forced reconcile when post-commit counter delta fails', async () => {
+    // Regression for W6: when applyStorageUsageDelta (called after a
+    // successful snapshot upload) fails, the user must be marked so the
+    // next quota check self-heals instead of waiting for daily cleanup.
+    const clientId = 'post-commit-counter-failure';
+    const vectorClock = { [clientId]: 1 };
+    mocks.syncService.prepareSnapshotCache.mockReturnValueOnce({
+      data: Buffer.from('cached-snapshot'),
+      bytes: 40,
+      stateBytes: 25,
+      cacheable: true,
+    });
+    mocks.syncService.uploadOps.mockResolvedValueOnce([{ accepted: true, serverSeq: 7 }]);
+    mocks.syncService.cacheSnapshot.mockResolvedValueOnce({
+      cached: true,
+      bytesWritten: 40,
+      previousBytes: 10,
+      deltaBytes: 30,
+    });
+    mocks.syncService.incrementStorageUsage.mockRejectedValueOnce(
+      new Error('counter down'),
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sync/snapshot',
+      headers: { authorization: `Bearer ${authToken}` },
+      payload: {
+        state: { TASK: { 'task-1': { id: 'task-1' } } },
+        clientId,
+        reason: 'recovery',
+        vectorClock,
+      },
+    });
+
+    // The data write is committed; the response must still succeed even
+    // though the counter is stale.
+    expect(response.statusCode).toBe(200);
+    expect(mocks.syncService.markStorageNeedsReconcile).toHaveBeenCalledWith(1);
   });
 
   it('should count snapshot op bytes and cache replacement delta after upload', async () => {

@@ -172,6 +172,72 @@ describe('SnapshotService', () => {
       // This test is skipped because zlib cannot be easily mocked
       // The MAX_SNAPSHOT_SIZE_BYTES check is a simple comparison
     });
+
+    it('should clear a previously-cached snapshot when the new one is oversized', async () => {
+      // Regression for W11: when prepared.cacheable is false, the stale
+      // snapshot row must be cleared (otherwise callers see an outdated blob
+      // alongside ops the new — rejected — snapshot was supposed to cover),
+      // and the negative delta must be returned so storage accounting credits
+      // the freed space.
+      const preparedTooLarge = {
+        data: Buffer.alloc(1),
+        bytes: 60 * 1024 * 1024,
+        stateBytes: 100,
+        cacheable: false,
+      };
+      vi.mocked(prisma.$queryRaw).mockResolvedValue([{ bytes: BigInt(8000) }] as any);
+      vi.mocked(prisma.userSyncState.update).mockResolvedValue({} as any);
+
+      const result = await service.cacheSnapshot(
+        1,
+        { ignored: true },
+        10,
+        preparedTooLarge,
+      );
+
+      expect(prisma.userSyncState.update).toHaveBeenCalledWith({
+        where: { userId: 1 },
+        data: {
+          snapshotData: null,
+          lastSnapshotSeq: null,
+          snapshotAt: null,
+          snapshotSchemaVersion: null,
+        },
+      });
+      expect(result).toEqual({
+        cached: false,
+        bytesWritten: 0,
+        previousBytes: 8000,
+        deltaBytes: -8000,
+      });
+    });
+
+    it('should not touch the row when oversized and no previous snapshot exists', async () => {
+      // Avoid an unnecessary UPDATE when there is nothing to clear.
+      const preparedTooLarge = {
+        data: Buffer.alloc(1),
+        bytes: 60 * 1024 * 1024,
+        stateBytes: 100,
+        cacheable: false,
+      };
+      vi.mocked(prisma.$queryRaw).mockResolvedValue([{ bytes: BigInt(0) }] as any);
+      vi.mocked(prisma.userSyncState.update).mockResolvedValue({} as any);
+
+      const result = await service.cacheSnapshot(
+        1,
+        { ignored: true },
+        10,
+        preparedTooLarge,
+      );
+
+      expect(prisma.userSyncState.update).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        cached: false,
+        bytesWritten: 0,
+        previousBytes: 0,
+        deltaBytes: 0,
+      });
+    });
   });
 
   describe('generateSnapshot - FIX 1.7 concurrent lock', () => {
@@ -223,6 +289,133 @@ describe('SnapshotService', () => {
       expect(findMany.mock.calls[0][0].select).not.toHaveProperty('clientId');
       expect(findMany.mock.calls[0][0].select).not.toHaveProperty('vectorClock');
       expect(findMany.mock.calls[0][0].select).not.toHaveProperty('receivedAt');
+    });
+
+    it('should invoke onCacheDelta with the bytes-written delta after a snapshot rewrite', async () => {
+      // Regression for C3: GET /snapshot rewrites snapshotData inside its
+      // transaction, but the storage counter is updated incrementally based
+      // on op deltas only. Without this hook the cache can grow up to
+      // MAX_SNAPSHOT_SIZE_BYTES with no quota accounting.
+      const previousBytes = 500;
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+        const update = vi.fn().mockResolvedValue({});
+        const mockTx = {
+          userSyncState: {
+            findUnique: vi
+              .fn()
+              .mockResolvedValueOnce({ lastSeq: 1 })
+              .mockResolvedValueOnce({
+                snapshotData: Buffer.alloc(previousBytes),
+                lastSnapshotSeq: 0,
+                snapshotAt: null,
+                snapshotSchemaVersion: 1,
+              }),
+            update,
+          },
+          operation: {
+            count: vi.fn().mockResolvedValue(0),
+            findMany: vi.fn().mockResolvedValue([
+              {
+                id: 'op-1',
+                serverSeq: 1,
+                opType: 'CRT',
+                entityType: 'TASK',
+                entityId: 'task-1',
+                payload: { title: 'T' },
+                schemaVersion: 1,
+                isPayloadEncrypted: false,
+              },
+            ]),
+          },
+        };
+        return fn(mockTx);
+      });
+
+      const onCacheDelta = vi.fn().mockResolvedValue(undefined);
+
+      await service.generateSnapshot(1, onCacheDelta);
+
+      expect(onCacheDelta).toHaveBeenCalledTimes(1);
+      const deltaArg = onCacheDelta.mock.calls[0][0] as number;
+      // The new snapshot is a fresh gzip of the replayed state; the previous
+      // cached snapshot was 500 bytes of zeros. The delta is whatever the new
+      // compressed size is minus 500 — assert the directionality rather than
+      // an exact number since gzip output varies.
+      expect(typeof deltaArg).toBe('number');
+      expect(deltaArg).not.toBe(0);
+    });
+
+    it('should not invoke onCacheDelta when the cached snapshot is already up to date', async () => {
+      // When startSeq >= latestSeq the snapshot service returns the cached
+      // state without rewriting snapshotData — no counter update is needed.
+      const cachedState = { TASK: { t1: { id: 't1' } } };
+      const compressed = zlib.gzipSync(JSON.stringify(cachedState));
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+        const mockTx = {
+          userSyncState: {
+            findUnique: vi
+              .fn()
+              .mockResolvedValueOnce({ lastSeq: 7 })
+              .mockResolvedValueOnce({
+                snapshotData: compressed,
+                lastSnapshotSeq: 7,
+                snapshotAt: BigInt(1),
+                snapshotSchemaVersion: 1,
+              }),
+            update: vi.fn(),
+          },
+          operation: { count: vi.fn(), findMany: vi.fn() },
+        };
+        return fn(mockTx);
+      });
+
+      const onCacheDelta = vi.fn().mockResolvedValue(undefined);
+
+      await service.generateSnapshot(1, onCacheDelta);
+
+      expect(onCacheDelta).not.toHaveBeenCalled();
+    });
+
+    it('should swallow a thrown onCacheDelta to avoid corrupting the snapshot result', async () => {
+      // The hook is post-commit and side-effecting; its failure should not
+      // bubble up and fail the snapshot generation.
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+        const mockTx = {
+          userSyncState: {
+            findUnique: vi
+              .fn()
+              .mockResolvedValueOnce({ lastSeq: 1 })
+              .mockResolvedValueOnce({
+                snapshotData: null,
+                lastSnapshotSeq: null,
+                snapshotAt: null,
+                snapshotSchemaVersion: null,
+              }),
+            update: vi.fn().mockResolvedValue({}),
+          },
+          operation: {
+            count: vi.fn().mockResolvedValue(0),
+            findMany: vi.fn().mockResolvedValue([
+              {
+                id: 'op-1',
+                serverSeq: 1,
+                opType: 'CRT',
+                entityType: 'TASK',
+                entityId: 'task-1',
+                payload: { title: 'T' },
+                schemaVersion: 1,
+                isPayloadEncrypted: false,
+              },
+            ]),
+          },
+        };
+        return fn(mockTx);
+      });
+
+      const onCacheDelta = vi.fn().mockRejectedValue(new Error('counter down'));
+
+      await expect(service.generateSnapshot(1, onCacheDelta)).resolves.toBeDefined();
+      expect(onCacheDelta).toHaveBeenCalledTimes(1);
     });
 
     it('should reject latest snapshot generation when encrypted ops are in the replay range', async () => {

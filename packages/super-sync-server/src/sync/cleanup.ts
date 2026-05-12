@@ -3,7 +3,7 @@ import { Logger } from '../logger';
 import { DEFAULT_SYNC_CONFIG, MS_PER_DAY } from './sync.types';
 
 let cleanupTimer: NodeJS.Timeout | null = null;
-const reconcileTimers: NodeJS.Timeout[] = [];
+const reconcileTimers: Set<NodeJS.Timeout> = new Set();
 
 // Spread post-cleanup reconciles so we never run more than one
 // calculateStorageUsage scan per RECONCILE_INTERVAL_MS across the whole pool.
@@ -91,7 +91,8 @@ export const stopCleanupJobs = (): void => {
     clearInterval(cleanupTimer);
     cleanupTimer = null;
   }
-  for (const t of reconcileTimers.splice(0)) clearTimeout(t);
+  for (const t of reconcileTimers) clearTimeout(t);
+  reconcileTimers.clear();
   Logger.info('Cleanup jobs stopped');
 };
 
@@ -109,7 +110,9 @@ const scheduleDeferredReconciles = (userIds: number[]): void => {
   const syncService = getSyncService();
   for (let i = 0; i < maxScheduled; i++) {
     const userId = userIds[i];
-    const timer = setTimeout(() => {
+    let timer!: NodeJS.Timeout;
+    timer = setTimeout(() => {
+      reconcileTimers.delete(timer);
       void syncService.updateStorageUsage(userId).catch((err) => {
         Logger.warn(
           `Cleanup [reconcile] user=${userId} failed: ${
@@ -119,6 +122,6 @@ const scheduleDeferredReconciles = (userIds: number[]): void => {
       });
     }, i * RECONCILE_INTERVAL_MS);
     if (typeof timer.unref === 'function') timer.unref();
-    reconcileTimers.push(timer);
+    reconcileTimers.add(timer);
   }
 };

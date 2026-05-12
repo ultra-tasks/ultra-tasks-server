@@ -8,8 +8,15 @@
  * generation for the same user. This prevents duplicate expensive computation.
  */
 import * as zlib from 'zlib';
+import { promisify } from 'util';
 import { prisma } from '../../db';
 import { Logger } from '../../logger';
+
+const gzipAsync = promisify(zlib.gzip) as (buf: zlib.InputType) => Promise<Buffer>;
+const gunzipAsync = promisify(zlib.gunzip) as (
+  buf: zlib.InputType,
+  opts?: zlib.ZlibOptions,
+) => Promise<Buffer>;
 import {
   CURRENT_SCHEMA_VERSION,
   migrateState,
@@ -154,12 +161,13 @@ export class SnapshotService {
     if (!row?.snapshotData) return null;
 
     try {
-      // Decompress snapshot
-      const decompressed = zlib
-        .gunzipSync(row.snapshotData, {
+      // Decompress snapshot off the synchronous fast path so a large snapshot
+      // does not stall the event loop for all other tenants.
+      const decompressed = (
+        await gunzipAsync(row.snapshotData, {
           maxOutputLength: MAX_SNAPSHOT_DECOMPRESSED_BYTES,
         })
-        .toString('utf-8');
+      ).toString('utf-8');
       return {
         state: JSON.parse(decompressed),
         serverSeq: row.lastSnapshotSeq ?? 0,
@@ -175,11 +183,12 @@ export class SnapshotService {
   }
 
   /**
-   * Cache a snapshot for a user.
+   * Serialize + gzip a snapshot off the event loop. Returns the prepared blob
+   * plus byte accounting needed by quota tracking.
    */
-  prepareSnapshotCache(state: unknown): PreparedSnapshotCache {
+  async prepareSnapshotCache(state: unknown): Promise<PreparedSnapshotCache> {
     const serialized = JSON.stringify(state);
-    const data = zlib.gzipSync(serialized);
+    const data = await gzipAsync(serialized);
     return {
       data,
       bytes: data.length,
@@ -203,22 +212,38 @@ export class SnapshotService {
     preparedSnapshot?: PreparedSnapshotCache,
   ): Promise<CacheSnapshotResult> {
     const now = Date.now();
-    const prepared = preparedSnapshot ?? this.prepareSnapshotCache(state);
+    const prepared = preparedSnapshot ?? (await this.prepareSnapshotCache(state));
+    const previousBytes = await this.getCachedSnapshotBytes(userId);
 
     if (!prepared.cacheable) {
       Logger.error(
         `[user:${userId}] Snapshot too large: ${prepared.bytes} bytes ` +
-          `(max ${MAX_SNAPSHOT_SIZE_BYTES}). Skipping cache.`,
+          `(max ${MAX_SNAPSHOT_SIZE_BYTES}). Clearing stale cache.`,
       );
+      // Drop any previously-cached snapshot so callers don't see an outdated
+      // blob alongside ops the new (rejected) snapshot was supposed to cover.
+      // Returns the negative delta so storage accounting credits the freed
+      // space.
+      if (previousBytes > 0) {
+        await prisma.userSyncState.update({
+          where: { userId },
+          data: {
+            snapshotData: null,
+            lastSnapshotSeq: null,
+            snapshotAt: null,
+            snapshotSchemaVersion: null,
+          },
+        });
+      }
       return {
         cached: false,
         bytesWritten: 0,
-        previousBytes: 0,
-        deltaBytes: 0,
+        previousBytes,
+        // Avoid producing -0 when there was no previous snapshot.
+        deltaBytes: previousBytes > 0 ? -previousBytes : 0,
       };
     }
 
-    const previousBytes = await this.getCachedSnapshotBytes(userId);
     await prisma.userSyncState.update({
       where: { userId },
       data: {
@@ -240,8 +265,17 @@ export class SnapshotService {
   /**
    * Generate a snapshot for a user at the latest sequence.
    * Uses FIX 1.7 lock to prevent concurrent generation for the same user.
+   *
+   * `onCacheDelta` (optional) is invoked with the byte change applied to the
+   * `snapshotData` column when the cache is rewritten. Callers should use this
+   * to keep the storage usage counter in sync with on-disk reality — otherwise
+   * `GET /snapshot` can grow `snapshotData` by up to ~MAX_SNAPSHOT_SIZE_BYTES
+   * without the counter noticing.
    */
-  async generateSnapshot(userId: number): Promise<SnapshotResult> {
+  async generateSnapshot(
+    userId: number,
+    onCacheDelta?: (deltaBytes: number) => Promise<void>,
+  ): Promise<SnapshotResult> {
     // FIX 1.7: Check if snapshot generation is already in progress for this user.
     // If so, wait for the existing generation and return its result.
     // This prevents duplicate expensive computation under concurrent requests.
@@ -252,7 +286,7 @@ export class SnapshotService {
     }
 
     // Start new generation and store the promise
-    const promise = this._generateSnapshotImpl(userId);
+    const promise = this._generateSnapshotImpl(userId, onCacheDelta);
     this.snapshotGenerationLocks.set(userId, promise);
 
     try {
@@ -266,10 +300,19 @@ export class SnapshotService {
   /**
    * Internal implementation of snapshot generation.
    * Called only when no concurrent generation is in progress.
+   *
+   * If a counter delta needs applying (cache was rewritten), the delta is
+   * captured by the closure into `cacheDelta` and applied AFTER the
+   * transaction commits via the optional `onCacheDelta` callback. This keeps
+   * the slow counter update out of the snapshot transaction window while
+   * still letting storage accounting self-heal.
    */
-  private async _generateSnapshotImpl(userId: number): Promise<SnapshotResult> {
-    // Transaction for consistent view
-    return prisma.$transaction(
+  private async _generateSnapshotImpl(
+    userId: number,
+    onCacheDelta?: (deltaBytes: number) => Promise<void>,
+  ): Promise<SnapshotResult> {
+    let cacheDelta = 0;
+    const result = await prisma.$transaction(
       async (tx) => {
         // Get latest seq in this transaction
         const seqRow = await tx.userSyncState.findUnique({
@@ -297,11 +340,11 @@ export class SnapshotService {
 
         if (cachedRow?.snapshotData) {
           try {
-            const decompressed = zlib
-              .gunzipSync(cachedRow.snapshotData, {
+            const decompressed = (
+              await gunzipAsync(cachedRow.snapshotData, {
                 maxOutputLength: MAX_SNAPSHOT_DECOMPRESSED_BYTES,
               })
-              .toString('utf-8');
+            ).toString('utf-8');
             state = JSON.parse(decompressed) as Record<string, unknown>;
             startSeq = cachedRow.lastSnapshotSeq ?? 0;
             snapshotSchemaVersion = cachedRow.snapshotSchemaVersion ?? 1;
@@ -322,6 +365,8 @@ export class SnapshotService {
             schemaVersion: CURRENT_SCHEMA_VERSION,
           };
         }
+
+        const previousCachedBytes = cachedRow?.snapshotData?.length ?? 0;
 
         // Migrate snapshot if needed
         if (stateNeedsMigration(snapshotSchemaVersion, CURRENT_SCHEMA_VERSION)) {
@@ -395,11 +440,12 @@ export class SnapshotService {
 
         const generatedAt = Date.now();
 
-        // Update cache (we can do this async/outside, but doing it inside ensures it matches the returned state)
-        // However, we are in a read-only-ish flow, but we can write to cache.
-        // We'll call the update directly on tx.
-        // Re-implementing cacheSnapshot logic for tx
-        const compressed = zlib.gzipSync(JSON.stringify(state));
+        // Update cache inside the transaction so the cached snapshot matches
+        // the returned state. Gzip is async so the event loop stays
+        // responsive for other tenants; the txn timeout (60s) is generous
+        // enough to cover it. Capture the byte delta so the storage counter
+        // can be updated AFTER the txn commits (see `cacheDelta`).
+        const compressed = await gzipAsync(JSON.stringify(state));
         if (compressed.length <= MAX_SNAPSHOT_SIZE_BYTES) {
           await tx.userSyncState.update({
             where: { userId },
@@ -410,6 +456,7 @@ export class SnapshotService {
               snapshotSchemaVersion: CURRENT_SCHEMA_VERSION,
             },
           });
+          cacheDelta = compressed.length - previousCachedBytes;
         }
 
         return {
@@ -423,6 +470,20 @@ export class SnapshotService {
         timeout: 60000, // Snapshots can take time
       },
     );
+
+    if (onCacheDelta && cacheDelta !== 0) {
+      try {
+        await onCacheDelta(cacheDelta);
+      } catch (err) {
+        Logger.warn(
+          `[user:${userId}] generateSnapshot cache-delta hook failed: ${
+            (err as Error).message
+          }`,
+        );
+      }
+    }
+
+    return result;
   }
 
   /**
@@ -527,11 +588,11 @@ export class SnapshotService {
           cachedRow.lastSnapshotSeq <= targetSeq
         ) {
           try {
-            const decompressed = zlib
-              .gunzipSync(cachedRow.snapshotData, {
+            const decompressed = (
+              await gunzipAsync(cachedRow.snapshotData, {
                 maxOutputLength: MAX_SNAPSHOT_DECOMPRESSED_BYTES,
               })
-              .toString('utf-8');
+            ).toString('utf-8');
             state = JSON.parse(decompressed) as Record<string, unknown>;
             startSeq = cachedRow.lastSnapshotSeq;
 

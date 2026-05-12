@@ -224,6 +224,54 @@ describe('StorageQuotaService', () => {
       expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
     });
 
+    it('should not deadlock when a reentrant caller hits an in-flight non-reentrant reconcile', async () => {
+      // Regression for the deadlock between inflightReconciles and
+      // runWithStorageUsageLock. The real-world race:
+      //   1) Outside-the-lock caller D (e.g. a deferred cleanup reconcile)
+      //      registers an inflightReconciles entry whose inner lock is queued
+      //      behind whatever currently holds the lock.
+      //   2) Route handler B is inside its runWithStorageUsageLock window.
+      //   3) From inside B's fn, enforceStorageQuota calls updateStorageUsage.
+      //      Pre-fix: B's call short-circuited to D's promise via the
+      //      inflightReconciles map, then awaited a promise that needed the
+      //      lock B holds → deadlock.
+      // Simulate D directly by populating the map with a never-resolving
+      // promise (no leaks: the map entry is removed when B falls through).
+      const neverResolves = new Promise<void>(() => undefined);
+      const inflightMap = (
+        service as unknown as {
+          inflightReconciles: Map<number, Promise<void>>;
+        }
+      ).inflightReconciles;
+      inflightMap.set(1, neverResolves);
+
+      vi.mocked(prisma.$queryRaw).mockResolvedValue([{ total: BigInt(42) }] as any);
+      vi.mocked(prisma.userSyncState.findUnique).mockResolvedValue({
+        snapshotData: null,
+      } as any);
+      vi.mocked(prisma.user.update).mockResolvedValue({} as any);
+
+      const insideResult = await Promise.race([
+        service.runWithStorageUsageLock(1, async () => {
+          await service.updateStorageUsage(1);
+          return 'inside';
+        }),
+        new Promise<string>((resolve) => setTimeout(() => resolve('TIMEOUT'), 200)),
+      ]);
+
+      expect(insideResult).toBe('inside');
+      // The reentrant path ran the scan directly without going through the
+      // dedupe map (and never awaited D's never-resolving promise).
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+      // D's entry must NOT have been mutated by the reentrant call.
+      expect(inflightMap.get(1)).toBe(neverResolves);
+
+      // Cleanup so the never-resolving promise does not leak into other
+      // tests (vi.clearAllMocks doesn't touch the new service instance,
+      // but we share Maps with later beforeEach factory state — be tidy).
+      inflightMap.delete(1);
+    });
+
     it('should wait for an active storage mutation window before exact reconcile', async () => {
       const events: string[] = [];
       let releaseWindow: () => void = () => undefined;
@@ -292,6 +340,66 @@ describe('StorageQuotaService', () => {
       );
 
       expect(result).toBe('nested');
+    });
+  });
+
+  describe('forced reconcile marker', () => {
+    it('checkStorageQuota should run an exact reconcile first when the user is marked', async () => {
+      // Marker indicates the cached counter is known stale (e.g. a previous
+      // post-commit increment failed). Quota check must self-heal before
+      // answering, otherwise drift accumulates until daily cleanup.
+      vi.mocked(prisma.$queryRaw).mockResolvedValue([{ total: BigInt(10_000) }] as any);
+      vi.mocked(prisma.userSyncState.findUnique).mockResolvedValue({
+        snapshotData: null,
+      } as any);
+      vi.mocked(prisma.user.update).mockResolvedValue({} as any);
+      vi.mocked(prisma.user.findUnique).mockResolvedValue({
+        storageQuotaBytes: BigInt(100_000),
+        storageUsedBytes: BigInt(10_000),
+      } as any);
+
+      service.markNeedsReconcile(1);
+      expect(service.needsReconcile(1)).toBe(true);
+
+      await service.checkStorageQuota(1, 1000);
+
+      // The scan (and write) must have run before the quota read.
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: { storageUsedBytes: BigInt(10_000) },
+      });
+      // Marker self-clears after a successful reconcile.
+      expect(service.needsReconcile(1)).toBe(false);
+    });
+
+    it('checkStorageQuota should not reconcile when the user is not marked', async () => {
+      vi.mocked(prisma.user.findUnique).mockResolvedValue({
+        storageQuotaBytes: BigInt(100_000),
+        storageUsedBytes: BigInt(50_000),
+      } as any);
+
+      await service.checkStorageQuota(1, 1000);
+
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('checkStorageQuota should fall back to the cached read if the forced reconcile throws', async () => {
+      vi.mocked(prisma.$queryRaw).mockRejectedValue(new Error('db down'));
+      vi.mocked(prisma.user.findUnique).mockResolvedValue({
+        storageQuotaBytes: BigInt(100_000),
+        storageUsedBytes: BigInt(50_000),
+      } as any);
+
+      service.markNeedsReconcile(1);
+
+      const result = await service.checkStorageQuota(1, 1000);
+
+      expect(result.allowed).toBe(true);
+      expect(result.currentUsage).toBe(50_000);
+      // Marker stays set so the next call retries the reconcile.
+      expect(service.needsReconcile(1)).toBe(true);
     });
   });
 

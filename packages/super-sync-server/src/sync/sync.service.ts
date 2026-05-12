@@ -708,7 +708,7 @@ export class SyncService {
     return this.snapshotService.getCachedSnapshot(userId);
   }
 
-  prepareSnapshotCache(state: unknown): PreparedSnapshotCache {
+  async prepareSnapshotCache(state: unknown): Promise<PreparedSnapshotCache> {
     return this.snapshotService.prepareSnapshotCache(state);
   }
 
@@ -725,13 +725,16 @@ export class SyncService {
     return this.snapshotService.cacheSnapshot(userId, state, serverSeq, preparedSnapshot);
   }
 
-  async generateSnapshot(userId: number): Promise<{
+  async generateSnapshot(
+    userId: number,
+    onCacheDelta?: (deltaBytes: number) => Promise<void>,
+  ): Promise<{
     state: unknown;
     serverSeq: number;
     generatedAt: number;
     schemaVersion: number;
   }> {
-    return this.snapshotService.generateSnapshot(userId);
+    return this.snapshotService.generateSnapshot(userId, onCacheDelta);
   }
 
   async getRestorePoints(
@@ -815,6 +818,10 @@ export class SyncService {
 
   async runWithStorageUsageLock<T>(userId: number, fn: () => Promise<T>): Promise<T> {
     return this.storageQuotaService.runWithStorageUsageLock(userId, fn);
+  }
+
+  markStorageNeedsReconcile(userId: number): void {
+    this.storageQuotaService.markNeedsReconcile(userId);
   }
 
   async getStorageInfo(userId: number): Promise<{

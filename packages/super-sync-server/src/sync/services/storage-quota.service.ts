@@ -36,6 +36,14 @@ export class StorageQuotaService {
    */
   private inflightReconciles: Map<number, Promise<void>> = new Map();
 
+  /**
+   * Per-user "exact reconcile required" markers. Set when a post-write counter
+   * delta fails to persist (counter is now stale-low). The next quota check
+   * for that user forces a `updateStorageUsage` scan before answering so the
+   * drift self-heals instead of waiting for daily cleanup.
+   */
+  private forcedReconciles: Set<number> = new Set();
+
   async runWithStorageUsageLock<T>(userId: number, fn: () => Promise<T>): Promise<T> {
     const activeLocks = this.storageUsageLockContext.getStore();
     if (activeLocks?.has(userId)) {
@@ -153,12 +161,23 @@ export class StorageQuotaService {
 
   /**
    * Check if a user has quota available for additional storage.
-   * Uses cached storageUsedBytes for performance.
+   * Uses cached storageUsedBytes for performance. If the user has a forced
+   * reconcile marker (counter known stale), runs `updateStorageUsage` first
+   * so the answer is based on truth rather than drift.
    */
   async checkStorageQuota(
     userId: number,
     additionalBytes: number,
   ): Promise<{ allowed: boolean; currentUsage: number; quota: number }> {
+    if (this.forcedReconciles.has(userId)) {
+      try {
+        await this.updateStorageUsage(userId);
+      } catch {
+        // Fall through to the (still drifted) cached read; better to answer
+        // optimistically than to fail the request.
+      }
+    }
+
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: { storageQuotaBytes: true, storageUsedBytes: true },
@@ -184,6 +203,21 @@ export class StorageQuotaService {
    * cleared in `finally` before the awaiter resolves.
    */
   async updateStorageUsage(userId: number): Promise<void> {
+    // If we already hold the per-user lock (reentrant call from inside a
+    // request that took the lock), skip the inflightReconciles dedupe map.
+    // Otherwise we could await a promise registered by a non-reentrant caller
+    // that is itself queued behind our own lock → deadlock.
+    const inLock = this.storageUsageLockContext.getStore()?.has(userId);
+    if (inLock) {
+      const { totalBytes } = await this.calculateStorageUsage(userId);
+      await prisma.user.update({
+        where: { id: userId },
+        data: { storageUsedBytes: BigInt(totalBytes) },
+      });
+      this.forcedReconciles.delete(userId);
+      return;
+    }
+
     const existing = this.inflightReconciles.get(userId);
     if (existing) return existing;
 
@@ -193,6 +227,7 @@ export class StorageQuotaService {
         where: { id: userId },
         data: { storageUsedBytes: BigInt(totalBytes) },
       });
+      this.forcedReconciles.delete(userId);
     });
     this.inflightReconciles.set(userId, promise);
     try {
@@ -202,6 +237,22 @@ export class StorageQuotaService {
         this.inflightReconciles.delete(userId);
       }
     }
+  }
+
+  /**
+   * Mark a user as needing an exact reconcile before their next quota check.
+   * Called when a post-write counter delta fails to persist (silent drift).
+   */
+  markNeedsReconcile(userId: number): void {
+    this.forcedReconciles.add(userId);
+  }
+
+  /**
+   * Whether the user has a pending forced reconcile (set by markNeedsReconcile,
+   * cleared by a successful `updateStorageUsage`).
+   */
+  needsReconcile(userId: number): boolean {
+    return this.forcedReconciles.has(userId);
   }
 
   /**

@@ -115,11 +115,35 @@ const applyStorageUsageDelta = async (
       await syncService.decrementStorageUsage(userId, Math.abs(deltaBytes));
     }
   } catch (err) {
+    // Counter write failed AFTER the data write committed. The cached
+    // storage_used_bytes is now stale (low for increments, high for
+    // decrements). Mark the user for forced reconcile so the next quota
+    // check self-heals rather than waiting for daily cleanup.
+    syncService.markStorageNeedsReconcile(userId);
     Logger.warn(
-      `[user:${userId}] Failed to update storage usage cache ${context}: ${errorMessage(err)}`,
+      `[user:${userId}] Failed to update storage usage cache ${context}: ${errorMessage(err)}; marked for forced reconcile`,
     );
   }
 };
+
+const sendQuotaExceededReply = (
+  reply: FastifyReply,
+  body: {
+    storageUsedBytes: number;
+    storageQuotaBytes: number;
+    autoCleanupAttempted: boolean;
+    cleanupStats?: {
+      freedBytes: number;
+      deletedRestorePoints: number;
+      deletedOps: number;
+    };
+  },
+): FastifyReply =>
+  reply.status(413).send({
+    error: 'Storage quota exceeded',
+    errorCode: SYNC_ERROR_CODES.STORAGE_QUOTA_EXCEEDED,
+    ...body,
+  });
 
 type CompressedJsonBodyParseFailure = Extract<
   CompressedJsonBodyParseResult,
@@ -211,9 +235,7 @@ async function enforceStorageQuota(
   Logger.warn(
     `[user:${userId}] Storage quota still exceeded after cleanup: ${finalQuota.currentUsage}/${finalQuota.quota} bytes`,
   );
-  reply.status(413).send({
-    error: 'Storage quota exceeded',
-    errorCode: SYNC_ERROR_CODES.STORAGE_QUOTA_EXCEEDED,
+  sendQuotaExceededReply(reply, {
     storageUsedBytes: finalQuota.currentUsage,
     storageQuotaBytes: finalQuota.quota,
     autoCleanupAttempted: true,
@@ -239,9 +261,7 @@ async function enforceCleanSlateStorageQuota(
     `[user:${userId}] Clean-slate snapshot exceeds quota: ` +
       `${finalStorageBytes}/${storageInfo.storageQuotaBytes} bytes`,
   );
-  reply.status(413).send({
-    error: 'Storage quota exceeded',
-    errorCode: SYNC_ERROR_CODES.STORAGE_QUOTA_EXCEEDED,
+  sendQuotaExceededReply(reply, {
     storageUsedBytes: 0,
     storageQuotaBytes: storageInfo.storageQuotaBytes,
     autoCleanupAttempted: false,
@@ -284,6 +304,11 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
   fastify.post<{ Body: UploadOpsRequest }>(
     '/ops',
     {
+      // Cap raw request body at the same compressed limit we enforce after
+      // parsing, so the server cannot be made to buffer up to the global 20MB
+      // limit just to reject in `parseCompressedJsonBody`. Reduces gzip-bomb
+      // amplification surface.
+      bodyLimit: MAX_COMPRESSED_SIZE_OPS,
       config: {
         rateLimit: {
           max: 100,
@@ -450,13 +475,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
             }
             const deltaBytes = computeOpsStorageBytes(acceptedOps);
             if (deltaBytes > 0) {
-              try {
-                await syncService.incrementStorageUsage(userId, deltaBytes);
-              } catch (err) {
-                Logger.warn(
-                  `[user:${userId}] Failed to increment storage usage cache: ${errorMessage(err)}`,
-                );
-              }
+              await applyStorageUsageDelta(userId, deltaBytes, 'after ops upload');
             }
 
             return uploadResults;
@@ -648,7 +667,12 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         const syncService = getSyncService();
 
         Logger.info(`[user:${userId}] Snapshot requested`);
-        const snapshot = await syncService.generateSnapshot(userId);
+        // Keep the storage counter in sync with snapshotData rewrites; without
+        // this hook GET /snapshot can grow up to MAX_SNAPSHOT_SIZE_BYTES of
+        // cached data with no quota accounting.
+        const snapshot = await syncService.generateSnapshot(userId, (deltaBytes) =>
+          applyStorageUsageDelta(userId, deltaBytes, 'after generateSnapshot'),
+        );
         Logger.info(`[user:${userId}] Snapshot ready (seq=${snapshot.serverSeq})`);
         return reply.send(snapshot as SnapshotResponse);
       } catch (err) {
@@ -728,19 +752,28 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
 
         // Cheap pre-quota gate BEFORE prepareSnapshotCache so quota-exhausted
         // clients can't burn CPU on JSON.stringify + zlib.gzipSync. Uses only
-        // the cached counter — exact check (which may include a slow reconcile)
-        // still runs inside the locked window below. Skip for clean-slate which
-        // wipes existing usage.
+        // the cached counter; if it says we're already at quota, reconcile
+        // once before rejecting — a stale-high counter would otherwise lock
+        // out a user whose new snapshot would actually shrink storage. Skip
+        // for clean-slate which wipes existing usage.
         if (!isCleanSlate) {
-          const cachedInfo = await syncService.getStorageInfo(userId);
+          let cachedInfo = await syncService.getStorageInfo(userId);
           if (cachedInfo.storageUsedBytes >= cachedInfo.storageQuotaBytes) {
-            return reply.status(413).send({
-              error: 'Storage quota exceeded',
-              code: 'STORAGE_QUOTA_EXCEEDED',
-              storageUsedBytes: cachedInfo.storageUsedBytes,
-              storageQuotaBytes: cachedInfo.storageQuotaBytes,
-              autoCleanupAttempted: false,
-            });
+            try {
+              await syncService.updateStorageUsage(userId);
+              cachedInfo = await syncService.getStorageInfo(userId);
+            } catch (err) {
+              Logger.warn(
+                `[user:${userId}] Snapshot pre-gate reconcile failed: ${errorMessage(err)}`,
+              );
+            }
+            if (cachedInfo.storageUsedBytes >= cachedInfo.storageQuotaBytes) {
+              return sendQuotaExceededReply(reply, {
+                storageUsedBytes: cachedInfo.storageUsedBytes,
+                storageQuotaBytes: cachedInfo.storageQuotaBytes,
+                autoCleanupAttempted: false,
+              });
+            }
           }
         }
 
@@ -798,7 +831,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
           syncImportReason,
         };
 
-        const preparedSnapshot = syncService.prepareSnapshotCache(state);
+        const preparedSnapshot = await syncService.prepareSnapshotCache(state);
         const estimatedOpStorageBytes =
           preparedSnapshot.stateBytes + computeJsonStorageBytes(op.vectorClock, {});
 
