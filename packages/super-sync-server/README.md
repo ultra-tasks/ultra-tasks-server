@@ -48,54 +48,25 @@ nano .env
 
 `docker compose up` is not a deployment substitute: container startup migrations
 are disabled by default so app restarts cannot race the deploy migrator.
+`./scripts/deploy.sh` runs `prisma migrate deploy` once before replacing the app
+container, then brings the stack up and verifies the health endpoint.
 
-> **Upgrade note:** after this change, `docker compose pull && docker compose up -d`
-> can leave the app running against unapplied migrations. Use `./scripts/deploy.sh`
-> for production updates, or `./scripts/deploy.sh --build` for local image builds.
+> **Upgrade note:** because `RUN_MIGRATIONS_ON_STARTUP` defaults to `false`,
+> `docker compose pull && docker compose up -d` can leave the app running
+> against unapplied migrations. Use `./scripts/deploy.sh` for production
+> updates, or `./scripts/deploy.sh --build` for local image builds.
 
-Large optional indexes are built outside Prisma migrations. Run the deploy
-off-hours with `RUN_POST_MIGRATION_INDEXES=true` to build them.
-
-Older databases that saw the original `20260511000000_add_entity_sequence_index`
-migration may warn that the applied migration file changed. Prisma's production
-`migrate deploy` command reports modified applied migrations as warnings and then
-continues to apply pending migrations. Do not reset a production database for
-this warning; this migration now intentionally contains no SQL, and the physical
-index is managed by `deploy.sh`.
+Some migrations use `CREATE INDEX CONCURRENTLY`, which can block on long-running
+transactions on a busy database. Run deploys off-hours when applying schema
+changes, and raise `MIGRATION_TIMEOUT` (seconds, default `900`) if a large
+table requires more time. Exit code `124` from `deploy.sh` means the migration
+timed out — re-run after the blocking transaction clears.
 
 If `DATABASE_URL` points to an external PostgreSQL server, set
 `POSTGRES_SERVICE=` to the empty value. `deploy.sh` then starts only the
 app/proxy services with compose dependencies disabled so the bundled Postgres
-container is not required. The deploy script still runs Prisma migrations, known
-failed-migration recovery, and optional index builds through the configured
+container is not required. Prisma migrations still run against the configured
 `DATABASE_URL`.
-
-If you need to recover an external database manually, drop any invalid partial
-index, roll back the failed Prisma migration row, and then rebuild the optional
-index off-hours. Run the SQL with the same schema/search path used by
-`DATABASE_URL`:
-
-```sql
--- Replace public if DATABASE_URL uses a different Prisma schema/search path.
-SET search_path TO public;
-DROP INDEX CONCURRENTLY IF EXISTS "operations_user_id_entity_type_entity_id_server_seq_idx";
-```
-
-```bash
-npx prisma migrate resolve --rolled-back 20260511000000_add_entity_sequence_index
-npx prisma migrate deploy
-```
-
-```sql
--- Replace public if DATABASE_URL uses a different Prisma schema/search path.
-SET search_path TO public;
-CREATE INDEX CONCURRENTLY IF NOT EXISTS "operations_user_id_entity_type_entity_id_server_seq_idx"
-  ON "operations"("user_id", "entity_type", "entity_id", "server_seq");
-```
-
-Because that optional index is intentionally managed outside Prisma, do not run
-Prisma schema reset/push commands against a production-shaped database to "fix"
-the difference. Those commands can drop the out-of-band index.
 
 ### Manual Setup (Development)
 

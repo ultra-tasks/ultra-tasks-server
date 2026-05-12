@@ -73,7 +73,7 @@ describe('performance migrations', () => {
     );
     expect(dockerfile).toContain('RUN_MIGRATIONS_ON_STARTUP');
     expect(composeFile).toContain(
-      'RUN_MIGRATIONS_ON_STARTUP=${RUN_MIGRATIONS_ON_STARTUP:-true}',
+      'RUN_MIGRATIONS_ON_STARTUP=${RUN_MIGRATIONS_ON_STARTUP:-false}',
     );
   });
 });

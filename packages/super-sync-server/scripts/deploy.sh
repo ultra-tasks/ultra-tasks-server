@@ -121,8 +121,28 @@ else
 fi
 
 echo ""
-echo "==> Applying database migrations before app restart..."
-docker compose $COMPOSE_FILES run --rm --no-deps supersync npx prisma migrate deploy
+# `CREATE INDEX CONCURRENTLY` migrations can block on long-running transactions
+# for arbitrarily long. Wrap the migrator with a timeout so a stuck deploy fails
+# loudly instead of hanging this script forever. Exit code 124 = timed out.
+MIGRATION_TIMEOUT="${MIGRATION_TIMEOUT:-900}"
+echo "==> Applying database migrations before app restart (timeout: ${MIGRATION_TIMEOUT}s)..."
+set +e
+timeout "$MIGRATION_TIMEOUT" \
+    docker compose $COMPOSE_FILES run --rm --no-deps supersync npx prisma migrate deploy
+MIGRATE_STATUS=$?
+set -e
+if [ "$MIGRATE_STATUS" -eq 124 ]; then
+    echo ""
+    echo "ERROR: prisma migrate deploy timed out after ${MIGRATION_TIMEOUT}s."
+    echo "       A long-running transaction may be blocking CREATE INDEX CONCURRENTLY."
+    echo "       Raise MIGRATION_TIMEOUT or re-run once the blocker clears."
+    exit 1
+fi
+if [ "$MIGRATE_STATUS" -ne 0 ]; then
+    echo ""
+    echo "ERROR: prisma migrate deploy failed (exit $MIGRATE_STATUS)."
+    exit "$MIGRATE_STATUS"
+fi
 
 # The migration above already ran while the old app was still serving. Disable
 # startup migrations for this compose update so the replacement app starts
