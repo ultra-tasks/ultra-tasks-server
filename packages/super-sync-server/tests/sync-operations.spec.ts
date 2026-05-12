@@ -323,7 +323,10 @@ vi.mock('../src/db', async () => {
         findUnique: vi.fn().mockImplementation(async (args: any) => {
           return state.users.get(args.where.id) || null;
         }),
+        update: vi.fn().mockResolvedValue({}),
       },
+      $queryRaw: vi.fn().mockResolvedValue([{ total: BigInt(0) }]),
+      $executeRaw: vi.fn().mockResolvedValue(0),
     },
   };
 });

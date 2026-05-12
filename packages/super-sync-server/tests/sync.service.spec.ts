@@ -495,6 +495,7 @@ vi.mock('../src/db', async () => {
         update: vi.fn().mockResolvedValue({}),
       },
       $queryRaw: vi.fn().mockResolvedValue([{ total: BigInt(0) }]),
+      $executeRaw: vi.fn().mockResolvedValue(0),
     },
   };
 });
