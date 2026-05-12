@@ -292,7 +292,7 @@ describe('SnapshotService', () => {
                 snapshotAt: null,
                 snapshotSchemaVersion: null,
               }),
-            update: vi.fn().mockResolvedValue({}),
+            upsert: vi.fn().mockResolvedValue({}),
           },
           operation: { count: vi.fn().mockResolvedValue(0), findMany },
         };
