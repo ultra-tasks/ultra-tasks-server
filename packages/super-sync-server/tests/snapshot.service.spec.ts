@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { SnapshotService } from '../src/sync/services/snapshot.service';
+import {
+  SnapshotService,
+  EncryptedOpsNotSupportedError,
+} from '../src/sync/services/snapshot.service';
 import * as zlib from 'zlib';
 
 // Mock prisma
@@ -8,6 +11,9 @@ vi.mock('../src/db', () => ({
     userSyncState: {
       findUnique: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn(),
+      create: vi.fn(),
+      upsert: vi.fn(),
     },
     operation: {
       findMany: vi.fn(),
@@ -76,33 +82,46 @@ describe('SnapshotService', () => {
       });
     });
 
-    it('should return null on decompression error', async () => {
+    it('should return null and invalidate the cached blob on decompression error', async () => {
       vi.mocked(prisma.userSyncState.findUnique).mockResolvedValue({
         snapshotData: Buffer.from('not-compressed-data'),
         lastSnapshotSeq: 10,
         snapshotAt: BigInt(Date.now()),
         snapshotSchemaVersion: 1,
       } as any);
+      vi.mocked(prisma.userSyncState.update).mockResolvedValue({} as any);
 
       const result = await service.getCachedSnapshot(1);
 
       expect(result).toBeNull();
+      expect(prisma.userSyncState.update).toHaveBeenCalledWith({
+        where: { userId: 1 },
+        data: {
+          snapshotData: null,
+          lastSnapshotSeq: null,
+          snapshotAt: null,
+          snapshotSchemaVersion: null,
+        },
+      });
     });
   });
 
   describe('cacheSnapshot', () => {
-    it('should compress and store snapshot', async () => {
+    it('should compress and conditionally update an existing row', async () => {
       vi.useFakeTimers();
       const now = 1700000000000;
       vi.setSystemTime(now);
 
       const state = { TASK: { 'task-1': { id: 'task-1' } } };
-      vi.mocked(prisma.userSyncState.update).mockResolvedValue({} as any);
+      vi.mocked(prisma.userSyncState.updateMany).mockResolvedValue({ count: 1 } as any);
 
       await service.cacheSnapshot(1, state, 10);
 
-      expect(prisma.userSyncState.update).toHaveBeenCalledWith({
-        where: { userId: 1 },
+      expect(prisma.userSyncState.updateMany).toHaveBeenCalledWith({
+        where: {
+          userId: 1,
+          OR: [{ lastSnapshotSeq: null }, { lastSnapshotSeq: { lt: 10 } }],
+        },
         data: {
           snapshotData: expect.any(Buffer),
           lastSnapshotSeq: 10,
@@ -110,6 +129,51 @@ describe('SnapshotService', () => {
           snapshotSchemaVersion: expect.any(Number),
         },
       });
+      expect(prisma.userSyncState.create).not.toHaveBeenCalled();
+    });
+
+    it('should create the row when no userSyncState exists (first-time user)', async () => {
+      const state = { TASK: { 'task-1': { id: 'task-1' } } };
+      vi.mocked(prisma.userSyncState.updateMany).mockResolvedValue({ count: 0 } as any);
+      vi.mocked(prisma.userSyncState.create).mockResolvedValue({} as any);
+
+      await service.cacheSnapshot(1, state, 10);
+
+      expect(prisma.userSyncState.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          userId: 1,
+          lastSnapshotSeq: 10,
+          snapshotData: expect.any(Buffer),
+        }),
+      });
+    });
+
+    it('should swallow P2002 when a concurrent writer inserted the row first', async () => {
+      const state = { TASK: { 'task-1': { id: 'task-1' } } };
+      vi.mocked(prisma.userSyncState.updateMany).mockResolvedValue({ count: 0 } as any);
+      const p2002 = Object.assign(new Error('unique constraint'), { code: 'P2002' });
+      vi.mocked(prisma.userSyncState.create).mockRejectedValue(p2002);
+
+      await expect(service.cacheSnapshot(1, state, 10)).resolves.toBeUndefined();
+    });
+
+    it('should rethrow non-P2002 create errors', async () => {
+      const state = { TASK: { 'task-1': { id: 'task-1' } } };
+      vi.mocked(prisma.userSyncState.updateMany).mockResolvedValue({ count: 0 } as any);
+      vi.mocked(prisma.userSyncState.create).mockRejectedValue(new Error('boom'));
+
+      await expect(service.cacheSnapshot(1, state, 10)).rejects.toThrow('boom');
+    });
+
+    it('should be a no-op when a newer snapshot already won the race', async () => {
+      // updateMany returns count=0 with an existing newer row. create then
+      // throws P2002 because a row exists. Both swallowed.
+      const state = { TASK: { 'task-1': { id: 'task-1' } } };
+      vi.mocked(prisma.userSyncState.updateMany).mockResolvedValue({ count: 0 } as any);
+      const p2002 = Object.assign(new Error('unique constraint'), { code: 'P2002' });
+      vi.mocked(prisma.userSyncState.create).mockRejectedValue(p2002);
+
+      await expect(service.cacheSnapshot(1, state, 5)).resolves.toBeUndefined();
     });
 
     // Skip: Testing size limit requires mocking zlib which is a native module.
@@ -117,6 +181,75 @@ describe('SnapshotService', () => {
     it.skip('should skip caching if snapshot is too large', async () => {
       // This test is skipped because zlib cannot be easily mocked
       // The MAX_SNAPSHOT_SIZE_BYTES check is a simple comparison
+    });
+  });
+
+  describe('cacheSnapshotIfReplayable', () => {
+    it('should skip caching for encrypted payloads', async () => {
+      await service.cacheSnapshotIfReplayable(1, {}, 10, true);
+
+      expect(prisma.userSyncState.updateMany).not.toHaveBeenCalled();
+      expect(prisma.userSyncState.create).not.toHaveBeenCalled();
+    });
+
+    it('should cache plaintext payloads', async () => {
+      vi.mocked(prisma.userSyncState.updateMany).mockResolvedValue({ count: 1 } as any);
+
+      await service.cacheSnapshotIfReplayable(1, { TASK: {} }, 10, false);
+
+      expect(prisma.userSyncState.updateMany).toHaveBeenCalled();
+    });
+  });
+
+  describe('generateSnapshot - first-time user (no userSyncState row)', () => {
+    // Regression test for the RecordNotFound bug: when a user calls
+    // generateSnapshot before any uploads, there is no userSyncState row.
+    // Previously the inline `tx.userSyncState.update` threw P2025 and the
+    // route returned 500. With upsert the path must succeed and return an
+    // empty snapshot at seq=0.
+    it('should not throw RecordNotFound when no userSyncState row exists', async () => {
+      const upsertSpy = vi.fn().mockResolvedValue({});
+
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn) => {
+        const mockTx = {
+          userSyncState: {
+            // Both findUnique calls (lastSeq + cachedRow) return null —
+            // simulating a brand-new user.
+            findUnique: vi.fn().mockResolvedValue(null),
+            upsert: upsertSpy,
+          },
+          operation: {
+            count: vi.fn().mockResolvedValue(0),
+            findFirst: vi.fn().mockResolvedValue(null),
+            findMany: vi.fn().mockResolvedValue([]),
+          },
+        };
+        return fn(mockTx as any);
+      });
+
+      const result = await service.generateSnapshot(1);
+
+      // latestSeq=0, startSeq=0 → no replay needed but no cache either, so
+      // the service runs through replay (empty loop) and still upserts.
+      expect(result.serverSeq).toBe(0);
+      expect(result.state).toEqual({});
+      expect(upsertSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { userId: 1 },
+          create: expect.objectContaining({ userId: 1, lastSnapshotSeq: 0 }),
+        }),
+      );
+    });
+
+    it('cacheSnapshot via the standalone path should create the row on first-time user', async () => {
+      vi.mocked(prisma.userSyncState.updateMany).mockResolvedValue({ count: 0 } as any);
+      vi.mocked(prisma.userSyncState.create).mockResolvedValue({} as any);
+
+      await service.cacheSnapshot(99, { TASK: {} }, 1);
+
+      expect(prisma.userSyncState.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ userId: 99, lastSnapshotSeq: 1 }),
+      });
     });
   });
 
@@ -171,7 +304,7 @@ describe('SnapshotService', () => {
         const mockTx = {
           userSyncState: {
             findUnique: vi.fn().mockResolvedValue({ lastSeq: 0 }),
-            update: vi.fn().mockResolvedValue({}),
+            upsert: vi.fn().mockResolvedValue({}),
           },
           operation: {
             findMany: vi.fn().mockResolvedValue([]),
@@ -204,7 +337,7 @@ describe('SnapshotService', () => {
         const mockTx = {
           userSyncState: {
             findUnique: vi.fn().mockResolvedValue({ lastSeq: 0 }),
-            update: vi.fn().mockResolvedValue({}),
+            upsert: vi.fn().mockResolvedValue({}),
           },
           operation: {
             findMany: vi.fn().mockResolvedValue([]),
@@ -261,7 +394,7 @@ describe('SnapshotService', () => {
               .fn()
               .mockResolvedValueOnce({ lastSeq: 1 })
               .mockResolvedValueOnce({ snapshotData: null, lastSnapshotSeq: null }),
-            update: vi.fn().mockResolvedValue({}),
+            upsert: vi.fn().mockResolvedValue({}),
           },
           operation: {
             count: vi.fn().mockResolvedValue(0),
@@ -320,7 +453,7 @@ describe('SnapshotService', () => {
       // Scenario: after a clean-slate upload (sync.service preserves lastSeq but
       // wipes ops) the next SYNC_IMPORT lands at lastSeq+1 (e.g. 102). Snapshot
       // replay must accept the leading gap because SYNC_IMPORT resets state.
-      const updateSpy = vi.fn().mockResolvedValue({});
+      const upsertSpy = vi.fn().mockResolvedValue({});
 
       vi.mocked(prisma.$transaction).mockImplementation(async (fn) => {
         const mockTx = {
@@ -329,7 +462,7 @@ describe('SnapshotService', () => {
               .fn()
               .mockResolvedValueOnce({ lastSeq: 102 })
               .mockResolvedValueOnce({ snapshotData: null, lastSnapshotSeq: null }),
-            update: updateSpy,
+            upsert: upsertSpy,
           },
           operation: {
             count: vi.fn().mockResolvedValue(0),
@@ -416,7 +549,7 @@ describe('SnapshotService', () => {
         const mockTx = {
           userSyncState: {
             findUnique: vi.fn().mockResolvedValue({ lastSeq: 0 }),
-            update: vi.fn().mockResolvedValue({}),
+            upsert: vi.fn().mockResolvedValue({}),
           },
           operation: {
             findMany: vi.fn().mockResolvedValue([]),
@@ -825,7 +958,42 @@ describe('SnapshotService', () => {
       expect(result.PROJECT).toEqual({ 'proj-1': { id: 'proj-1' } });
     });
 
-    it('should throw for encrypted operations', () => {
+    it('SYNC_IMPORT replaces the entire state (does NOT merge into stale cache)', () => {
+      // Regression test: previously the full-state ops used Object.assign which
+      // merged into existing state, so stale entity types from a cached base
+      // survived a "reset" SYNC_IMPORT. After the fix, a SYNC_IMPORT must
+      // wipe the prior state.
+      const stalePriorState = {
+        TASK: { 'stale-task': { id: 'stale-task' } },
+        PROJECT: { 'stale-proj': { id: 'stale-proj' } },
+        TAG: { 'stale-tag': { id: 'stale-tag' } },
+      };
+      const ops = [
+        {
+          id: 'op-1',
+          opType: 'SYNC_IMPORT',
+          entityType: 'FULL_STATE',
+          entityId: null,
+          payload: {
+            appDataComplete: {
+              TASK: { 'new-task': { id: 'new-task' } },
+            },
+          },
+          isPayloadEncrypted: false,
+          serverSeq: 1,
+          schemaVersion: 1,
+        },
+      ];
+
+      const result = service.replayOpsToState(ops as any, stalePriorState);
+
+      expect(result).toEqual({ TASK: { 'new-task': { id: 'new-task' } } });
+      // Stale keys gone
+      expect(result.PROJECT).toBeUndefined();
+      expect(result.TAG).toBeUndefined();
+    });
+
+    it('should throw EncryptedOpsNotSupportedError for encrypted operations', () => {
       const ops = [
         {
           id: 'op-1',
@@ -839,6 +1007,9 @@ describe('SnapshotService', () => {
         },
       ];
 
+      expect(() => service.replayOpsToState(ops as any)).toThrow(
+        EncryptedOpsNotSupportedError,
+      );
       expect(() => service.replayOpsToState(ops as any)).toThrow(
         'ENCRYPTED_OPS_NOT_SUPPORTED',
       );

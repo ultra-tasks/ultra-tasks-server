@@ -13,7 +13,7 @@
 # Options:
 #   --build    Build locally instead of pulling from registry
 
-set -e
+set -euo pipefail
 shopt -s inherit_errexit 2>/dev/null || true
 
 # Check required dependencies
@@ -29,8 +29,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVER_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Get domain from .env file
+DOMAIN=""
 if [ -f "$SERVER_DIR/.env" ]; then
-    DOMAIN=$(grep -E '^DOMAIN=' "$SERVER_DIR/.env" | cut -d'=' -f2- | tr -d '"'"'")
+    DOMAIN=$(grep -E '^DOMAIN=' "$SERVER_DIR/.env" | cut -d'=' -f2- | tr -d '"'"'" || true)
 fi
 
 if [ -z "$DOMAIN" ]; then
@@ -42,7 +43,7 @@ fi
 
 # Parse arguments
 BUILD_LOCAL=false
-if [ "$1" = "--build" ]; then
+if [ "${1:-}" = "--build" ]; then
     BUILD_LOCAL=true
 fi
 
@@ -99,7 +100,7 @@ load_deploy_env() {
 }
 
 has_placeholder_ghcr_credentials() {
-    [ "$GHCR_USER" = "your-github-username" ] || [ "$GHCR_TOKEN" = "your-github-token" ]
+    [ "${GHCR_USER:-}" = "your-github-username" ] || [ "${GHCR_TOKEN:-}" = "your-github-token" ]
 }
 
 # Pull latest code (scripts, docker-compose.yml, etc.)
@@ -113,7 +114,7 @@ echo ""
 load_deploy_env
 
 # Login to GHCR if credentials provided
-if [ -n "$GHCR_TOKEN" ] && [ -n "$GHCR_USER" ]; then
+if [ -n "${GHCR_TOKEN:-}" ] && [ -n "${GHCR_USER:-}" ]; then
     if has_placeholder_ghcr_credentials; then
         echo "==> Skipping GHCR login (placeholder credentials in .env)"
         echo ""
@@ -139,7 +140,7 @@ ENTITY_SEQUENCE_INDEX_MIGRATION="20260511000000_add_entity_sequence_index"
 ENTITY_SEQUENCE_INDEX_NAME="operations_user_id_entity_type_entity_id_server_seq_idx"
 
 # Validate Caddyfile syntax before deploying
-CADDY_IMAGE=$(grep 'image:.*caddy:' docker-compose.yml | head -1 | awk '{print $2}' | tr -d '"'"'")
+CADDY_IMAGE=$(grep 'image:.*caddy:' docker-compose.yml | head -1 | awk '{print $2}' | tr -d '"'"'" || true)
 if [ -z "$CADDY_IMAGE" ]; then
     echo "ERROR: Could not determine Caddy image from docker-compose.yml"
     exit 1
@@ -543,15 +544,18 @@ if ! "${START_COMMAND[@]}" 2>&1; then
     echo ""
     echo "==> Container startup failed!"
 
-    # Show status of non-running containers
+    # Show status of non-running containers — best-effort under pipefail so
+    # the script still reaches `exit 1` when this diagnostic block fails.
     echo "    Container status:"
-    docker compose $COMPOSE_FILES ps --format '{{.Name}}\t{{.Service}}\t{{.State}}' | while IFS=$'\t' read -r NAME SERVICE STATE; do
-        if [ -n "$STATE" ] && [ "$STATE" != "running" ]; then
-            echo "      $NAME ($STATE)"
-            echo ""
-            docker compose $COMPOSE_FILES logs --tail=10 "$SERVICE" 2>/dev/null
-        fi
-    done
+    {
+        docker compose $COMPOSE_FILES ps --format '{{.Name}}\t{{.Service}}\t{{.State}}' | while IFS=$'\t' read -r NAME SERVICE STATE; do
+            if [ -n "$STATE" ] && [ "$STATE" != "running" ]; then
+                echo "      $NAME ($STATE)"
+                echo ""
+                docker compose $COMPOSE_FILES logs --tail=10 "$SERVICE" 2>/dev/null || true
+            fi
+        done
+    } || true
     exit 1
 fi
 echo "    All containers healthy"

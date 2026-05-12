@@ -7,7 +7,6 @@
  * CRITICAL: FIX 1.7 - Uses in-memory locks to prevent concurrent snapshot
  * generation for the same user. This prevents duplicate expensive computation.
  */
-import * as zlib from 'zlib';
 import { Prisma } from '@prisma/client';
 import { prisma, Operation as PrismaOperation } from '../../db';
 import { Logger } from '../../logger';
@@ -20,6 +19,7 @@ import {
 } from '@sp/shared-schema';
 import { Operation } from '../sync.types';
 import { ALLOWED_ENTITY_TYPES } from './validation.service';
+import { gunzipAsync, gzipAsync } from '../gzip';
 
 /**
  * Maximum operations to process during snapshot generation.
@@ -54,6 +54,21 @@ const encryptedOpsNotSupportedMessage = (encryptedOpCount: number): string =>
   `ENCRYPTED_OPS_NOT_SUPPORTED: Cannot generate snapshot - ${encryptedOpCount} operations have encrypted payloads. ` +
   `Server-side restore is not available when E2E encryption is enabled. ` +
   `Alternative: Use the client app's "Sync Now" button which can decrypt and restore locally.`;
+
+/**
+ * Typed error thrown when snapshot generation hits encrypted ops the server
+ * cannot decrypt. Route handlers should `instanceof`-check this instead of
+ * substring-matching the message, and must NOT echo `message` back to the
+ * client — it contains the encrypted-op count (data-volume side-channel).
+ */
+export class EncryptedOpsNotSupportedError extends Error {
+  readonly encryptedOpCount: number;
+  constructor(encryptedOpCount: number) {
+    super(encryptedOpsNotSupportedMessage(encryptedOpCount));
+    this.name = 'EncryptedOpsNotSupportedError';
+    this.encryptedOpCount = encryptedOpCount;
+  }
+}
 
 export interface SnapshotResult {
   state: unknown;
@@ -102,12 +117,11 @@ export class SnapshotService {
     if (!row?.snapshotData) return null;
 
     try {
-      // Decompress snapshot
-      const decompressed = zlib
-        .gunzipSync(row.snapshotData, {
+      const decompressed = (
+        await gunzipAsync(row.snapshotData, {
           maxOutputLength: MAX_SNAPSHOT_DECOMPRESSED_BYTES,
         })
-        .toString('utf-8');
+      ).toString('utf-8');
       return {
         state: JSON.parse(decompressed),
         serverSeq: row.lastSnapshotSeq ?? 0,
@@ -115,20 +129,63 @@ export class SnapshotService {
         schemaVersion: row.snapshotSchemaVersion ?? 1,
       };
     } catch (err) {
+      // Without this clear the same error would be logged on every cache read
+      // until a new snapshot is generated.
       Logger.error(
-        `[user:${userId}] Failed to decompress cached snapshot: ${(err as Error).message}`,
+        `[user:${userId}] Failed to decompress cached snapshot, invalidating: ${(err as Error).message}`,
       );
+      await this._invalidateCachedSnapshot(userId);
       return null;
     }
   }
 
+  private async _invalidateCachedSnapshot(userId: number): Promise<void> {
+    try {
+      await prisma.userSyncState.update({
+        where: { userId },
+        data: {
+          snapshotData: null,
+          lastSnapshotSeq: null,
+          snapshotAt: null,
+          snapshotSchemaVersion: null,
+        },
+      });
+    } catch (err) {
+      // Row may have been deleted concurrently — best-effort cleanup.
+      Logger.warn(
+        `[user:${userId}] Failed to invalidate cached snapshot: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * Cache a snapshot only when it's replayable by the server.
+   * Encrypted payloads remain available as ops but cannot back snapshot
+   * replay (server cannot decrypt). Owning this invariant here keeps HTTP
+   * routes from having to remember the rule.
+   */
+  async cacheSnapshotIfReplayable(
+    userId: number,
+    state: unknown,
+    serverSeq: number,
+    isPayloadEncrypted: boolean,
+  ): Promise<void> {
+    if (isPayloadEncrypted) return;
+    await this.cacheSnapshot(userId, state, serverSeq);
+  }
+
   /**
    * Cache a snapshot for a user.
+   *
+   * Guards against stale-overwrite races between concurrent uploads: only
+   * writes when no row exists yet or the cached `lastSnapshotSeq` is older
+   * than `serverSeq`. The op append itself is serialized by the DB; the cache
+   * write is not, so without this guard a later request finishing first could
+   * be clobbered by an earlier one.
    */
   async cacheSnapshot(userId: number, state: unknown, serverSeq: number): Promise<void> {
     const now = Date.now();
-    // Compress snapshot
-    const compressed = zlib.gzipSync(JSON.stringify(state));
+    const compressed = await gzipAsync(Buffer.from(JSON.stringify(state), 'utf-8'));
 
     if (compressed.length > MAX_SNAPSHOT_SIZE_BYTES) {
       Logger.error(
@@ -138,15 +195,34 @@ export class SnapshotService {
       return;
     }
 
-    await prisma.userSyncState.update({
-      where: { userId },
-      data: {
-        snapshotData: compressed,
-        lastSnapshotSeq: serverSeq,
-        snapshotAt: BigInt(now),
-        snapshotSchemaVersion: CURRENT_SCHEMA_VERSION,
+    const data = {
+      snapshotData: compressed,
+      lastSnapshotSeq: serverSeq,
+      snapshotAt: BigInt(now),
+      snapshotSchemaVersion: CURRENT_SCHEMA_VERSION,
+    };
+
+    // Conditional update — does nothing when no row exists OR when cached
+    // lastSnapshotSeq is already >= serverSeq.
+    const result = await prisma.userSyncState.updateMany({
+      where: {
+        userId,
+        OR: [{ lastSnapshotSeq: null }, { lastSnapshotSeq: { lt: serverSeq } }],
       },
+      data,
     });
+
+    if (result.count === 0) {
+      // Either no row exists yet (first-time-user path) or a newer snapshot
+      // already won the race. Try a create — if a row was inserted between
+      // the updateMany and now, the unique-userId constraint throws P2002
+      // and we treat that as "newer snapshot won; nothing to do".
+      try {
+        await prisma.userSyncState.create({ data: { userId, ...data } });
+      } catch (err) {
+        if ((err as { code?: string }).code !== 'P2002') throw err;
+      }
+    }
   }
 
   /**
@@ -209,11 +285,11 @@ export class SnapshotService {
 
         if (cachedRow?.snapshotData) {
           try {
-            const decompressed = zlib
-              .gunzipSync(cachedRow.snapshotData, {
+            const decompressed = (
+              await gunzipAsync(cachedRow.snapshotData, {
                 maxOutputLength: MAX_SNAPSHOT_DECOMPRESSED_BYTES,
               })
-              .toString('utf-8');
+            ).toString('utf-8');
             state = JSON.parse(decompressed) as Record<string, unknown>;
             startSeq = cachedRow.lastSnapshotSeq ?? 0;
             snapshotSchemaVersion = cachedRow.snapshotSchemaVersion ?? 1;
@@ -222,8 +298,9 @@ export class SnapshotService {
           }
         }
 
-        await this._assertCachedSnapshotBaseReplayable(tx, userId, startSeq);
-
+        // Fast path: cached snapshot is already at the latest seq AND in the
+        // current schema version. No replay needed → skip the encrypted-op
+        // probes (they cost a findFirst + count per call).
         if (
           startSeq >= latestSeq &&
           cachedRow?.snapshotData &&
@@ -236,6 +313,8 @@ export class SnapshotService {
             schemaVersion: CURRENT_SCHEMA_VERSION,
           };
         }
+
+        await this._assertCachedSnapshotBaseReplayable(tx, userId, startSeq);
 
         // Migrate snapshot if needed
         if (stateNeedsMigration(snapshotSchemaVersion, CURRENT_SCHEMA_VERSION)) {
@@ -302,15 +381,22 @@ export class SnapshotService {
 
         const generatedAt = Date.now();
 
-        // Update cache (we can do this async/outside, but doing it inside ensures it matches the returned state)
-        // However, we are in a read-only-ish flow, but we can write to cache.
-        // We'll call the update directly on tx.
-        // Re-implementing cacheSnapshot logic for tx
-        const compressed = zlib.gzipSync(JSON.stringify(state));
+        // Cache the generated snapshot inline so it matches the returned state.
+        // Upsert: a user that just had a snapshot generated may still have no
+        // userSyncState row (first-time path), in which case `update` throws
+        // RecordNotFound.
+        const compressed = await gzipAsync(Buffer.from(JSON.stringify(state), 'utf-8'));
         if (compressed.length <= MAX_SNAPSHOT_SIZE_BYTES) {
-          await tx.userSyncState.update({
+          await tx.userSyncState.upsert({
             where: { userId },
-            data: {
+            update: {
+              snapshotData: compressed,
+              lastSnapshotSeq: latestSeq,
+              snapshotAt: BigInt(generatedAt),
+              snapshotSchemaVersion: CURRENT_SCHEMA_VERSION,
+            },
+            create: {
+              userId,
               snapshotData: compressed,
               lastSnapshotSeq: latestSeq,
               snapshotAt: BigInt(generatedAt),
@@ -438,11 +524,11 @@ export class SnapshotService {
           cachedRow.lastSnapshotSeq <= targetSeq
         ) {
           try {
-            const decompressed = zlib
-              .gunzipSync(cachedRow.snapshotData, {
+            const decompressed = (
+              await gunzipAsync(cachedRow.snapshotData, {
                 maxOutputLength: MAX_SNAPSHOT_DECOMPRESSED_BYTES,
               })
-              .toString('utf-8');
+            ).toString('utf-8');
             state = JSON.parse(decompressed) as Record<string, unknown>;
             startSeq = cachedRow.lastSnapshotSeq;
 
@@ -533,12 +619,15 @@ export class SnapshotService {
       // Server cannot decrypt E2E payloads. Snapshot callers reject encrypted
       // ranges upfront; this guard prevents accidental partial replays.
       if (row.isPayloadEncrypted) {
-        throw new Error(encryptedOpsNotSupportedMessage(1));
+        throw new EncryptedOpsNotSupportedError(1);
       }
 
-      // Periodically check state size to prevent memory exhaustion
+      // Periodically check state size to prevent memory exhaustion.
+      // Measure in UTF-8 bytes (Buffer.byteLength) so the limit matches the
+      // constant's documented unit — JSON.stringify(state).length counts
+      // UTF-16 code units, which under-counts up to 4x for non-ASCII content.
       if (i > 0 && i % REPLAY_SIZE_CHECK_INTERVAL === 0) {
-        const estimatedSize = JSON.stringify(state).length;
+        const estimatedSize = Buffer.byteLength(JSON.stringify(state), 'utf8');
         if (estimatedSize > MAX_REPLAY_STATE_SIZE_BYTES) {
           throw new Error(
             `State too large during replay: ${Math.round(estimatedSize / 1024 / 1024)}MB ` +
@@ -608,25 +697,35 @@ export class SnapshotService {
           payload: processPayload,
         } = opToProcess;
 
-        // Handle full-state operations BEFORE entity type check
-        // These operations replace the entire state and don't use a specific entity type
+        // Handle full-state operations BEFORE entity type check.
+        // These operations REPLACE the entire state (they represent a complete
+        // snapshot of the app), so we must clear existing keys first —
+        // otherwise stale entity types from a prior state survive a "reset"
+        // and `_resolveExpectedFirstSeq`'s leading-gap acceptance becomes
+        // incorrect (the gap is only safe if the full-state op truly resets).
         if (
           processOpType === 'SYNC_IMPORT' ||
           processOpType === 'BACKUP_IMPORT' ||
           processOpType === 'REPAIR'
         ) {
-          if (
+          const fullState =
             processPayload &&
             typeof processPayload === 'object' &&
             'appDataComplete' in processPayload
-          ) {
-            Object.assign(
-              state,
-              (processPayload as { appDataComplete: unknown }).appDataComplete,
+              ? (processPayload as { appDataComplete: unknown }).appDataComplete
+              : processPayload;
+          // A malformed full-state op (null/primitive payload) would silently
+          // wipe state if we cleared first. Refuse to replay it — a corrupt
+          // SYNC_IMPORT is invariant-breaking, not a no-op.
+          if (!fullState || typeof fullState !== 'object') {
+            throw new Error(
+              `SNAPSHOT_REPLAY_INCOMPLETE: ${processOpType} op ${row.id} has non-object payload`,
             );
-          } else {
-            Object.assign(state, processPayload);
           }
+          for (const key of Object.keys(state)) {
+            delete state[key];
+          }
+          Object.assign(state, fullState);
           continue;
         }
 
@@ -688,17 +787,7 @@ export class SnapshotService {
   }
 
   private async _assertNoEncryptedOps(
-    tx: {
-      operation: {
-        count(args: {
-          where: {
-            userId: number;
-            serverSeq: { gt: number; lte: number };
-            isPayloadEncrypted: boolean;
-          };
-        }): Promise<number>;
-      };
-    },
+    tx: Prisma.TransactionClient,
     userId: number,
     startSeq: number,
     targetSeq: number,
@@ -714,32 +803,12 @@ export class SnapshotService {
     });
 
     if (encryptedOpCount > 0) {
-      throw new Error(encryptedOpsNotSupportedMessage(encryptedOpCount));
+      throw new EncryptedOpsNotSupportedError(encryptedOpCount);
     }
   }
 
   private async _assertCachedSnapshotBaseReplayable(
-    tx: {
-      operation: {
-        findFirst(args: {
-          where: {
-            userId: number;
-            serverSeq: { lte: number };
-            opType: { in: string[] };
-            isPayloadEncrypted: boolean;
-          };
-          orderBy: { serverSeq: 'desc' };
-          select: { serverSeq: true };
-        }): Promise<{ serverSeq: number } | null>;
-        count(args: {
-          where: {
-            userId: number;
-            serverSeq: { gt: number; lte: number };
-            isPayloadEncrypted: boolean;
-          };
-        }): Promise<number>;
-      };
-    },
+    tx: Prisma.TransactionClient,
     userId: number,
     startSeq: number,
   ): Promise<void> {
@@ -768,7 +837,7 @@ export class SnapshotService {
     });
 
     if (encryptedOpCount > 0) {
-      throw new Error(encryptedOpsNotSupportedMessage(encryptedOpCount));
+      throw new EncryptedOpsNotSupportedError(encryptedOpCount);
     }
   }
 

@@ -709,6 +709,20 @@ export class SyncService {
     return this.snapshotService.cacheSnapshot(userId, state, serverSeq);
   }
 
+  async cacheSnapshotIfReplayable(
+    userId: number,
+    state: unknown,
+    serverSeq: number,
+    isPayloadEncrypted: boolean,
+  ): Promise<void> {
+    return this.snapshotService.cacheSnapshotIfReplayable(
+      userId,
+      state,
+      serverSeq,
+      isPayloadEncrypted,
+    );
+  }
+
   async generateSnapshot(userId: number): Promise<{
     state: unknown;
     serverSeq: number;

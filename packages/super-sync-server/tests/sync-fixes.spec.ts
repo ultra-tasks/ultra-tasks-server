@@ -208,6 +208,8 @@ vi.mock('../src/db', () => {
         })),
         upsert: vi.fn().mockResolvedValue({}),
         update: vi.fn().mockResolvedValue({}),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        create: vi.fn().mockResolvedValue({}),
         findMany: vi.fn().mockResolvedValue([]),
       },
       syncDevice: {
