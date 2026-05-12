@@ -1708,5 +1708,94 @@ describe('SnapshotService', () => {
 
       expect(result).toEqual({});
     });
+
+    it('CRT must not allow prototype pollution via entityId === "__proto__" (C1)', () => {
+      // bracket-assignment `state.TASK["__proto__"] = …` invokes the
+      // Object.prototype.__proto__ setter, replacing state.TASK's prototype
+      // with the assigned payload. The C1 fix skips unsafe entityIds outright.
+      const ops = [
+        {
+          id: 'op-1',
+          opType: 'CRT',
+          entityType: 'TASK',
+          entityId: '__proto__',
+          payload: { polluted: true },
+          isPayloadEncrypted: false,
+          serverSeq: 1,
+          schemaVersion: 1,
+        },
+        {
+          id: 'op-2',
+          opType: 'CRT',
+          entityType: 'TASK',
+          entityId: 'task-1',
+          payload: { id: 'task-1', title: 'real task' },
+          isPayloadEncrypted: false,
+          serverSeq: 2,
+          schemaVersion: 1,
+        },
+      ];
+
+      const result = service.replayOpsToState(ops as any) as Record<string, unknown>;
+      const taskMap = result.TASK as Record<string, unknown> & { polluted?: boolean };
+
+      // Unsafe id was skipped; the legitimate task still applied.
+      expect(taskMap['task-1']).toEqual({ id: 'task-1', title: 'real task' });
+      // state.TASK's prototype is still Object.prototype — not the payload.
+      expect(Object.getPrototypeOf(taskMap)).toBe(Object.prototype);
+      expect(taskMap.polluted).toBeUndefined();
+    });
+
+    it('BATCH entities map must not allow prototype pollution via "__proto__" key (C1)', () => {
+      // JSON.parse can produce `__proto__` as an own data property on
+      // `entities`. Iterating with Object.entries and then assigning
+      // `state.TASK["__proto__"] = …` would trigger the setter.
+      const maliciousBatch = JSON.parse(
+        '{"entities":{"__proto__":{"polluted":true},"real-id":{"id":"real-id"}}}',
+      );
+      const ops = [
+        {
+          id: 'op-1',
+          opType: 'BATCH',
+          entityType: 'TASK',
+          entityId: null,
+          payload: maliciousBatch,
+          isPayloadEncrypted: false,
+          serverSeq: 1,
+          schemaVersion: 1,
+        },
+      ];
+
+      const result = service.replayOpsToState(ops as any) as Record<string, unknown>;
+      const taskMap = result.TASK as Record<string, unknown> & { polluted?: boolean };
+      expect(taskMap['real-id']).toEqual({ id: 'real-id' });
+      expect(Object.getPrototypeOf(taskMap)).toBe(Object.prototype);
+      expect(taskMap.polluted).toBeUndefined();
+    });
+
+    it('UPD / MOV / BATCH single-entity paths reject __proto__/constructor/prototype entityIds (C1)', () => {
+      for (const unsafe of ['__proto__', 'constructor', 'prototype']) {
+        for (const opType of ['UPD', 'MOV', 'BATCH'] as const) {
+          const ops = [
+            {
+              id: `op-${opType}-${unsafe}`,
+              opType,
+              entityType: 'TASK',
+              entityId: unsafe,
+              payload: { polluted: true },
+              isPayloadEncrypted: false,
+              serverSeq: 1,
+              schemaVersion: 1,
+            },
+          ];
+          const result = service.replayOpsToState(ops as any) as Record<string, unknown>;
+          const taskMap = result.TASK as Record<string, unknown> | undefined;
+          if (taskMap) {
+            expect(Object.getPrototypeOf(taskMap)).toBe(Object.prototype);
+            expect((taskMap as Record<string, unknown>).polluted).toBeUndefined();
+          }
+        }
+      }
+    });
   });
 });

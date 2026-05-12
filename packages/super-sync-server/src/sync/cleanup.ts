@@ -96,35 +96,25 @@ export const stopCleanupJobs = (): void => {
   Logger.info('Cleanup jobs stopped');
 };
 
-// Fisher-Yates in-place shuffle. Used so that when the affected-user list
-// exceeds the per-pass reconcile budget, each pass picks a different random
-// subset instead of starving the same tail every day.
-const shuffleInPlace = <T>(arr: T[]): void => {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-};
-
 const scheduleDeferredReconciles = (userIds: number[]): void => {
   if (userIds.length === 0) return;
   const maxScheduled = Math.min(
     userIds.length,
     Math.floor(RECONCILE_BUDGET_MS / RECONCILE_INTERVAL_MS),
   );
-  // Copy + shuffle so each pass reconciles a different random subset when the
-  // budget can't cover everyone; otherwise the first N in DB iteration order
-  // get reconciled every pass and the tail never gets its counter refreshed.
-  const ordered = [...userIds];
-  if (maxScheduled < ordered.length) {
-    shuffleInPlace(ordered);
+  // S1: `userIds` arrives stalest-first from `deleteOldSyncedOpsForAllUsers`
+  // (orderBy snapshotAt asc). When the budget can't cover everyone, the most
+  // drifted users are reconciled first; the fresh tail rolls over to the next
+  // pass. Deterministic, no Math.random.
+  if (maxScheduled < userIds.length) {
     Logger.warn(
-      `Cleanup [reconcile]: budget covers ${maxScheduled}/${ordered.length} users; remainder drifts until next cleanup pass`,
+      `Cleanup [reconcile]: budget covers ${maxScheduled}/${userIds.length} users; ` +
+        `stalest-first ordering keeps the freshest users rolling to next pass`,
     );
   }
   const syncService = getSyncService();
   for (let i = 0; i < maxScheduled; i++) {
-    const userId = ordered[i];
+    const userId = userIds[i];
     let timer!: NodeJS.Timeout;
     timer = setTimeout(() => {
       reconcileTimers.delete(timer);

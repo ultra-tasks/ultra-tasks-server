@@ -112,21 +112,18 @@ describe('Cleanup Jobs', () => {
       expect(mockSyncService.updateStorageUsage).not.toHaveBeenCalled();
     });
 
-    it('should shuffle and warn when affected users exceed the reconcile budget', async () => {
+    it('should reconcile stalest-first and warn when affected users exceed the budget', async () => {
       // RECONCILE_BUDGET_MS / RECONCILE_INTERVAL_MS = 720. With more affected
-      // users than that, the original code reconciled the first 720 in stable
-      // DB order every pass and starved the tail. The fix shuffles so the
-      // covered subset rotates across runs.
+      // users than that, the cleanup pass reconciles the first 720 — relying
+      // on `deleteOldSyncedOpsForAllUsers` to return ids stalest-first
+      // (orderBy snapshotAt asc). The fresh tail rolls over to the next pass.
       const totalUsers = 1000;
+      // Stalest first, mimicking what the service now returns.
       const userIds = Array.from({ length: totalUsers }, (_, i) => i + 1);
       mockSyncService.deleteOldSyncedOpsForAllUsers.mockResolvedValueOnce({
         totalDeleted: totalUsers,
         affectedUserIds: userIds,
       });
-
-      // Force Math.random to produce a non-identity permutation so the order
-      // we observe is verifiably different from input order.
-      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.42);
 
       startCleanupJobs();
       await vi.advanceTimersByTimeAsync(10_000);
@@ -138,20 +135,12 @@ describe('Cleanup Jobs', () => {
       await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
       expect(mockSyncService.updateStorageUsage).toHaveBeenCalledTimes(720);
 
-      // Order should not be the natural DB order [1, 2, 3, ...].
+      // Stalest-first ordering is preserved: callers see the first 720 ids
+      // from `affectedUserIds` in input order.
       const calledOrder = mockSyncService.updateStorageUsage.mock.calls.map(
         (c) => c[0] as number,
       );
-      const naturalOrder = userIds.slice(0, 720);
-      expect(calledOrder).not.toEqual(naturalOrder);
-
-      // And the covered set must be a subset of the original ids — no junk.
-      const idSet = new Set(userIds);
-      for (const id of calledOrder) {
-        expect(idSet.has(id)).toBe(true);
-      }
-
-      randomSpy.mockRestore();
+      expect(calledOrder).toEqual(userIds.slice(0, 720));
     });
 
     it('should not warn or shuffle when affected users fit in the budget', async () => {

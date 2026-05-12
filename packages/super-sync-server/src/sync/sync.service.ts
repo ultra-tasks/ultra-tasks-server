@@ -901,6 +901,11 @@ export class SyncService {
   async deleteOldSyncedOpsForAllUsers(
     cutoffTime: number,
   ): Promise<{ totalDeleted: number; affectedUserIds: number[] }> {
+    // S1: order stalest first so when affectedUserIds.length exceeds the
+    // cleanup reconcile budget (RECONCILE_INTERVAL_MS * maxScheduled per
+    // hour), the most-drifted users are reconciled before fresher ones.
+    // Deterministic ordering replaces an earlier random shuffle, which only
+    // probabilistically prevented starvation.
     const states = await prisma.userSyncState.findMany({
       where: {
         lastSnapshotSeq: { not: null },
@@ -911,6 +916,7 @@ export class SyncService {
         lastSnapshotSeq: true,
         snapshotAt: true,
       },
+      orderBy: { snapshotAt: 'asc' },
     });
 
     let totalDeleted = 0;
