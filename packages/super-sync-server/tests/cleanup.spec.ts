@@ -10,6 +10,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { startCleanupJobs, stopCleanupJobs } from '../src/sync/cleanup';
 import { DEFAULT_SYNC_CONFIG, MS_PER_DAY } from '../src/sync/sync.types';
+import { Logger } from '../src/logger';
 
 // Mock the sync service
 const mockSyncService = {
@@ -109,6 +110,70 @@ describe('Cleanup Jobs', () => {
       await vi.advanceTimersByTimeAsync(10_000);
 
       expect(mockSyncService.updateStorageUsage).not.toHaveBeenCalled();
+    });
+
+    it('should shuffle and warn when affected users exceed the reconcile budget', async () => {
+      // RECONCILE_BUDGET_MS / RECONCILE_INTERVAL_MS = 720. With more affected
+      // users than that, the original code reconciled the first 720 in stable
+      // DB order every pass and starved the tail. The fix shuffles so the
+      // covered subset rotates across runs.
+      const totalUsers = 1000;
+      const userIds = Array.from({ length: totalUsers }, (_, i) => i + 1);
+      mockSyncService.deleteOldSyncedOpsForAllUsers.mockResolvedValueOnce({
+        totalDeleted: totalUsers,
+        affectedUserIds: userIds,
+      });
+
+      // Force Math.random to produce a non-identity permutation so the order
+      // we observe is verifiably different from input order.
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.42);
+
+      startCleanupJobs();
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      // Warning is emitted with both numbers so operators can see the gap.
+      expect(Logger.warn).toHaveBeenCalledWith(expect.stringContaining('720/1000 users'));
+
+      // Run all 720 deferred reconciles (1h budget worth of timers).
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+      expect(mockSyncService.updateStorageUsage).toHaveBeenCalledTimes(720);
+
+      // Order should not be the natural DB order [1, 2, 3, ...].
+      const calledOrder = mockSyncService.updateStorageUsage.mock.calls.map(
+        (c) => c[0] as number,
+      );
+      const naturalOrder = userIds.slice(0, 720);
+      expect(calledOrder).not.toEqual(naturalOrder);
+
+      // And the covered set must be a subset of the original ids — no junk.
+      const idSet = new Set(userIds);
+      for (const id of calledOrder) {
+        expect(idSet.has(id)).toBe(true);
+      }
+
+      randomSpy.mockRestore();
+    });
+
+    it('should not warn or shuffle when affected users fit in the budget', async () => {
+      mockSyncService.deleteOldSyncedOpsForAllUsers.mockResolvedValueOnce({
+        totalDeleted: 3,
+        affectedUserIds: [10, 20, 30],
+      });
+
+      startCleanupJobs();
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      // No starvation warning when everyone fits.
+      const warnCalls = (Logger.warn as ReturnType<typeof vi.fn>).mock.calls;
+      expect(warnCalls.some((c) => String(c[0]).includes('budget covers'))).toBe(false);
+
+      // Drain the 3 deferred reconciles (3 × 5s).
+      await vi.advanceTimersByTimeAsync(3 * 5_000);
+      const calledOrder = mockSyncService.updateStorageUsage.mock.calls.map(
+        (c) => c[0] as number,
+      );
+      // When the budget covers everyone the original order is preserved.
+      expect(calledOrder).toEqual([10, 20, 30]);
     });
   });
 
