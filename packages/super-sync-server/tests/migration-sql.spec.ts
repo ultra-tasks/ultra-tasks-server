@@ -72,9 +72,9 @@ describe('performance migrations', () => {
       'Skipping GHCR login (placeholder credentials in .env)',
     );
     expect(deployScript).toContain(
-      '-v "$SERVER_DIR/scripts/deploy-db-scalar.mjs:/tmp/deploy-db-scalar.mjs:ro"',
+      '-v "$SERVER_DIR/scripts/deploy-db-scalar.mjs:/app/deploy-db-scalar.mjs:ro"',
     );
-    expect(deployScript).toContain('supersync node /tmp/deploy-db-scalar.mjs "$1"');
+    expect(deployScript).toContain('supersync node /app/deploy-db-scalar.mjs "$1"');
     expect(deployScript).toContain('prisma db execute --stdin');
     expect(deployScript).not.toContain('requires POSTGRES_SERVICE');
     expect(deployScript).toContain('GHCR_USER|GHCR_TOKEN|RUN_POST_MIGRATION_INDEXES');

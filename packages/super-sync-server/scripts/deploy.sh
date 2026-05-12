@@ -171,8 +171,8 @@ run_prisma() {
 
 run_database_scalar() {
     docker compose $COMPOSE_FILES run --rm --no-deps -T \
-        -v "$SERVER_DIR/scripts/deploy-db-scalar.mjs:/tmp/deploy-db-scalar.mjs:ro" \
-        supersync node /tmp/deploy-db-scalar.mjs "$1"
+        -v "$SERVER_DIR/scripts/deploy-db-scalar.mjs:/app/deploy-db-scalar.mjs:ro" \
+        supersync node /app/deploy-db-scalar.mjs "$1"
 }
 
 run_database_execute() {
