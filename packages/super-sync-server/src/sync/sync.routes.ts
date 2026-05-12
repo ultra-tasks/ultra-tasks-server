@@ -52,6 +52,32 @@ const MAX_DECOMPRESSED_SIZE = 100 * 1024 * 1024; // 100MB - catches malicious hi
 const errorMessage = (err: unknown): string =>
   err instanceof Error ? err.message : 'Unknown error';
 
+/**
+ * Approximate on-disk byte cost of a set of operations, computed locally so
+ * the hot path never scans the operations table. Approximation ignores TOAST
+ * compression overhead and is used to keep the `users.storage_used_bytes`
+ * counter accurate via incremental deltas.
+ *
+ * Robust against malformed payloads: if JSON.stringify throws (e.g. BigInt,
+ * circular ref), the op's contribution is skipped rather than crashing the
+ * upload response after ops were persisted.
+ */
+const computeOpsStorageBytes = (
+  ops: Array<{ payload: unknown; vectorClock: unknown }>,
+): number => {
+  let total = 0;
+  for (const op of ops) {
+    try {
+      total += Buffer.byteLength(JSON.stringify(op.payload ?? null), 'utf8');
+      total += Buffer.byteLength(JSON.stringify(op.vectorClock ?? {}), 'utf8');
+    } catch {
+      // Skip unserializable op — counter under-counts slightly. Quota is
+      // advisory; offline reconciliation corrects drift.
+    }
+  }
+  return total;
+};
+
 type CompressedJsonBodyParseFailure = Extract<
   CompressedJsonBodyParseResult,
   { ok: false }
@@ -96,23 +122,12 @@ async function enforceStorageQuota(
   reply: FastifyReply,
 ): Promise<boolean> {
   const syncService = getSyncService();
-  let quotaCheck = await syncService.checkStorageQuota(userId, payloadSize);
+  const quotaCheck = await syncService.checkStorageQuota(userId, payloadSize);
   if (quotaCheck.allowed) return true;
 
-  // Cache might be stale - recalculate actual storage before taking action
-  Logger.info(
-    `[user:${userId}] Quota check failed (cached: ${quotaCheck.currentUsage}/${quotaCheck.quota}). Recalculating actual storage...`,
-  );
-  await syncService.updateStorageUsage(userId);
-  quotaCheck = await syncService.checkStorageQuota(userId, payloadSize);
-
-  if (quotaCheck.allowed) {
-    Logger.info(
-      `[user:${userId}] Quota OK after recalculation: ${quotaCheck.currentUsage}/${quotaCheck.quota} bytes`,
-    );
-    return true;
-  }
-
+  // The counter is now maintained incrementally on upload paths, so the cache
+  // is trusted here. The previous full-recalc via updateStorageUsage caused a
+  // production disk-I/O DoS (forced TOAST reads of every payload per request).
   Logger.warn(
     `[user:${userId}] Storage quota exceeded: ${quotaCheck.currentUsage}/${quotaCheck.quota} bytes. Attempting auto-cleanup...`,
   );
@@ -347,9 +362,28 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
           );
         }
 
-        // Update storage usage after successful operations
+        // Update storage usage cache with the locally-computed delta of accepted
+        // ops. Replaces the previous full-table SUM(pg_column_size) recalc that
+        // was DoS'ing the server. Wrapped in try/catch — ops have already been
+        // accepted and persisted, so a counter update failure must not 500 the
+        // response (would cause client retry + double-upload).
         if (accepted > 0) {
-          await syncService.updateStorageUsage(userId);
+          const acceptedIds = new Set(
+            results.filter((r) => r.accepted).map((r) => r.opId),
+          );
+          const acceptedOps = (
+            ops as unknown as import('./sync.types').Operation[]
+          ).filter((op) => acceptedIds.has(op.id));
+          const deltaBytes = computeOpsStorageBytes(acceptedOps);
+          if (deltaBytes > 0) {
+            try {
+              await syncService.incrementStorageUsage(userId, deltaBytes);
+            } catch (err) {
+              Logger.warn(
+                `[user:${userId}] Failed to increment storage usage cache: ${errorMessage(err)}`,
+              );
+            }
+          }
         }
 
         // Optionally include new ops from other clients (with atomic latestSeq read)
@@ -660,8 +694,20 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         if (result.accepted && result.serverSeq !== undefined) {
           // Cache the snapshot
           await syncService.cacheSnapshot(userId, state, result.serverSeq);
-          // Update storage usage
-          await syncService.updateStorageUsage(userId);
+          // Increment counter by the snapshot's request payload size (already
+          // computed above for the quota check, so no extra stringify on the
+          // ~50MB state object). For isCleanSlate uploads, uploadOps already
+          // reset the counter to 0, so this becomes the new baseline. Wrapped
+          // in try/catch — snapshot is persisted, must not 500.
+          if (payloadSize > 0) {
+            try {
+              await syncService.incrementStorageUsage(userId, payloadSize);
+            } catch (err) {
+              Logger.warn(
+                `[user:${userId}] Failed to increment storage usage cache after snapshot: ${errorMessage(err)}`,
+              );
+            }
+          }
         }
 
         Logger.info(`Snapshot uploaded for user ${userId}, reason: ${reason}`);

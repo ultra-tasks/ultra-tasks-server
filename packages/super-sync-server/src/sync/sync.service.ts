@@ -789,6 +789,14 @@ export class SyncService {
     return this.storageQuotaService.updateStorageUsage(userId);
   }
 
+  async incrementStorageUsage(userId: number, deltaBytes: number): Promise<void> {
+    return this.storageQuotaService.incrementStorageUsage(userId, deltaBytes);
+  }
+
+  async decrementStorageUsage(userId: number, deltaBytes: number): Promise<void> {
+    return this.storageQuotaService.decrementStorageUsage(userId, deltaBytes);
+  }
+
   async getStorageInfo(userId: number): Promise<{
     storageUsedBytes: number;
     storageQuotaBytes: number;
@@ -890,15 +898,11 @@ export class SyncService {
       return { deletedCount: 0, freedBytes: 0, success: false };
     }
 
-    // Calculate approximate size of ops being deleted using SQL aggregate
-    // to avoid loading potentially large payloads into Node memory.
-    // NOTE: Column names match the Prisma `Operation` model's `@@map("operations")`
-    // and `@map(...)` annotations (see prisma/schema.prisma).
-    const sizeResult = await prisma.$queryRaw<[{ total: bigint | null }]>`
-      SELECT COALESCE(SUM(pg_column_size(payload) + pg_column_size(vector_clock)), 0) as total
-      FROM operations WHERE user_id = ${userId} AND server_seq <= ${deleteUpToSeq}
-    `;
-    const freedBytes = Number(sizeResult[0]?.total ?? 0);
+    // freedBytes is an approximate decrement applied to the cached counter so
+    // freeStorageForUpload's loop can make progress without recomputing per-row
+    // pg_column_size (the original DoS pattern). Reconciled to exact value once
+    // at the end of freeStorageForUpload via a single updateStorageUsage call.
+    const APPROX_BYTES_PER_OP = 1024;
 
     // Delete the operations
     const result = await prisma.operation.deleteMany({
@@ -907,6 +911,8 @@ export class SyncService {
         serverSeq: { lte: deleteUpToSeq },
       },
     });
+
+    const freedBytes = result.count * APPROX_BYTES_PER_OP;
 
     if (result.count > 0) {
       // Clear stale snapshot cache if it references deleted operations
@@ -929,10 +935,12 @@ export class SyncService {
         );
       }
 
-      // Update storage usage cache
-      await this.updateStorageUsage(userId);
+      // Decrement counter by the approximate freed bytes so freeStorageForUpload
+      // can detect progress. Final accuracy is restored by the single
+      // updateStorageUsage call at the end of freeStorageForUpload.
+      await this.decrementStorageUsage(userId, freedBytes);
       Logger.info(
-        `[user:${userId}] Deleted ${result.count} ops (freed ~${Math.round(freedBytes / 1024)}KB)`,
+        `[user:${userId}] Deleted ${result.count} ops (approx freed ~${Math.round(freedBytes / 1024)}KB)`,
       );
     }
 
@@ -968,6 +976,21 @@ export class SyncService {
     const MAX_CLEANUP_ITERATIONS = 50;
     let iterations = 0;
 
+    // Reconcile the approximate counter once at the end via a single
+    // calculateStorageUsage scan. Slow but bounded to a single user per
+    // quota-cleanup event (not per upload like the previous regression).
+    const reconcileCounter = async (): Promise<void> => {
+      try {
+        await this.updateStorageUsage(userId);
+      } catch (err) {
+        Logger.warn(
+          `[user:${userId}] Failed to reconcile storage usage after cleanup: ${
+            (err as Error).message
+          }`,
+        );
+      }
+    };
+
     // Keep trying until we have enough space or hit minimum
     while (iterations < MAX_CLEANUP_ITERATIONS) {
       iterations++;
@@ -975,6 +998,7 @@ export class SyncService {
       // Check if we now have enough space
       const quotaCheck = await this.checkStorageQuota(userId, requiredBytes);
       if (quotaCheck.allowed) {
+        await reconcileCounter();
         return {
           success: true,
           freedBytes: totalFreedBytes,
@@ -999,6 +1023,7 @@ export class SyncService {
         Logger.warn(
           `[user:${userId}] Cannot free more storage: only ${restorePoints.length} restore point(s) remaining`,
         );
+        await reconcileCounter();
         return {
           success: false,
           freedBytes: totalFreedBytes,
@@ -1010,6 +1035,7 @@ export class SyncService {
       // Delete oldest restore point + all ops before it
       const result = await this.deleteOldestRestorePointAndOps(userId);
       if (!result.success) {
+        await reconcileCounter();
         return {
           success: false,
           freedBytes: totalFreedBytes,
@@ -1032,6 +1058,7 @@ export class SyncService {
     Logger.warn(
       `[user:${userId}] Storage cleanup exceeded max iterations (${MAX_CLEANUP_ITERATIONS})`,
     );
+    await reconcileCounter();
     return {
       success: false,
       freedBytes: totalFreedBytes,

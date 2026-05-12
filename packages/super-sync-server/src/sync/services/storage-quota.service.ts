@@ -16,17 +16,19 @@ const DEFAULT_STORAGE_QUOTA_BYTES = 100 * 1024 * 1024;
 
 export class StorageQuotaService {
   /**
-   * Calculate actual storage usage for a user.
-   * Includes operations table and snapshot data.
+   * Calculate actual storage usage for a user by summing on-disk payload sizes.
+   *
+   * OFFLINE / ADMIN USE ONLY. SUM(pg_column_size(payload)) forces PostgreSQL to
+   * detoast every payload for the user (TOAST table reads), which on active
+   * users takes minutes and saturates disk I/O. Never call this on the request
+   * path. Hot-path tracking uses incrementStorageUsage / decrementStorageUsage
+   * with deltas computed locally on the Node side.
    */
   async calculateStorageUsage(userId: number): Promise<{
     operationsBytes: number;
     snapshotBytes: number;
     totalBytes: number;
   }> {
-    // Use PostgreSQL's binary JSONB size. Casting payloads to text here forces
-    // PostgreSQL to materialize every user payload and can make small uploads wait
-    // behind a full historical payload scan.
     const opsResult = await prisma.$queryRaw<[{ total: bigint | null }]>`
       SELECT COALESCE(SUM(pg_column_size(payload) + pg_column_size(vector_clock)), 0) as total
       FROM operations WHERE user_id = ${userId}
@@ -46,6 +48,36 @@ export class StorageQuotaService {
       snapshotBytes,
       totalBytes,
     };
+  }
+
+  /**
+   * Atomically add `deltaBytes` to the cached storage usage. Called on every
+   * accepted upload with a locally-computed payload size. No table scan.
+   * Rejects non-finite / non-positive inputs so `BigInt(...)` never throws.
+   */
+  async incrementStorageUsage(userId: number, deltaBytes: number): Promise<void> {
+    if (!Number.isFinite(deltaBytes) || deltaBytes <= 0) return;
+    const delta = BigInt(Math.floor(deltaBytes));
+    await prisma.user.update({
+      where: { id: userId },
+      data: { storageUsedBytes: { increment: delta } },
+    });
+  }
+
+  /**
+   * Atomically subtract `deltaBytes` from the cached storage usage, clamped to
+   * zero. Uses $executeRaw for the GREATEST(...) clamp — Prisma's `decrement`
+   * has no underflow guard and the counter is approximate (advisory quota), so
+   * the floor protects against negative drift from rough estimates.
+   */
+  async decrementStorageUsage(userId: number, deltaBytes: number): Promise<void> {
+    if (!Number.isFinite(deltaBytes) || deltaBytes <= 0) return;
+    const delta = BigInt(Math.floor(deltaBytes));
+    await prisma.$executeRaw`
+      UPDATE users
+      SET storage_used_bytes = GREATEST(storage_used_bytes - ${delta}::bigint, 0::bigint)
+      WHERE id = ${userId}
+    `;
   }
 
   /**
@@ -72,19 +104,12 @@ export class StorageQuotaService {
   }
 
   /**
-   * Update the cached storage usage for a user.
-   * Called after successful uploads to keep the cache accurate.
+   * Recompute the cached storage usage from scratch via calculateStorageUsage.
    *
-   * NOTE: This is intentionally NOT wrapped in a transaction with calculateStorageUsage().
-   * While this creates a theoretical race condition where another process could modify
-   * storage between calculate and update, this is acceptable because:
-   *
-   * 1. Storage quota is recalculated from scratch before each upload in checkStorageQuota()
-   * 2. The cached value is only used for performance optimization, not hard enforcement
-   * 3. Wrapping in a transaction would add unnecessary overhead for a non-critical cache
-   * 4. The worst case is a slightly stale cache value that gets corrected on next upload
-   *
-   * If strict accuracy becomes important, wrap both calls in a SERIALIZABLE transaction.
+   * OFFLINE / ADMIN USE ONLY. Same warning as calculateStorageUsage: forces
+   * full-payload detoasting and was the source of a production disk-I/O DoS
+   * when called on the request path. Use incrementStorageUsage /
+   * decrementStorageUsage on hot paths. Keep this for admin backfill scripts.
    */
   async updateStorageUsage(userId: number): Promise<void> {
     const { totalBytes } = await this.calculateStorageUsage(userId);

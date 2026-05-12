@@ -17,12 +17,14 @@ const runDailyCleanup = async (): Promise<void> => {
     const { totalDeleted, affectedUserIds } =
       await syncService.deleteOldSyncedOpsForAllUsers(cutoffTime);
     if (totalDeleted > 0) {
-      Logger.info(`Cleanup [old-ops]: removed ${totalDeleted} entries`);
+      Logger.info(
+        `Cleanup [old-ops]: removed ${totalDeleted} entries (affected ${affectedUserIds.length} users)`,
+      );
     }
-    // Update storage usage for affected users
-    for (const userId of affectedUserIds) {
-      await syncService.updateStorageUsage(userId);
-    }
+    // Storage counter is maintained incrementally on uploads. We deliberately
+    // do NOT call updateStorageUsage here — it forced full-payload TOAST reads
+    // per user and was a production DoS. Counter drift from cleanup-deletes is
+    // corrected via offline admin scripts when needed.
   } catch (error) {
     Logger.error(`Cleanup [old-ops] failed: ${error}`);
   }
