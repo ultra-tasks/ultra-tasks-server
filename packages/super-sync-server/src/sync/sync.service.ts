@@ -247,13 +247,14 @@ export class SyncService {
       return true;
     }
 
-    if (incomingOriginalTimestamp === incomingStoredTimestamp) {
-      return false;
-    }
-
+    // A retry can arrive after server time advances enough that the original
+    // timestamp no longer needs clamping, so original===stored does not rule
+    // out a duplicate.
     // Future timestamps are clamped at receive time. A retry of the same op may
-    // be clamped to a later value, so allow exact-content duplicates whose stored
-    // timestamp came from an earlier clamp of the same original client timestamp.
+    // be clamped to a later value, or stop clamping once server time reaches the
+    // original timestamp's allowed drift window. Allow exact-content duplicates
+    // whose stored timestamp came from an earlier clamp of that same original
+    // client timestamp.
     const existingTimestampValue = BigInt(existingTimestamp);
     const existingReceivedAtValue = BigInt(existingReceivedAt);
     return (

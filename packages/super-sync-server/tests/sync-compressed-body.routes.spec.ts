@@ -25,9 +25,15 @@ const mocks = vi.hoisted(() => {
     getCachedSnapshotBytes: vi.fn(),
     markStorageNeedsReconcile: vi.fn(),
   };
+  const prisma = {
+    operation: {
+      findFirst: vi.fn(),
+    },
+  };
 
   return {
     syncService,
+    prisma,
     notifyNewOps: vi.fn(),
   };
 });
@@ -48,6 +54,10 @@ vi.mock('../src/sync/services/websocket-connection.service', () => ({
   getWsConnectionService: () => ({
     notifyNewOps: mocks.notifyNewOps,
   }),
+}));
+
+vi.mock('../src/db', () => ({
+  prisma: mocks.prisma,
 }));
 
 import { syncRoutes } from '../src/sync/sync.routes';
@@ -128,6 +138,7 @@ describe('Sync compressed body routes', () => {
       storageQuotaBytes: 100 * 1024 * 1024,
     });
     mocks.syncService.getCachedSnapshotBytes.mockResolvedValue(0);
+    mocks.prisma.operation.findFirst.mockResolvedValue(null);
 
     app = Fastify();
     await app.register(syncRoutes, { prefix: '/api/sync' });
@@ -545,6 +556,34 @@ describe('Sync compressed body routes', () => {
 
     expect(response.statusCode).toBe(413);
     expect(response.json().errorCode).toBe('STORAGE_QUOTA_EXCEEDED');
+    expect(mocks.syncService.uploadOps).not.toHaveBeenCalled();
+  });
+
+  it('should repeat initial snapshot duplicate detection inside the user lock', async () => {
+    const clientId = 'initial-race-client';
+    mocks.prisma.operation.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: 'existing-import', clientId: 'other-client' });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sync/snapshot',
+      headers: { authorization: `Bearer ${authToken}` },
+      payload: {
+        state: { TASK: { 'task-1': { id: 'task-1' } } },
+        clientId,
+        reason: 'initial',
+        vectorClock: { [clientId]: 1 },
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({
+      errorCode: 'SYNC_IMPORT_EXISTS',
+      existingImportId: 'existing-import',
+    });
+    expect(mocks.prisma.operation.findFirst).toHaveBeenCalledTimes(2);
+    expect(mocks.syncService.checkStorageQuota).not.toHaveBeenCalled();
     expect(mocks.syncService.uploadOps).not.toHaveBeenCalled();
   });
 

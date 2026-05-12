@@ -258,6 +258,42 @@ const sendQuotaExceededReply = (
     ...body,
   });
 
+type ExistingSyncImport = {
+  id: string;
+  clientId: string;
+};
+
+const findExistingSyncImport = async (
+  userId: number,
+): Promise<ExistingSyncImport | null> =>
+  prisma.operation.findFirst({
+    where: {
+      userId,
+      opType: { in: ['SYNC_IMPORT', 'BACKUP_IMPORT', 'REPAIR'] },
+    },
+    select: { id: true, clientId: true },
+  });
+
+const sendSyncImportExistsReply = (
+  reply: FastifyReply,
+  userId: number,
+  clientId: string,
+  existingImport: ExistingSyncImport,
+): FastifyReply => {
+  Logger.warn(
+    `[user:${userId}] Rejecting duplicate SYNC_IMPORT from client ${clientId}. ` +
+      `Existing import from client ${existingImport.clientId} (id: ${existingImport.id}). ` +
+      `Client should download and merge instead.`,
+  );
+  return reply.status(409).send({
+    error: 'SYNC_IMPORT_EXISTS',
+    errorCode: 'SYNC_IMPORT_EXISTS',
+    message:
+      'A SYNC_IMPORT already exists. Download existing data and upload your changes as regular operations.',
+    existingImportId: existingImport.id,
+  });
+};
+
 type CompressedJsonBodyParseFailure = Extract<
   CompressedJsonBodyParseResult,
   { ok: false }
@@ -961,27 +997,10 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         // - 'isCleanSlate': Password change or explicit clean slate request
         // Only 'initial' (first-time server migration) should be rejected if one exists.
         if (reason === 'initial' && !isCleanSlate) {
-          const existingImport = await prisma.operation.findFirst({
-            where: {
-              userId,
-              opType: { in: ['SYNC_IMPORT', 'BACKUP_IMPORT', 'REPAIR'] },
-            },
-            select: { id: true, clientId: true },
-          });
+          const existingImport = await findExistingSyncImport(userId);
 
           if (existingImport) {
-            Logger.warn(
-              `[user:${userId}] Rejecting duplicate SYNC_IMPORT from client ${clientId}. ` +
-                `Existing import from client ${existingImport.clientId} (id: ${existingImport.id}). ` +
-                `Client should download and merge instead.`,
-            );
-            return reply.status(409).send({
-              error: 'SYNC_IMPORT_EXISTS',
-              errorCode: 'SYNC_IMPORT_EXISTS',
-              message:
-                'A SYNC_IMPORT already exists. Download existing data and upload your changes as regular operations.',
-              existingImportId: existingImport.id,
-            });
+            return sendSyncImportExistsReply(reply, userId, clientId, existingImport);
           }
         }
 
@@ -1013,6 +1032,15 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         const result = await syncService.runWithStorageUsageLock<UploadResult | null>(
           userId,
           async () => {
+            if (reason === 'initial' && !isCleanSlate) {
+              const existingImport = await findExistingSyncImport(userId);
+
+              if (existingImport) {
+                sendSyncImportExistsReply(reply, userId, clientId, existingImport);
+                return null;
+              }
+            }
+
             // Check storage quota before processing. For clean-slate uploads, use a
             // zero-current-usage baseline because uploadOps will wipe existing data
             // and reset storageUsedBytes inside its transaction. For regular
@@ -1051,8 +1079,6 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
               const quotaOk = await enforceStorageQuota(userId, additionalBytes, reply);
               if (!quotaOk) return null;
             }
-
-            // Duplicate SYNC_IMPORT rejection already handled before the lock.
 
             const results = await syncService.uploadOps(
               userId,
