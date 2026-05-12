@@ -10,8 +10,10 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SyncService } from '../src/sync/sync.service';
-import { SYNC_ERROR_CODES } from '../src/sync/sync.types';
+import { DEFAULT_SYNC_CONFIG, SYNC_ERROR_CODES } from '../src/sync/sync.types';
 import { prisma } from '../src/db';
+
+const TEST_TIMESTAMP = Date.now() - 1000;
 
 // Test data for creating mock operations
 const createTestOp = (overrides: Record<string, any> = {}) => ({
@@ -23,7 +25,7 @@ const createTestOp = (overrides: Record<string, any> = {}) => ({
   entityId: 'entity-1',
   payload: { foo: 'bar' },
   vectorClock: { 'client-1': 1 },
-  timestamp: Date.now(),
+  timestamp: TEST_TIMESTAMP,
   schemaVersion: 1,
   ...overrides,
 });
@@ -94,6 +96,161 @@ describe('Duplicate Operation Pre-check', () => {
       expect(duplicateResult[0].accepted).toBe(false);
       expect(duplicateResult[0].errorCode).toBe(SYNC_ERROR_CODES.DUPLICATE_OPERATION);
       expect(duplicateResult[0].error).toContain('Duplicate');
+    });
+
+    it('should preserve duplicate retries when JSON field order differs', async () => {
+      const originalOp = createTestOp({
+        id: 'json-order-op',
+        payload: {
+          top: 'value',
+          nested: { a: 1, b: 2 },
+        },
+        vectorClock: { 'client-1': 1, 'client-2': 2 },
+      });
+      await syncService.uploadOps(1, 'client-1', [originalOp]);
+
+      const duplicateOp = createTestOp({
+        id: 'json-order-op',
+        payload: {
+          nested: { b: 2, a: 1 },
+          top: 'value',
+        },
+        vectorClock: { 'client-2': 2, 'client-1': 1 },
+      });
+      const duplicateResult = await syncService.uploadOps(1, 'client-1', [duplicateOp]);
+
+      expect(duplicateResult[0]).toMatchObject({
+        accepted: false,
+        errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
+      });
+    });
+
+    it('should reject same-id operations with different payload content', async () => {
+      const originalOp = createTestOp({
+        id: 'payload-collision-op',
+        payload: { title: 'original' },
+      });
+      await syncService.uploadOps(1, 'client-1', [originalOp]);
+
+      const collisionResult = await syncService.uploadOps(1, 'client-1', [
+        createTestOp({
+          id: 'payload-collision-op',
+          payload: { title: 'changed' },
+        }),
+      ]);
+
+      expect(collisionResult[0]).toMatchObject({
+        accepted: false,
+        errorCode: SYNC_ERROR_CODES.INVALID_OP_ID,
+      });
+      expect(collisionResult[0].errorCode).not.toBe(SYNC_ERROR_CODES.DUPLICATE_OPERATION);
+    });
+
+    it('should reject same-id operations with different vector clocks', async () => {
+      const originalOp = createTestOp({
+        id: 'vector-clock-collision-op',
+        vectorClock: { 'client-1': 1 },
+      });
+      await syncService.uploadOps(1, 'client-1', [originalOp]);
+
+      const collisionResult = await syncService.uploadOps(1, 'client-1', [
+        createTestOp({
+          id: 'vector-clock-collision-op',
+          vectorClock: { 'client-1': 2 },
+        }),
+      ]);
+
+      expect(collisionResult[0]).toMatchObject({
+        accepted: false,
+        errorCode: SYNC_ERROR_CODES.INVALID_OP_ID,
+      });
+      expect(collisionResult[0].errorCode).not.toBe(SYNC_ERROR_CODES.DUPLICATE_OPERATION);
+    });
+
+    it('should reject same-id operations with different persisted metadata', async () => {
+      const baseTimestamp = Date.now() - 1000;
+      const originalOp = createTestOp({
+        id: 'metadata-collision-op',
+        timestamp: baseTimestamp,
+        schemaVersion: 1,
+        isPayloadEncrypted: true,
+        syncImportReason: 'initial',
+      });
+      await syncService.uploadOps(1, 'client-1', [originalOp]);
+
+      const collisionCases = [
+        createTestOp({
+          id: 'metadata-collision-op',
+          timestamp: baseTimestamp + 1,
+          schemaVersion: 1,
+          isPayloadEncrypted: true,
+          syncImportReason: 'initial',
+        }),
+        createTestOp({
+          id: 'metadata-collision-op',
+          timestamp: baseTimestamp,
+          schemaVersion: 2,
+          isPayloadEncrypted: true,
+          syncImportReason: 'initial',
+        }),
+        createTestOp({
+          id: 'metadata-collision-op',
+          timestamp: baseTimestamp,
+          schemaVersion: 1,
+          isPayloadEncrypted: false,
+          syncImportReason: 'initial',
+        }),
+        createTestOp({
+          id: 'metadata-collision-op',
+          timestamp: baseTimestamp,
+          schemaVersion: 1,
+          isPayloadEncrypted: true,
+          syncImportReason: 'retry',
+        }),
+      ];
+
+      for (const collisionOp of collisionCases) {
+        const collisionResult = await syncService.uploadOps(1, 'client-1', [collisionOp]);
+
+        expect(collisionResult[0]).toMatchObject({
+          accepted: false,
+          errorCode: SYNC_ERROR_CODES.INVALID_OP_ID,
+        });
+        expect(collisionResult[0].errorCode).not.toBe(
+          SYNC_ERROR_CODES.DUPLICATE_OPERATION,
+        );
+      }
+    });
+
+    it('should preserve duplicate retries when future timestamps are clamped', async () => {
+      const baseTimestamp = 1_700_000_000_000;
+      const farFuture = baseTimestamp + DEFAULT_SYNC_CONFIG.maxClockDriftMs + 10_000;
+
+      vi.useFakeTimers();
+      vi.setSystemTime(baseTimestamp);
+      try {
+        const originalOp = createTestOp({
+          id: 'clamped-duplicate-op',
+          timestamp: farFuture,
+        });
+        const firstResult = await syncService.uploadOps(1, 'client-1', [originalOp]);
+        expect(firstResult[0]).toMatchObject({ accepted: true });
+
+        vi.setSystemTime(baseTimestamp + 5_000);
+        const duplicateResult = await syncService.uploadOps(1, 'client-1', [
+          createTestOp({
+            id: 'clamped-duplicate-op',
+            timestamp: farFuture,
+          }),
+        ]);
+
+        expect(duplicateResult[0]).toMatchObject({
+          accepted: false,
+          errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('should not advance server sequence for duplicate retries', async () => {
@@ -237,18 +394,29 @@ describe('Duplicate Operation Pre-check', () => {
     });
 
     it('should handle duplicate insert races without aborting the transaction', async () => {
+      const raceTimestamp = Date.now() - 1000;
       const tx = {
         operation: {
           deleteMany: vi.fn(),
-          findUnique: vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({
-            id: 'race-op',
-            userId: 1,
-            clientId: 'client-1',
-            actionType: '[Test] Action',
-            opType: 'UPD',
-            entityType: 'TASK',
-            entityId: 'task-race',
-          }),
+          findUnique: vi
+            .fn()
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce({
+              id: 'race-op',
+              userId: 1,
+              clientId: 'client-1',
+              actionType: '[Test] Action',
+              opType: 'UPD',
+              entityType: 'TASK',
+              entityId: 'task-race',
+              payload: { foo: 'bar' },
+              vectorClock: { 'client-1': 1 },
+              schemaVersion: 1,
+              clientTimestamp: BigInt(raceTimestamp),
+              receivedAt: BigInt(raceTimestamp),
+              isPayloadEncrypted: false,
+              syncImportReason: null,
+            }),
           findFirst: vi.fn().mockResolvedValue(null),
           createMany: vi.fn().mockResolvedValue({ count: 0 }),
         },
@@ -273,7 +441,11 @@ describe('Duplicate Operation Pre-check', () => {
       );
 
       const results = await syncService.uploadOps(1, 'client-1', [
-        createTestOp({ id: 'race-op', entityId: 'task-race' }),
+        createTestOp({
+          id: 'race-op',
+          entityId: 'task-race',
+          timestamp: raceTimestamp,
+        }),
       ]);
 
       expect(results).toHaveLength(1);
@@ -297,18 +469,29 @@ describe('Duplicate Operation Pre-check', () => {
     });
 
     it('should reject insert-race ID collisions instead of marking them synced', async () => {
+      const raceTimestamp = Date.now() - 1000;
       const tx = {
         operation: {
           deleteMany: vi.fn(),
-          findUnique: vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({
-            id: 'collision-race-op',
-            userId: 2,
-            clientId: 'client-2',
-            actionType: '[Test] Action',
-            opType: 'UPD',
-            entityType: 'TASK',
-            entityId: 'task-other-user',
-          }),
+          findUnique: vi
+            .fn()
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce({
+              id: 'collision-race-op',
+              userId: 2,
+              clientId: 'client-2',
+              actionType: '[Test] Action',
+              opType: 'UPD',
+              entityType: 'TASK',
+              entityId: 'task-other-user',
+              payload: { foo: 'bar' },
+              vectorClock: { 'client-1': 1 },
+              schemaVersion: 1,
+              clientTimestamp: BigInt(raceTimestamp),
+              receivedAt: BigInt(raceTimestamp),
+              isPayloadEncrypted: false,
+              syncImportReason: null,
+            }),
           findFirst: vi.fn().mockResolvedValue(null),
           createMany: vi.fn().mockResolvedValue({ count: 0 }),
         },
@@ -333,7 +516,11 @@ describe('Duplicate Operation Pre-check', () => {
       );
 
       const results = await syncService.uploadOps(1, 'client-1', [
-        createTestOp({ id: 'collision-race-op', entityId: 'task-race' }),
+        createTestOp({
+          id: 'collision-race-op',
+          entityId: 'task-race',
+          timestamp: raceTimestamp,
+        }),
       ]);
 
       expect(results[0]).toMatchObject({

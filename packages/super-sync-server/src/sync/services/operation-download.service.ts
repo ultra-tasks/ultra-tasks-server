@@ -235,6 +235,7 @@ export class OperationDownloadService {
 
         // Gap detection logic
         let gapDetected = false;
+        const gapBaselineSeq = effectiveSinceSeq;
 
         // Case 1: Client is ahead of server
         if (sinceSeq > latestSeq && latestSeq > 0) {
@@ -245,14 +246,15 @@ export class OperationDownloadService {
         }
 
         if (sinceSeq > 0 && latestSeq > 0) {
-          // Case 2: Requested seq is purged. Compare against effectiveSinceSeq so
-          // the snapshot fast-forward suppresses false positives — when a snapshot
-          // supersedes the purged history, the client receives the snapshot and
-          // doesn't actually miss anything, so this isn't a gap.
-          if (minSeq !== null && effectiveSinceSeq < minSeq - 1) {
+          // Case 2: Requested seq is purged. Compare against gapBaselineSeq
+          // (= effectiveSinceSeq) so the snapshot fast-forward suppresses
+          // false positives — when a snapshot supersedes the purged history,
+          // the client receives the snapshot and doesn't actually miss
+          // anything, so this isn't a gap.
+          if (minSeq !== null && gapBaselineSeq < minSeq - 1) {
             gapDetected = true;
             Logger.warn(
-              `[user:${userId}] Gap detected: effectiveSinceSeq=${effectiveSinceSeq} (sinceSeq=${sinceSeq}) but minSeq=${minSeq}`,
+              `[user:${userId}] Gap detected: baselineSeq=${gapBaselineSeq} (sinceSeq=${sinceSeq}) but minSeq=${minSeq}`,
             );
           }
 

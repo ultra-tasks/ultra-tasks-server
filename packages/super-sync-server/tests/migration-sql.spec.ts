@@ -63,10 +63,13 @@ describe('performance migrations', () => {
     const composeFile = readFileSync(join(currentDir, '../docker-compose.yml'), 'utf8');
     const migrationCommand = 'run --rm --no-deps supersync npx prisma migrate deploy';
     const startCommand = 'up -d --wait --wait-timeout "$WAIT_TIMEOUT"';
+    const externalDbStartCommand =
+      'up -d --wait --wait-timeout "$WAIT_TIMEOUT" --no-deps supersync caddy';
 
     expect(deployScript).toContain('POSTGRES_WAIT_TIMEOUT');
     expect(deployScript).toContain('POSTGRES_SERVICE="${POSTGRES_SERVICE:-postgres}"');
     expect(deployScript).toContain(migrationCommand);
+    expect(deployScript).toContain(externalDbStartCommand);
     expect(deployScript).toContain('RUN_MIGRATIONS_ON_STARTUP');
     expect(deployScript.indexOf(migrationCommand)).toBeLessThan(
       deployScript.indexOf(startCommand),

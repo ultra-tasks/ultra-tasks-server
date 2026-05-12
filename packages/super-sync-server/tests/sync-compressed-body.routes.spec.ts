@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Fastify, { FastifyInstance } from 'fastify';
+import { randomBytes } from 'crypto';
 import * as zlib from 'zlib';
 import { promisify } from 'util';
 
@@ -65,6 +66,8 @@ const createOp = (clientId: string) => ({
   timestamp: Date.now(),
   schemaVersion: 1,
 });
+
+const MiB = 1024 * 1024;
 
 describe('Sync compressed body routes', () => {
   let app: FastifyInstance;
@@ -242,6 +245,73 @@ describe('Sync compressed body routes', () => {
     );
   });
 
+  it('should allow base64 gzip ops up to the binary compressed limit', async () => {
+    const clientId = 'base64-gzip-large-client';
+    const randomBlob = randomBytes(Math.floor(7.6 * MiB)).toString('base64');
+    const payload = {
+      ops: [
+        {
+          ...createOp(clientId),
+          payload: { blob: randomBlob },
+        },
+      ],
+      clientId,
+    };
+    const compressedPayload = await gzipAsync(
+      Buffer.from(JSON.stringify(payload), 'utf-8'),
+    );
+    const base64Payload = compressedPayload.toString('base64');
+
+    expect(compressedPayload.length).toBeLessThanOrEqual(10 * 1024 * 1024);
+    expect(Buffer.byteLength(base64Payload, 'utf-8')).toBeGreaterThan(10 * 1024 * 1024);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sync/ops',
+      headers: {
+        authorization: `Bearer ${authToken}`,
+        'content-type': 'application/json',
+        'content-encoding': 'gzip',
+        'content-transfer-encoding': 'base64',
+      },
+      payload: base64Payload,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mocks.syncService.uploadOps).toHaveBeenCalledOnce();
+  });
+
+  it('should keep plain JSON ops capped at the binary route limit', async () => {
+    const clientId = 'plain-json-large-client';
+    const jsonPayload = JSON.stringify({
+      ops: [
+        {
+          ...createOp(clientId),
+          payload: { blob: 'x'.repeat(10 * MiB) },
+        },
+      ],
+      clientId,
+    });
+    const payloadSize = Buffer.byteLength(jsonPayload, 'utf-8');
+
+    expect(payloadSize).toBeGreaterThan(10 * MiB);
+    expect(payloadSize).toBeLessThan(13 * MiB);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sync/ops',
+      headers: {
+        authorization: `Bearer ${authToken}`,
+        'content-type': 'application/json',
+        'content-length': String(payloadSize),
+      },
+      payload: jsonPayload,
+    });
+
+    expect(response.statusCode).toBe(413);
+    expect(mocks.syncService.uploadOps).not.toHaveBeenCalled();
+  });
+
   it('should skip snapshot metadata for upload piggyback downloads', async () => {
     const clientId = 'plain-json-client';
     const payload = {
@@ -355,6 +425,79 @@ describe('Sync compressed body routes', () => {
     expect(typeof quotaCall[1]).toBe('number');
     expect(quotaCall[1]).toBeGreaterThanOrEqual(0);
     void jsonPayload;
+  });
+
+  it('should allow base64 gzip snapshots up to the binary compressed limit', async () => {
+    const clientId = 'base64-gzip-large-snapshot-client';
+    const randomBlob = randomBytes(Math.floor(22.6 * MiB)).toString('base64');
+    const payload = {
+      state: {
+        TASK: {
+          'task-1': { id: 'task-1', blob: randomBlob },
+        },
+      },
+      clientId,
+      reason: 'recovery',
+      vectorClock: { [clientId]: 1 },
+      schemaVersion: 1,
+    };
+    const compressedPayload = await gzipAsync(
+      Buffer.from(JSON.stringify(payload), 'utf-8'),
+    );
+    const base64Payload = compressedPayload.toString('base64');
+
+    expect(compressedPayload.length).toBeLessThanOrEqual(30 * MiB);
+    expect(Buffer.byteLength(base64Payload, 'utf-8')).toBeGreaterThan(30 * MiB);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sync/snapshot',
+      headers: {
+        authorization: `Bearer ${authToken}`,
+        'content-type': 'application/json',
+        'content-encoding': 'gzip',
+        'content-transfer-encoding': 'base64',
+      },
+      payload: base64Payload,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().accepted).toBe(true);
+    expect(mocks.syncService.cacheSnapshotIfReplayable).toHaveBeenCalledWith(
+      1,
+      payload.state,
+      1,
+      false,
+      expect.anything(),
+    );
+  });
+
+  it('should keep plain JSON snapshots capped at the binary route limit', async () => {
+    const clientId = 'plain-json-large-snapshot-client';
+    const jsonPayload = JSON.stringify({
+      state: { TASK: { 'task-1': { id: 'task-1', blob: 'x'.repeat(30 * MiB) } } },
+      clientId,
+      reason: 'recovery',
+      vectorClock: { [clientId]: 1 },
+    });
+    const payloadSize = Buffer.byteLength(jsonPayload, 'utf-8');
+
+    expect(payloadSize).toBeGreaterThan(30 * MiB);
+    expect(payloadSize).toBeLessThan(40 * MiB);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sync/snapshot',
+      headers: {
+        authorization: `Bearer ${authToken}`,
+        'content-type': 'application/json',
+        'content-length': String(payloadSize),
+      },
+      payload: jsonPayload,
+    });
+
+    expect(response.statusCode).toBe(413);
+    expect(mocks.syncService.uploadOps).not.toHaveBeenCalled();
   });
 
   it('should preserve the invalid gzip route response', async () => {
@@ -591,5 +734,53 @@ describe('Sync compressed body routes', () => {
     // Post-commit increment only carries the snapshot-cache portion; the
     // op-row counter is written atomically inside `uploadOps`'s transaction.
     expect(mocks.syncService.incrementStorageUsage).toHaveBeenCalledWith(1, 30);
+  });
+
+  it('should subtract the old snapshot cache when a replacement is too large to cache', async () => {
+    const clientId = 'oversized-cache-replacement-client';
+    const vectorClock = { [clientId]: 1 };
+    const preparedSnapshot = {
+      data: Buffer.from('too-large-to-cache'),
+      bytes: 51 * 1024 * 1024,
+      stateBytes: 25,
+      cacheable: false,
+    };
+    mocks.syncService.prepareSnapshotCache.mockReturnValueOnce(preparedSnapshot);
+    mocks.syncService.getCachedSnapshotBytes.mockResolvedValueOnce(90);
+    mocks.syncService.uploadOps.mockResolvedValueOnce([{ accepted: true, serverSeq: 7 }]);
+    mocks.syncService.cacheSnapshotIfReplayable.mockResolvedValueOnce({
+      cached: false,
+      bytesWritten: 0,
+      previousBytes: 90,
+      deltaBytes: -90,
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sync/snapshot',
+      headers: { authorization: `Bearer ${authToken}` },
+      payload: {
+        state: { TASK: { 'task-1': { id: 'task-1' } } },
+        clientId,
+        reason: 'recovery',
+        vectorClock,
+      },
+    });
+
+    const vectorClockBytes = Buffer.byteLength(JSON.stringify(vectorClock), 'utf8');
+    const expectedGateDelta = preparedSnapshot.stateBytes + vectorClockBytes - 90;
+
+    expect(response.statusCode).toBe(200);
+    expect(mocks.syncService.checkStorageQuota).toHaveBeenCalledWith(
+      1,
+      expectedGateDelta,
+    );
+    // Post-commit, the route only applies the snapshot-cache portion of the
+    // delta — the op-row portion is written atomically inside uploadOps's
+    // $transaction (wave-1 B3 / commit 9af17e460e). cacheSnapshotIfReplayable
+    // reported deltaBytes = -90 (the cleared cache), so the route's
+    // applyStorageUsageDelta path decrements by 90.
+    expect(mocks.syncService.decrementStorageUsage).toHaveBeenCalledWith(1, 90);
+    expect(mocks.syncService.incrementStorageUsage).not.toHaveBeenCalled();
   });
 });

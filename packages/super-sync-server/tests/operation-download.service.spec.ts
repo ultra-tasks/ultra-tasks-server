@@ -466,6 +466,41 @@ describe('OperationDownloadService', () => {
       expect(result.gapDetected).toBe(true);
     });
 
+    it('should not flag purged history as a gap when the latest full-state op covers it', async () => {
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+        const mockTx = {
+          operation: {
+            findFirst: vi.fn().mockResolvedValue({
+              serverSeq: 50,
+              clientId: 'snapshot-author',
+            }),
+            findMany: vi.fn().mockResolvedValue([
+              createMockOpRow(50, 'snapshot-author', {
+                opType: 'SYNC_IMPORT',
+                entityType: 'ALL',
+                entityId: null,
+                payload: { TASK: { 'task-1': { id: 'task-1' } } },
+              }),
+            ]),
+            aggregate: vi.fn().mockResolvedValue({ _min: { serverSeq: 50 } }),
+          },
+          userSyncState: {
+            findUnique: vi.fn().mockResolvedValue({ lastSeq: 100 }),
+          },
+          $queryRaw: vi
+            .fn()
+            .mockResolvedValue([{ client_id: 'snapshot-author', max_counter: 1n }]),
+        };
+        return fn(mockTx);
+      });
+
+      const result = await service.getOpsSinceWithSeq(1, 10);
+
+      expect(result.gapDetected).toBe(false);
+      expect(result.latestSnapshotSeq).toBe(50);
+      expect(result.ops[0].serverSeq).toBe(50);
+    });
+
     it('should detect gap when there is a gap in returned operations', async () => {
       const mockOps = [createMockOpRow(15)]; // Gap: requested sinceSeq + 1 = 11, but got 15
 
@@ -546,13 +581,13 @@ describe('OperationDownloadService', () => {
         const mockTx = {
           operation: {
             findFirst: vi.fn().mockResolvedValue({ serverSeq: 50 }),
-            findMany: vi
-              .fn()
-              .mockResolvedValue([createMockOpRow(50, 'snapshot-author', {
+            findMany: vi.fn().mockResolvedValue([
+              createMockOpRow(50, 'snapshot-author', {
                 opType: 'SYNC_IMPORT',
                 entityType: 'ALL',
                 entityId: null,
-              })] as any),
+              }),
+            ] as any),
             // Pre-snapshot ops were purged by retention; minSeq is now 30.
             aggregate: vi.fn().mockResolvedValue({ _min: { serverSeq: 30 } }),
           },
