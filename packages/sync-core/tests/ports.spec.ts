@@ -33,8 +33,8 @@ describe('sync-core ports', () => {
         conflictType: 'sync-import',
         scenario: 'LOCAL_IMPORT_FILTERS_REMOTE',
         reason: 'BACKUP_RESTORE',
-        counts: { filteredOps: 3 },
-        timestamps: { localImport: 123 },
+        counts: { filteredOpCount: 3 },
+        timestamps: { localImportTimestamp: 123 },
         meta: { providerId: 'super-sync' },
       }),
     ).resolves.toBe('USE_LOCAL');
