@@ -245,11 +245,14 @@ export class OperationDownloadService {
         }
 
         if (sinceSeq > 0 && latestSeq > 0) {
-          // Case 2: Requested seq is purged
-          if (minSeq !== null && sinceSeq < minSeq - 1) {
+          // Case 2: Requested seq is purged. Compare against effectiveSinceSeq so
+          // the snapshot fast-forward suppresses false positives — when a snapshot
+          // supersedes the purged history, the client receives the snapshot and
+          // doesn't actually miss anything, so this isn't a gap.
+          if (minSeq !== null && effectiveSinceSeq < minSeq - 1) {
             gapDetected = true;
             Logger.warn(
-              `[user:${userId}] Gap detected: sinceSeq=${sinceSeq} but minSeq=${minSeq}`,
+              `[user:${userId}] Gap detected: effectiveSinceSeq=${effectiveSinceSeq} (sinceSeq=${sinceSeq}) but minSeq=${minSeq}`,
             );
           }
 

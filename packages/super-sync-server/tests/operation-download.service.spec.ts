@@ -535,6 +535,43 @@ describe('OperationDownloadService', () => {
       });
     });
 
+    it('should NOT detect gap via minSeq when snapshot supersedes purged history', async () => {
+      // Regression: Case-2 previously compared raw sinceSeq against minSeq, so a
+      // client requesting from before the retention boundary would get
+      // gapDetected=true even though the snapshot already supersedes that purged
+      // history. With the fix, Case-2 uses effectiveSinceSeq.
+      // sinceSeq=10, snapshot at 50, minSeq=30 (ops 1-29 purged).
+      // effectiveSinceSeq=49, so 49 < 30-1=29 is FALSE → no gap.
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+        const mockTx = {
+          operation: {
+            findFirst: vi.fn().mockResolvedValue({ serverSeq: 50 }),
+            findMany: vi
+              .fn()
+              .mockResolvedValue([createMockOpRow(50, 'snapshot-author', {
+                opType: 'SYNC_IMPORT',
+                entityType: 'ALL',
+                entityId: null,
+              })] as any),
+            // Pre-snapshot ops were purged by retention; minSeq is now 30.
+            aggregate: vi.fn().mockResolvedValue({ _min: { serverSeq: 30 } }),
+          },
+          userSyncState: {
+            findUnique: vi.fn().mockResolvedValue({ lastSeq: 50 }),
+          },
+          $queryRaw: vi.fn().mockResolvedValue([]),
+        };
+        return fn(mockTx);
+      });
+
+      const result = await service.getOpsSinceWithSeq(1, 10);
+
+      expect(result.gapDetected).toBe(false);
+      expect(result.latestSnapshotSeq).toBe(50);
+      expect(result.ops.length).toBe(1);
+      expect(result.ops[0].serverSeq).toBe(50);
+    });
+
     it('should NOT detect gap when excludeClient filters cause apparent gaps', async () => {
       const mockOps = [createMockOpRow(15, 'other-client')]; // From different client
 
