@@ -121,6 +121,29 @@ vi.mock('../src/db', () => {
                 .sort((a, b) => a.serverSeq - b.serverSeq)
                 .slice(0, args.take || 500);
             }),
+            count: vi.fn().mockImplementation(async (args: any) => {
+              const ops = Array.from(testOperations.values());
+              return ops.filter((op) => {
+                if (args.where?.userId !== undefined && args.where.userId !== op.userId)
+                  return false;
+                if (
+                  args.where?.serverSeq?.gt !== undefined &&
+                  op.serverSeq <= args.where.serverSeq.gt
+                )
+                  return false;
+                if (
+                  args.where?.serverSeq?.lte !== undefined &&
+                  op.serverSeq > args.where.serverSeq.lte
+                )
+                  return false;
+                if (
+                  args.where?.isPayloadEncrypted !== undefined &&
+                  op.isPayloadEncrypted !== args.where.isPayloadEncrypted
+                )
+                  return false;
+                return true;
+              }).length;
+            }),
             aggregate: vi.fn().mockResolvedValue({ _min: { serverSeq: 1 } }),
             findUnique: vi.fn().mockImplementation(async (args: any) => {
               if (args.where?.id) {
@@ -389,6 +412,8 @@ describe('Sync System Fixes', () => {
   // =============================================================================
   describe('Issue 3: Encrypted snapshot uploads', () => {
     it('should store isPayloadEncrypted flag from snapshot upload', async () => {
+      const cacheSnapshotSpy = vi.spyOn(getSyncService(), 'cacheSnapshot');
+
       const snapshotResponse = await app.inject({
         method: 'POST',
         url: '/api/sync/snapshot',
@@ -406,6 +431,16 @@ describe('Sync System Fixes', () => {
       expect(snapshotResponse.statusCode).toBe(200);
       const snapshotBody = snapshotResponse.json();
       expect(snapshotBody.accepted).toBe(true);
+      expect(cacheSnapshotSpy).not.toHaveBeenCalled();
+
+      const serverSnapshotResponse = await app.inject({
+        method: 'GET',
+        url: '/api/sync/snapshot',
+        headers: { authorization: `Bearer ${authToken}` },
+      });
+
+      expect(serverSnapshotResponse.statusCode).toBe(400);
+      expect(serverSnapshotResponse.json().errorCode).toBe('ENCRYPTED_OPS_NOT_SUPPORTED');
 
       // Download ops and verify the SYNC_IMPORT has isPayloadEncrypted
       const downloadResponse = await app.inject({

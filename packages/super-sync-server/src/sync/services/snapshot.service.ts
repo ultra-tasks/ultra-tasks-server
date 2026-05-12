@@ -221,6 +221,8 @@ export class SnapshotService {
           }
         }
 
+        await this._assertCachedSnapshotBaseReplayable(tx, userId, startSeq);
+
         if (
           startSeq >= latestSeq &&
           cachedRow?.snapshotData &&
@@ -452,6 +454,8 @@ export class SnapshotService {
             );
           }
         }
+
+        await this._assertCachedSnapshotBaseReplayable(tx, userId, startSeq);
 
         const totalOpsToProcess = targetSeq - startSeq;
         if (totalOpsToProcess > MAX_OPS_FOR_SNAPSHOT) {
@@ -687,6 +691,60 @@ export class SnapshotService {
       where: {
         userId,
         serverSeq: { gt: startSeq, lte: targetSeq },
+        isPayloadEncrypted: true,
+      },
+    });
+
+    if (encryptedOpCount > 0) {
+      throw new Error(encryptedOpsNotSupportedMessage(encryptedOpCount));
+    }
+  }
+
+  private async _assertCachedSnapshotBaseReplayable(
+    tx: {
+      operation: {
+        findFirst(args: {
+          where: {
+            userId: number;
+            serverSeq: { lte: number };
+            opType: { in: string[] };
+            isPayloadEncrypted: boolean;
+          };
+          orderBy: { serverSeq: 'desc' };
+          select: { serverSeq: true };
+        }): Promise<{ serverSeq: number } | null>;
+        count(args: {
+          where: {
+            userId: number;
+            serverSeq: { gt: number; lte: number };
+            isPayloadEncrypted: boolean;
+          };
+        }): Promise<number>;
+      };
+    },
+    userId: number,
+    startSeq: number,
+  ): Promise<void> {
+    if (startSeq <= 0) return;
+
+    const latestUnencryptedFullStateOp = await tx.operation.findFirst({
+      where: {
+        userId,
+        serverSeq: { lte: startSeq },
+        opType: { in: ['SYNC_IMPORT', 'BACKUP_IMPORT', 'REPAIR'] },
+        isPayloadEncrypted: false,
+      },
+      orderBy: { serverSeq: 'desc' },
+      select: { serverSeq: true },
+    });
+
+    const encryptedOpCount = await tx.operation.count({
+      where: {
+        userId,
+        serverSeq: {
+          gt: latestUnencryptedFullStateOp?.serverSeq ?? 0,
+          lte: startSeq,
+        },
         isPayloadEncrypted: true,
       },
     });

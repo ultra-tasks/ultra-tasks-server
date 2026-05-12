@@ -11,6 +11,7 @@ vi.mock('../src/db', () => ({
     },
     operation: {
       findMany: vi.fn(),
+      findFirst: vi.fn(),
       count: vi.fn(),
     },
     $transaction: vi.fn(),
@@ -544,6 +545,35 @@ describe('SnapshotService', () => {
           },
           operation: {
             count: vi.fn().mockResolvedValue(5),
+          },
+        };
+        return fn(mockTx as any);
+      });
+
+      await expect(service.generateSnapshotAtSeq(1, 5)).rejects.toThrow(
+        'ENCRYPTED_OPS_NOT_SUPPORTED',
+      );
+    });
+
+    it('should throw error when cached snapshot base contains encrypted ops', async () => {
+      const encryptedCachedSnapshot = zlib.gzipSync(JSON.stringify('encrypted-state'));
+
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn) => {
+        const mockTx = {
+          userSyncState: {
+            findUnique: vi
+              .fn()
+              .mockResolvedValueOnce({ lastSeq: 5 })
+              .mockResolvedValueOnce({
+                snapshotData: encryptedCachedSnapshot,
+                lastSnapshotSeq: 5,
+                snapshotSchemaVersion: 1,
+              }),
+          },
+          operation: {
+            findFirst: vi.fn().mockResolvedValue(null),
+            count: vi.fn().mockResolvedValue(1),
+            findMany: vi.fn(),
           },
         };
         return fn(mockTx as any);

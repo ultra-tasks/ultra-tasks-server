@@ -521,7 +521,18 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         Logger.info(`[user:${userId}] Snapshot ready (seq=${snapshot.serverSeq})`);
         return reply.send(snapshot as SnapshotResponse);
       } catch (err) {
-        Logger.error(`Get snapshot error: ${errorMessage(err)}`);
+        const message = errorMessage(err);
+        if (message.includes('ENCRYPTED_OPS_NOT_SUPPORTED')) {
+          Logger.info(
+            `[user:${getAuthUser(req).userId}] Snapshot blocked due to encrypted ops`,
+          );
+          return reply.status(400).send({
+            error: message,
+            errorCode: SYNC_ERROR_CODES.ENCRYPTED_OPS_NOT_SUPPORTED,
+          });
+        }
+
+        Logger.error(`Get snapshot error: ${message}`);
         return reply.status(500).send({ error: 'Internal server error' });
       }
     },
@@ -658,8 +669,11 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         const result = results[0];
 
         if (result.accepted && result.serverSeq !== undefined) {
-          // Cache the snapshot
-          await syncService.cacheSnapshot(userId, state, result.serverSeq);
+          if (!op.isPayloadEncrypted) {
+            // Cache only replayable plaintext snapshots. Encrypted payloads remain
+            // available as ops but cannot be used for server-side snapshot replay.
+            await syncService.cacheSnapshot(userId, state, result.serverSeq);
+          }
           // Update storage usage
           await syncService.updateStorageUsage(userId);
         }
