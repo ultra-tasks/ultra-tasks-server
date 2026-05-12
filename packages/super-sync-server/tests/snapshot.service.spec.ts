@@ -347,10 +347,11 @@ describe('SnapshotService', () => {
     // Regression test for the RecordNotFound bug: when a user calls
     // generateSnapshot before any uploads, there is no userSyncState row.
     // Previously the inline `tx.userSyncState.update` threw P2025 and the
-    // route returned 500. With upsert the path must succeed and return an
-    // empty snapshot at seq=0.
+    // route returned 500. With the race-safe updateMany+create fallback the
+    // path must succeed and return an empty snapshot at seq=0.
     it('should not throw RecordNotFound when no userSyncState row exists', async () => {
-      const upsertSpy = vi.fn().mockResolvedValue({});
+      const updateManySpy = vi.fn().mockResolvedValue({ count: 0 });
+      const createSpy = vi.fn().mockResolvedValue({});
 
       vi.mocked(prisma.$transaction).mockImplementation(async (fn) => {
         const mockTx = {
@@ -358,7 +359,8 @@ describe('SnapshotService', () => {
             // Both findUnique calls (lastSeq + cachedRow) return null —
             // simulating a brand-new user.
             findUnique: vi.fn().mockResolvedValue(null),
-            upsert: upsertSpy,
+            updateMany: updateManySpy,
+            create: createSpy,
           },
           operation: {
             count: vi.fn().mockResolvedValue(0),
@@ -372,15 +374,13 @@ describe('SnapshotService', () => {
       const result = await service.generateSnapshot(1);
 
       // latestSeq=0, startSeq=0 → no replay needed but no cache either, so
-      // the service runs through replay (empty loop) and still upserts.
+      // the service runs through replay (empty loop) and still writes the
+      // cache row via updateMany+create fallback.
       expect(result.serverSeq).toBe(0);
       expect(result.state).toEqual({});
-      expect(upsertSpy).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { userId: 1 },
-          create: expect.objectContaining({ userId: 1, lastSnapshotSeq: 0 }),
-        }),
-      );
+      expect(createSpy).toHaveBeenCalledWith({
+        data: expect.objectContaining({ userId: 1, lastSnapshotSeq: 0 }),
+      });
     });
 
     it('cacheSnapshot via the standalone path should create the row on first-time user', async () => {
@@ -423,7 +423,8 @@ describe('SnapshotService', () => {
                 snapshotAt: null,
                 snapshotSchemaVersion: null,
               }),
-            upsert: vi.fn().mockResolvedValue({}),
+            updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+            create: vi.fn().mockResolvedValue({}),
           },
           operation: { count: vi.fn().mockResolvedValue(0), findMany },
         };
@@ -453,7 +454,8 @@ describe('SnapshotService', () => {
       // MAX_SNAPSHOT_SIZE_BYTES with no quota accounting.
       const previousBytes = 500;
       vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
-        const upsert = vi.fn().mockResolvedValue({});
+        const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+        const create = vi.fn().mockResolvedValue({});
         const mockTx = {
           userSyncState: {
             findUnique: vi
@@ -465,7 +467,8 @@ describe('SnapshotService', () => {
                 snapshotAt: null,
                 snapshotSchemaVersion: 1,
               }),
-            upsert,
+            updateMany,
+            create,
           },
           operation: {
             count: vi.fn().mockResolvedValue(0),
@@ -504,8 +507,14 @@ describe('SnapshotService', () => {
     it('should not invoke onCacheDelta when the cached snapshot is already up to date', async () => {
       // When startSeq >= latestSeq the snapshot service returns the cached
       // state without rewriting snapshotData — no counter update is needed.
+      // The fast path now runs _assertCachedSnapshotBaseReplayable first, so
+      // the operation mocks must answer the findFirst/count probes. Set
+      // snapshotSchemaVersion to CURRENT_SCHEMA_VERSION (2) so the fast
+      // path triggers; v1 would force a migration and bypass it.
       const cachedState = { TASK: { t1: { id: 't1' } } };
       const compressed = zlib.gzipSync(JSON.stringify(cachedState));
+      const updateManySpy = vi.fn().mockResolvedValue({ count: 0 });
+      const createSpy = vi.fn();
       vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
         const mockTx = {
           userSyncState: {
@@ -516,11 +525,16 @@ describe('SnapshotService', () => {
                 snapshotData: compressed,
                 lastSnapshotSeq: 7,
                 snapshotAt: BigInt(1),
-                snapshotSchemaVersion: 1,
+                snapshotSchemaVersion: 2,
               }),
-            upsert: vi.fn(),
+            updateMany: updateManySpy,
+            create: createSpy,
           },
-          operation: { count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
+          operation: {
+            count: vi.fn().mockResolvedValue(0),
+            findFirst: vi.fn().mockResolvedValue({ serverSeq: 7 }),
+            findMany: vi.fn(),
+          },
         };
         return fn(mockTx);
       });
@@ -530,6 +544,50 @@ describe('SnapshotService', () => {
       await service.generateSnapshot(1, onCacheDelta);
 
       expect(onCacheDelta).not.toHaveBeenCalled();
+      // Fast path returns before the cache-write block, so neither write op
+      // is invoked.
+      expect(updateManySpy).not.toHaveBeenCalled();
+      expect(createSpy).not.toHaveBeenCalled();
+    });
+
+    it('should run _assertCachedSnapshotBaseReplayable before the fast path returns the cached snapshot', async () => {
+      // Defense in depth: a legacy server build that failed to reject
+      // encrypted ops could have produced a poisoned cache. The fast path
+      // (startSeq >= latestSeq + schema match) MUST still validate the
+      // cached base, otherwise it would serve poisoned cache forever.
+      const cachedState = { TASK: { t1: { id: 't1' } } };
+      const compressed = zlib.gzipSync(JSON.stringify(cachedState));
+      const findFirstSpy = vi.fn().mockResolvedValue(null);
+      const countSpy = vi.fn().mockResolvedValue(1); // encrypted op present
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+        const mockTx = {
+          userSyncState: {
+            findUnique: vi
+              .fn()
+              .mockResolvedValueOnce({ lastSeq: 7 })
+              .mockResolvedValueOnce({
+                snapshotData: compressed,
+                lastSnapshotSeq: 7,
+                snapshotAt: BigInt(1),
+                snapshotSchemaVersion: 2,
+              }),
+            updateMany: vi.fn(),
+            create: vi.fn(),
+          },
+          operation: {
+            findFirst: findFirstSpy,
+            count: countSpy,
+            findMany: vi.fn(),
+          },
+        };
+        return fn(mockTx);
+      });
+
+      await expect(service.generateSnapshot(1)).rejects.toThrow(
+        'ENCRYPTED_OPS_NOT_SUPPORTED',
+      );
+      expect(findFirstSpy).toHaveBeenCalled();
+      expect(countSpy).toHaveBeenCalled();
     });
 
     it('should swallow a thrown onCacheDelta to avoid corrupting the snapshot result', async () => {
@@ -547,7 +605,8 @@ describe('SnapshotService', () => {
                 snapshotAt: null,
                 snapshotSchemaVersion: null,
               }),
-            upsert: vi.fn().mockResolvedValue({}),
+            updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+            create: vi.fn().mockResolvedValue({}),
           },
           operation: {
             count: vi.fn().mockResolvedValue(0),
@@ -700,7 +759,8 @@ describe('SnapshotService', () => {
         const mockTx = {
           userSyncState: {
             findUnique: vi.fn().mockResolvedValue({ lastSeq: 0 }),
-            upsert: vi.fn().mockResolvedValue({}),
+            updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+            create: vi.fn().mockResolvedValue({}),
           },
           operation: {
             findMany: vi.fn().mockResolvedValue([]),
@@ -733,7 +793,8 @@ describe('SnapshotService', () => {
         const mockTx = {
           userSyncState: {
             findUnique: vi.fn().mockResolvedValue({ lastSeq: 0 }),
-            upsert: vi.fn().mockResolvedValue({}),
+            updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+            create: vi.fn().mockResolvedValue({}),
           },
           operation: {
             findMany: vi.fn().mockResolvedValue([]),
@@ -790,7 +851,8 @@ describe('SnapshotService', () => {
               .fn()
               .mockResolvedValueOnce({ lastSeq: 1 })
               .mockResolvedValueOnce({ snapshotData: null, lastSnapshotSeq: null }),
-            upsert: vi.fn().mockResolvedValue({}),
+            updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+            create: vi.fn().mockResolvedValue({}),
           },
           operation: {
             count: vi.fn().mockResolvedValue(0),
@@ -849,7 +911,8 @@ describe('SnapshotService', () => {
       // Scenario: after a clean-slate upload (sync.service preserves lastSeq but
       // wipes ops) the next SYNC_IMPORT lands at lastSeq+1 (e.g. 102). Snapshot
       // replay must accept the leading gap because SYNC_IMPORT resets state.
-      const upsertSpy = vi.fn().mockResolvedValue({});
+      const updateManySpy = vi.fn().mockResolvedValue({ count: 0 });
+      const createSpy = vi.fn().mockResolvedValue({});
 
       vi.mocked(prisma.$transaction).mockImplementation(async (fn) => {
         const mockTx = {
@@ -858,7 +921,8 @@ describe('SnapshotService', () => {
               .fn()
               .mockResolvedValueOnce({ lastSeq: 102 })
               .mockResolvedValueOnce({ snapshotData: null, lastSnapshotSeq: null }),
-            upsert: upsertSpy,
+            updateMany: updateManySpy,
+            create: createSpy,
           },
           operation: {
             count: vi.fn().mockResolvedValue(0),
@@ -945,7 +1009,8 @@ describe('SnapshotService', () => {
         const mockTx = {
           userSyncState: {
             findUnique: vi.fn().mockResolvedValue({ lastSeq: 0 }),
-            upsert: vi.fn().mockResolvedValue({}),
+            updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+            create: vi.fn().mockResolvedValue({}),
           },
           operation: {
             findMany: vi.fn().mockResolvedValue([]),
@@ -1459,6 +1524,54 @@ describe('SnapshotService', () => {
       // Stale keys gone
       expect(result.PROJECT).toBeUndefined();
       expect(result.TAG).toBeUndefined();
+    });
+
+    it('SYNC_IMPORT must not allow prototype pollution via __proto__ in the uploaded payload', () => {
+      // Regression: a malicious client could upload a SYNC_IMPORT payload
+      // whose `appDataComplete` contains a `__proto__` key. The previous
+      // implementation used Object.assign(state, fullState) which triggers
+      // the prototype setter (Object.assign uses [[Set]] semantics) and
+      // pollutes Object.prototype for every plain object in the process —
+      // a server-wide compromise from a single malicious upload.
+      //
+      // Construct a malicious payload via JSON.parse so __proto__ is an
+      // own property (V8 / spec behaviour since 2018).
+      const maliciousPayload = JSON.parse(
+        JSON.stringify({
+          appDataComplete: {
+            TASK: { 'new-task': { id: 'new-task' } },
+          },
+        }).replace('"TASK"', '"__proto__":{"polluted":true},"TASK"'),
+      );
+      // Sanity-check the test fixture itself before relying on it.
+      const inner = maliciousPayload.appDataComplete as Record<string, unknown>;
+      expect(Object.prototype.hasOwnProperty.call(inner, '__proto__')).toBe(true);
+
+      const ops = [
+        {
+          id: 'op-malicious',
+          opType: 'SYNC_IMPORT',
+          entityType: 'FULL_STATE',
+          entityId: null,
+          payload: maliciousPayload,
+          isPayloadEncrypted: false,
+          serverSeq: 1,
+          schemaVersion: 1,
+        },
+      ];
+
+      try {
+        service.replayOpsToState(ops as any);
+        // The benign keys must be copied.
+        // (Object.prototype itself must not gain a `polluted` property.)
+        // Cast through unknown because TS narrows {} to never for arbitrary
+        // index access.
+        expect(({} as { polluted?: unknown }).polluted).toBeUndefined();
+        expect((Object.prototype as { polluted?: unknown }).polluted).toBeUndefined();
+      } finally {
+        // Defensive cleanup in case the assertion fires after pollution.
+        delete (Object.prototype as { polluted?: unknown }).polluted;
+      }
     });
 
     it('should throw EncryptedOpsNotSupportedError for encrypted operations', () => {

@@ -219,6 +219,33 @@ vi.mock('../src/db', async () => {
         state.userSyncStates.set(args.where.userId, result);
         return result;
       }),
+      // Race-safe writers used by SnapshotService._generateSnapshotImpl:
+      // updateMany honours the `OR: [lastSnapshotSeq null, lastSnapshotSeq < seq]`
+      // guard; create is the first-time-user fallback.
+      updateMany: vi.fn().mockImplementation(async (args: any) => {
+        const existing = state.userSyncStates.get(args.where.userId);
+        if (!existing) return { count: 0 };
+        const seqFilter = args.where?.OR?.find(
+          (clause: any) => clause.lastSnapshotSeq?.lt !== undefined,
+        )?.lastSnapshotSeq?.lt;
+        const cachedSeq = existing.lastSnapshotSeq;
+        const matches =
+          cachedSeq === null ||
+          cachedSeq === undefined ||
+          (seqFilter !== undefined && cachedSeq < seqFilter);
+        if (!matches) return { count: 0 };
+        const updated = { ...existing, ...args.data };
+        state.userSyncStates.set(args.where.userId, updated);
+        return { count: 1 };
+      }),
+      create: vi.fn().mockImplementation(async (args: any) => {
+        if (state.userSyncStates.has(args.data.userId)) {
+          throw Object.assign(new Error('Unique constraint'), { code: 'P2002' });
+        }
+        const result = { ...args.data };
+        state.userSyncStates.set(args.data.userId, result);
+        return result;
+      }),
       update: vi.fn().mockImplementation(async (args: any) => {
         const existing = state.userSyncStates.get(args.where.userId);
         if (existing) {

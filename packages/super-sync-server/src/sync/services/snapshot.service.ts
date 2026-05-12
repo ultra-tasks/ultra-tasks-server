@@ -445,9 +445,15 @@ export class SnapshotService {
           }
         }
 
+        // Always validate that the cached base is not poisoned by encrypted
+        // ops before serving it, including on the fast path — a legacy build
+        // that didn't reject encrypted ops could have produced a poisoned
+        // cache, and the fast path would serve it forever. The assertion is
+        // a findFirst + count, which is cheap relative to skipping replay.
+        await this._assertCachedSnapshotBaseReplayable(tx, userId, startSeq);
+
         // Fast path: cached snapshot is already at the latest seq AND in the
-        // current schema version. No replay needed → skip the encrypted-op
-        // probes (they cost a findFirst + count per call).
+        // current schema version. No replay needed.
         if (
           startSeq >= latestSeq &&
           cachedRow?.snapshotData &&
@@ -460,8 +466,6 @@ export class SnapshotService {
             schemaVersion: CURRENT_SCHEMA_VERSION,
           };
         }
-
-        await this._assertCachedSnapshotBaseReplayable(tx, userId, startSeq);
 
         // Migrate snapshot if needed
         if (stateNeedsMigration(snapshotSchemaVersion, CURRENT_SCHEMA_VERSION)) {
@@ -534,30 +538,46 @@ export class SnapshotService {
         const generatedAt = Date.now();
 
         // Cache the generated snapshot inline so it matches the returned state.
-        // Upsert: a user that just had a snapshot generated may still have no
-        // userSyncState row (first-time path), in which case `update` throws
-        // RecordNotFound. Capture the byte delta so the storage usage counter
-        // can be updated AFTER the txn commits (see `cacheDelta`).
+        // Race-safe write (same pattern as `cacheSnapshot`): a concurrent
+        // upload may have advanced `lastSnapshotSeq` beyond our `latestSeq`
+        // while we replayed under RepeatableRead. Conditional `updateMany`
+        // only writes when our seq is newer; if no row exists yet (first-time
+        // user), fall back to `create` and swallow P2002 if another writer
+        // beat us to the insert. When the race is lost, `cacheDelta` MUST
+        // stay 0 — otherwise `onCacheDelta` would over-credit storage by
+        // `compressed.length - previousCachedBytes` even though nothing was
+        // written.
         const previousCachedBytes = cachedRow?.snapshotData?.length ?? 0;
         const compressed = await gzipAsync(Buffer.from(JSON.stringify(state), 'utf-8'));
         if (compressed.length <= MAX_SNAPSHOT_SIZE_BYTES) {
-          await tx.userSyncState.upsert({
-            where: { userId },
-            update: {
-              snapshotData: compressed,
-              lastSnapshotSeq: latestSeq,
-              snapshotAt: BigInt(generatedAt),
-              snapshotSchemaVersion: CURRENT_SCHEMA_VERSION,
-            },
-            create: {
+          const cacheData = {
+            snapshotData: compressed,
+            lastSnapshotSeq: latestSeq,
+            snapshotAt: BigInt(generatedAt),
+            snapshotSchemaVersion: CURRENT_SCHEMA_VERSION,
+          };
+          const updateResult = await tx.userSyncState.updateMany({
+            where: {
               userId,
-              snapshotData: compressed,
-              lastSnapshotSeq: latestSeq,
-              snapshotAt: BigInt(generatedAt),
-              snapshotSchemaVersion: CURRENT_SCHEMA_VERSION,
+              OR: [{ lastSnapshotSeq: null }, { lastSnapshotSeq: { lt: latestSeq } }],
             },
+            data: cacheData,
           });
-          cacheDelta = compressed.length - previousCachedBytes;
+          if (updateResult.count > 0) {
+            cacheDelta = compressed.length - previousCachedBytes;
+          } else {
+            // Either no row exists yet (first-time-user path) or a newer
+            // snapshot already won the race. Try a create — if a row was
+            // inserted concurrently, the unique-userId constraint throws
+            // P2002 and we treat that as "newer snapshot won".
+            try {
+              await tx.userSyncState.create({ data: { userId, ...cacheData } });
+              cacheDelta = compressed.length - previousCachedBytes;
+            } catch (err) {
+              if ((err as { code?: string }).code !== 'P2002') throw err;
+              // cacheDelta stays 0: nothing was written.
+            }
+          }
         }
 
         return {
@@ -896,7 +916,19 @@ export class SnapshotService {
           for (const key of Object.keys(state)) {
             delete state[key];
           }
-          Object.assign(state, fullState);
+          // Copy key-by-key (not Object.assign) so a malicious `__proto__`
+          // key in the client-uploaded payload cannot pollute Object's
+          // prototype via the `__proto__` setter. JSON.parse creates
+          // `__proto__` as an own data property (no setter), but
+          // Object.assign would then `state['__proto__'] = …`, which DOES
+          // trigger the setter and pollute the prototype chain.
+          const fullStateRecord = fullState as Record<string, unknown>;
+          for (const key of Object.keys(fullStateRecord)) {
+            if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+              continue;
+            }
+            state[key] = fullStateRecord[key];
+          }
           continue;
         }
 
