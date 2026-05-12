@@ -1,7 +1,4 @@
 import * as zlib from 'zlib';
-import { promisify } from 'util';
-
-const gunzipAsync = promisify(zlib.gunzip);
 
 export type CompressedJsonBodyParseFailureReason =
   | 'expected-compressed-buffer'
@@ -32,6 +29,23 @@ export interface ParseCompressedJsonBodyOptions {
   maxDecompressedSize: number;
 }
 
+const isDecompressedPayloadTooLargeError = (cause: unknown): boolean => {
+  const code =
+    cause !== null && typeof cause === 'object' && 'code' in cause
+      ? String((cause as { code?: unknown }).code)
+      : undefined;
+
+  if (code === 'ERR_BUFFER_TOO_LARGE' || code === 'ERR_OUT_OF_RANGE') {
+    return true;
+  }
+
+  const message = cause instanceof Error ? cause.message : '';
+  return (
+    message.includes('maxOutputLength') ||
+    message.includes('Cannot create a Buffer larger than')
+  );
+};
+
 /**
  * Decompress gzip body, handling base64 encoding from Android clients.
  * Android WebView can't send binary fetch bodies, so the client sends
@@ -40,7 +54,23 @@ export interface ParseCompressedJsonBodyOptions {
 export const decompressBody = async (
   rawBody: Buffer,
   contentTransferEncoding: string | undefined,
+  maxOutputLength?: number,
 ): Promise<Buffer> => {
+  const gunzipOptions: zlib.ZlibOptions =
+    maxOutputLength === undefined ? {} : { maxOutputLength };
+  const gunzipAsync = (body: Buffer): Promise<Buffer> =>
+    new Promise((resolve, reject) => {
+      const callback = (err: Error | null, result: Buffer): void => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve(result);
+      };
+
+      zlib.gunzip(body, gunzipOptions, callback);
+    });
+
   if (contentTransferEncoding === 'base64') {
     const base64String = rawBody.toString('utf-8');
     const binaryData = Buffer.from(base64String, 'base64');
@@ -75,7 +105,11 @@ export const parseCompressedJsonBody = async (
   }
 
   try {
-    const decompressed = await decompressBody(rawBody, contentTransferEncoding);
+    const decompressed = await decompressBody(
+      rawBody,
+      contentTransferEncoding,
+      options.maxDecompressedSize,
+    );
 
     if (decompressed.length > options.maxDecompressedSize) {
       return {
@@ -96,6 +130,17 @@ export const parseCompressedJsonBody = async (
       isBase64: contentTransferEncoding === 'base64',
     };
   } catch (cause) {
+    if (isDecompressedPayloadTooLargeError(cause)) {
+      return {
+        ok: false,
+        statusCode: 413,
+        error: 'Decompressed payload too large',
+        reason: 'decompressed-payload-too-large',
+        compressedSize: rawBody.length,
+        cause,
+      };
+    }
+
     return {
       ok: false,
       statusCode: 400,

@@ -86,6 +86,30 @@ const sendCompressedBodyParseFailure = (
   return reply.status(failure.statusCode).send({ error: failure.error });
 };
 
+const getContentLengthBytes = (req: FastifyRequest): number | undefined => {
+  const rawContentLength = req.headers['content-length'];
+  const contentLength = Array.isArray(rawContentLength)
+    ? rawContentLength[0]
+    : rawContentLength;
+  if (contentLength === undefined) return undefined;
+
+  const parsed = Number(contentLength);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+};
+
+const getParsedBodySizeBytes = (
+  req: FastifyRequest,
+  body: unknown,
+  decompressedSize?: number,
+): number => {
+  if (decompressedSize !== undefined) return decompressedSize;
+
+  const contentLength = getContentLengthBytes(req);
+  if (contentLength !== undefined) return contentLength;
+
+  return Buffer.byteLength(JSON.stringify(body), 'utf-8');
+};
+
 /**
  * Check storage quota, recalculate if stale, and auto-cleanup if needed.
  * @returns `true` if quota is OK (caller can proceed), `false` if reply was sent with 413 error.
@@ -197,6 +221,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         // Support gzip-encoded uploads to save bandwidth
         let body: unknown = req.body;
         const contentEncoding = req.headers['content-encoding'];
+        let decompressedBodySize: number | undefined;
 
         if (contentEncoding === 'gzip') {
           const contentTransferEncoding = req.headers['content-transfer-encoding'] as
@@ -220,6 +245,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
           }
 
           body = compressedBodyResult.body;
+          decompressedBodySize = compressedBodyResult.decompressedSize;
           Logger.debug(
             `[user:${userId}] Ops upload decompressed: ${compressedBodyResult.compressedSize} -> ${compressedBodyResult.decompressedSize} bytes (base64: ${compressedBodyResult.isBase64})`,
           );
@@ -286,6 +312,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
                 lastKnownServerSeq,
                 clientId,
                 PIGGYBACK_LIMIT,
+                false,
               );
               newOps = opsResult.ops;
               latestSeq = opsResult.latestSeq;
@@ -317,7 +344,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         }
 
         // Check storage quota before processing (after dedup to allow retries)
-        const payloadSize = JSON.stringify(body).length;
+        const payloadSize = getParsedBodySizeBytes(req, body, decompressedBodySize);
         const quotaOk = await enforceStorageQuota(userId, payloadSize, reply);
         if (!quotaOk) return;
 
@@ -365,6 +392,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
             lastKnownServerSeq,
             clientId,
             PIGGYBACK_LIMIT,
+            false,
           );
           newOps = opsResult.ops;
           latestSeq = opsResult.latestSeq;
@@ -541,6 +569,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         // Handle gzip-compressed request body
         let body: unknown = req.body;
         const contentEncoding = req.headers['content-encoding'];
+        let decompressedBodySize: number | undefined;
 
         if (contentEncoding === 'gzip') {
           const contentTransferEncoding = req.headers['content-transfer-encoding'] as
@@ -564,6 +593,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
           }
 
           body = compressedBodyResult.body;
+          decompressedBodySize = compressedBodyResult.decompressedSize;
           Logger.debug(
             `[user:${userId}] Snapshot decompressed: ${compressedBodyResult.compressedSize} -> ${compressedBodyResult.decompressedSize} bytes (base64: ${compressedBodyResult.isBase64})`,
           );
@@ -596,7 +626,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         const syncService = getSyncService();
 
         // Check storage quota before processing
-        const payloadSize = JSON.stringify(body).length;
+        const payloadSize = getParsedBodySizeBytes(req, body, decompressedBodySize);
         const quotaOk = await enforceStorageQuota(userId, payloadSize, reply);
         if (!quotaOk) return;
 

@@ -141,6 +141,12 @@ vi.mock('../src/db', () => {
     if (typeof where.opType === 'string' && op.opType !== where.opType) {
       return false;
     }
+    if (
+      where.isPayloadEncrypted !== undefined &&
+      op.isPayloadEncrypted !== where.isPayloadEncrypted
+    ) {
+      return false;
+    }
 
     return true;
   };
@@ -224,6 +230,11 @@ vi.mock('../src/db', () => {
               applySelect(op, args.select),
             );
           }),
+          count: vi.fn().mockImplementation(async (args: any) => {
+            return Array.from(testData.operations.values()).filter((op) =>
+              matchesWhere(op, args.where),
+            ).length;
+          }),
           aggregate: vi.fn().mockResolvedValue({ _min: { serverSeq: 1 } }),
           deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
         },
@@ -289,6 +300,7 @@ vi.mock('../src/db', () => {
       createMany: vi.fn(),
       findFirst: vi.fn(),
       findMany: vi.fn(),
+      count: vi.fn().mockResolvedValue(0),
       aggregate: vi.fn().mockResolvedValue({ _min: { serverSeq: 1 } }),
       deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
     },

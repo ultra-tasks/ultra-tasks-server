@@ -8,7 +8,7 @@
  * generation for the same user. This prevents duplicate expensive computation.
  */
 import * as zlib from 'zlib';
-import { prisma, Operation as PrismaOperation } from '../../db';
+import { prisma } from '../../db';
 import { Logger } from '../../logger';
 import {
   CURRENT_SCHEMA_VERSION,
@@ -48,6 +48,50 @@ const MAX_REPLAY_STATE_SIZE_BYTES = 100 * 1024 * 1024;
  * How often to check state size during replay (every N operations).
  */
 const REPLAY_SIZE_CHECK_INTERVAL = 1000;
+
+const REPLAY_OPERATION_SELECT = {
+  id: true,
+  serverSeq: true,
+  opType: true,
+  entityType: true,
+  entityId: true,
+  payload: true,
+  schemaVersion: true,
+  isPayloadEncrypted: true,
+} as const;
+
+type ReplayOperationRow = {
+  id: string;
+  serverSeq: number;
+  opType: string;
+  entityType: string;
+  entityId: string | null;
+  payload: unknown;
+  schemaVersion: number;
+  isPayloadEncrypted: boolean;
+};
+
+const assertContiguousReplayBatch = (
+  ops: ReplayOperationRow[],
+  expectedFirstSeq: number,
+  targetSeq: number,
+): void => {
+  if (ops.length === 0) {
+    throw new Error(
+      `SNAPSHOT_REPLAY_INCOMPLETE: Missing operations from seq ${expectedFirstSeq} to ${targetSeq}.`,
+    );
+  }
+
+  let expectedSeq = expectedFirstSeq;
+  for (const op of ops) {
+    if (op.serverSeq !== expectedSeq) {
+      throw new Error(
+        `SNAPSHOT_REPLAY_INCOMPLETE: Expected seq ${expectedSeq} but got ${op.serverSeq} while replaying to seq ${targetSeq}.`,
+      );
+    }
+    expectedSeq++;
+  }
+};
 
 export interface SnapshotResult {
   state: unknown;
@@ -254,6 +298,24 @@ export class SnapshotService {
           );
         }
 
+        if (totalOpsToProcess > 0) {
+          // Server-side snapshots cannot safely replay encrypted payloads.
+          const encryptedOpCount = await tx.operation.count({
+            where: {
+              userId,
+              serverSeq: { gt: startSeq, lte: latestSeq },
+              isPayloadEncrypted: true,
+            },
+          });
+
+          if (encryptedOpCount > 0) {
+            throw new Error(
+              `ENCRYPTED_OPS_NOT_SUPPORTED: Cannot generate snapshot - ${encryptedOpCount} operations have encrypted payloads. ` +
+                `Server-side snapshots are not available when E2E encryption is enabled.`,
+            );
+          }
+        }
+
         const BATCH_SIZE = 10000;
         let currentSeq = startSeq;
         let totalProcessed = 0;
@@ -262,13 +324,15 @@ export class SnapshotService {
           const batchOps = await tx.operation.findMany({
             where: {
               userId,
-              serverSeq: { gt: currentSeq },
+              // Keep the replay aligned with the advertised snapshot sequence.
+              serverSeq: { gt: currentSeq, lte: latestSeq },
             },
             orderBy: { serverSeq: 'asc' },
             take: BATCH_SIZE,
+            select: REPLAY_OPERATION_SELECT,
           });
 
-          if (batchOps.length === 0) break;
+          assertContiguousReplayBatch(batchOps, currentSeq + 1, latestSeq);
 
           // Replay ops
           state = this.replayOpsToState(batchOps, state);
@@ -474,13 +538,15 @@ export class SnapshotService {
           const batchOps = await tx.operation.findMany({
             where: {
               userId,
+              // Historical restore points replay only up to the requested sequence.
               serverSeq: { gt: currentSeq, lte: targetSeq },
             },
             orderBy: { serverSeq: 'asc' },
             take: BATCH_SIZE,
+            select: REPLAY_OPERATION_SELECT,
           });
 
-          if (batchOps.length === 0) break;
+          assertContiguousReplayBatch(batchOps, currentSeq + 1, targetSeq);
 
           state = this.replayOpsToState(batchOps, state);
           currentSeq = batchOps[batchOps.length - 1].serverSeq;
@@ -503,7 +569,7 @@ export class SnapshotService {
    * Used internally by snapshot generation methods.
    */
   replayOpsToState(
-    ops: PrismaOperation[],
+    ops: ReplayOperationRow[],
     initialState: Record<string, unknown> = {},
   ): Record<string, unknown> {
     const state = { ...(initialState as Record<string, Record<string, unknown>>) };

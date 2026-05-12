@@ -28,6 +28,35 @@ describe('performance migrations', () => {
     expect(migrationSql).not.toMatch(/\bBEGIN\b|\bCOMMIT\b/i);
   });
 
+  it('adds partial full-state sequence index and drops redundant indexes', () => {
+    const migrationSql = readFileSync(
+      join(
+        currentDir,
+        '../prisma/migrations/20260512000000_add_full_state_sequence_index_drop_redundant_indexes/migration.sql',
+      ),
+      'utf8',
+    );
+
+    expect(migrationSql).toContain('CREATE INDEX CONCURRENTLY');
+    expect(migrationSql).toContain('"operations_user_id_full_state_server_seq_idx"');
+    expect(migrationSql).toContain('ON "operations"("user_id", "server_seq")');
+    expect(migrationSql).toContain(
+      `WHERE "op_type" IN ('SYNC_IMPORT', 'BACKUP_IMPORT', 'REPAIR')`,
+    );
+    expect(migrationSql).toContain(
+      'DROP INDEX CONCURRENTLY IF EXISTS "operations_user_id_op_type_idx"',
+    );
+    expect(migrationSql).toContain(
+      'DROP INDEX CONCURRENTLY IF EXISTS "operations_user_id_entity_type_entity_id_idx"',
+    );
+    expect(migrationSql).toContain(
+      'DROP INDEX CONCURRENTLY IF EXISTS "operations_user_id_server_seq_idx"',
+    );
+    expect(migrationSql).not.toMatch(/\bDROP\s+TABLE\b/i);
+    expect(migrationSql).not.toMatch(/\bALTER\s+TABLE\b/i);
+    expect(migrationSql).not.toMatch(/\bBEGIN\b|\bCOMMIT\b/i);
+  });
+
   it('runs migrations before replacing the app during compose deploys', () => {
     const deployScript = readFileSync(join(currentDir, '../scripts/deploy.sh'), 'utf8');
     const dockerfile = readFileSync(join(currentDir, '../Dockerfile'), 'utf8');

@@ -98,6 +98,29 @@ vi.mock('../src/db', async () => {
           .sort((a: any, b: any) => a.serverSeq - b.serverSeq)
           .slice(0, args.take || 500);
       }),
+      count: vi.fn().mockImplementation(async (args: any) => {
+        const ops = Array.from(state.operations.values());
+        return ops.filter((op: any) => {
+          if (args.where?.userId !== undefined && args.where.userId !== op.userId)
+            return false;
+          if (
+            args.where?.serverSeq?.gt !== undefined &&
+            op.serverSeq <= args.where.serverSeq.gt
+          )
+            return false;
+          if (
+            args.where?.serverSeq?.lte !== undefined &&
+            op.serverSeq > args.where.serverSeq.lte
+          )
+            return false;
+          if (
+            args.where?.isPayloadEncrypted !== undefined &&
+            op.isPayloadEncrypted !== args.where.isPayloadEncrypted
+          )
+            return false;
+          return true;
+        }).length;
+      }),
       aggregate: vi.fn().mockImplementation(async (args: any) => {
         const ops = Array.from(state.operations.values()).filter(
           (op: any) => args.where?.userId === op.userId,
@@ -242,6 +265,29 @@ vi.mock('../src/db', async () => {
             })
             .sort((a: any, b: any) => a.serverSeq - b.serverSeq)
             .slice(0, args.take || 500);
+        }),
+        count: vi.fn().mockImplementation(async (args: any) => {
+          const ops = Array.from(state.operations.values());
+          return ops.filter((op: any) => {
+            if (args.where?.userId !== undefined && args.where.userId !== op.userId)
+              return false;
+            if (
+              args.where?.serverSeq?.gt !== undefined &&
+              op.serverSeq <= args.where.serverSeq.gt
+            )
+              return false;
+            if (
+              args.where?.serverSeq?.lte !== undefined &&
+              op.serverSeq > args.where.serverSeq.lte
+            )
+              return false;
+            if (
+              args.where?.isPayloadEncrypted !== undefined &&
+              op.isPayloadEncrypted !== args.where.isPayloadEncrypted
+            )
+              return false;
+            return true;
+          }).length;
         }),
         aggregate: vi.fn().mockImplementation(async (args: any) => {
           const ops = Array.from(state.operations.values()).filter(
