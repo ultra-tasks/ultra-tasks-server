@@ -65,9 +65,22 @@ index is managed by `deploy.sh`.
 
 If `POSTGRES_SERVICE=` is set because `DATABASE_URL` points to an external
 PostgreSQL server, `deploy.sh` starts only the app/proxy services with compose
-dependencies disabled so the bundled Postgres container is not required. In that
-mode the deploy script also cannot run optional index builds through Docker
-Compose. Run the same index build manually, off-hours, against that database:
+dependencies disabled so the bundled Postgres container is not required. The
+deploy script still runs Prisma migrations, known failed-migration recovery, and
+optional index builds through the configured `DATABASE_URL`.
+
+If you need to recover an external database manually, drop any invalid partial
+index, roll back the failed Prisma migration row, and then rebuild the optional
+index off-hours:
+
+```sql
+DROP INDEX CONCURRENTLY IF EXISTS "operations_user_id_entity_type_entity_id_server_seq_idx";
+```
+
+```bash
+npx prisma migrate resolve --rolled-back 20260511000000_add_entity_sequence_index
+npx prisma migrate deploy
+```
 
 ```sql
 CREATE INDEX CONCURRENTLY IF NOT EXISTS "operations_user_id_entity_type_entity_id_server_seq_idx"

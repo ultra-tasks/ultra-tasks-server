@@ -160,10 +160,14 @@ run_prisma() {
     docker compose $COMPOSE_FILES run --rm --no-deps supersync npx prisma "$@"
 }
 
-run_postgres_psql() {
-    docker compose $COMPOSE_FILES exec -T "$POSTGRES_SERVICE" sh -c \
-        'psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-supersync}" -d "${POSTGRES_DB:-supersync}" "$@"' \
-        sh "$@"
+run_database_scalar() {
+    docker compose $COMPOSE_FILES run --rm --no-deps -T supersync node scripts/deploy-db-scalar.mjs "$1"
+}
+
+run_database_execute() {
+    local sql="$1"
+
+    printf '%s\n' "$sql" | docker compose $COMPOSE_FILES run --rm --no-deps -T supersync npx prisma db execute --stdin --schema prisma/schema.prisma
 }
 
 is_prisma_advisory_lock_error() {
@@ -232,7 +236,6 @@ run_migrations_with_retry() {
 
     echo ""
     echo "==> migrate deploy failed; checking known index migration recovery..."
-    KNOWN_INDEX_MIGRATION_RECOVERED=false
     recover_failed_entity_sequence_index_migration
     if [ "$KNOWN_INDEX_MIGRATION_RECOVERED" = "true" ]; then
         run_prisma_with_advisory_lock_retry "migrate deploy after known index migration recovery" migrate deploy
@@ -248,11 +251,14 @@ drop_invalid_entity_sequence_index() {
     local drop_index_sql
 
     invalid_index_sql="SELECT 1 FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid WHERE c.relname = '$ENTITY_SEQUENCE_INDEX_NAME' AND NOT i.indisvalid LIMIT 1;"
-    invalid_index="$(run_postgres_psql -Atc "$invalid_index_sql")"
+    if ! invalid_index="$(run_database_scalar "$invalid_index_sql")"; then
+        echo "ERROR: Failed to query invalid $ENTITY_SEQUENCE_INDEX_NAME index state"
+        return 1
+    fi
     if [ "$invalid_index" = "1" ]; then
         echo "    Dropping invalid partial index $ENTITY_SEQUENCE_INDEX_NAME"
-        drop_index_sql="DROP INDEX CONCURRENTLY \"$ENTITY_SEQUENCE_INDEX_NAME\";"
-        run_postgres_psql -c "$drop_index_sql"
+        drop_index_sql="DROP INDEX CONCURRENTLY IF EXISTS \"$ENTITY_SEQUENCE_INDEX_NAME\";"
+        run_database_execute "$drop_index_sql"
     fi
 }
 
@@ -261,32 +267,35 @@ recover_failed_entity_sequence_index_migration() {
     local failed_migration_sql
     local migration_table_exists
     local advisory_lock_available
+    local advisory_lock_sql
 
     KNOWN_INDEX_MIGRATION_RECOVERED=false
 
-    if [ -z "$POSTGRES_SERVICE" ]; then
-        echo ""
-        echo "==> Skipping known failed index migration recovery (POSTGRES_SERVICE is empty)"
-        echo "    If $ENTITY_SEQUENCE_INDEX_MIGRATION failed on an external DB, resolve it manually before deploying."
-        echo "    migrate deploy will keep failing until that failed migration row is repaired."
-        return 0
+    if ! migration_table_exists="$(run_database_scalar "SELECT (to_regclass('public._prisma_migrations') IS NOT NULL)::text;")"; then
+        echo "ERROR: Failed to check Prisma migration table state"
+        return 1
     fi
-
-    migration_table_exists="$(run_postgres_psql -Atc "SELECT to_regclass('public._prisma_migrations') IS NOT NULL;")"
-    if [ "$migration_table_exists" != "t" ]; then
+    if [ "$migration_table_exists" != "true" ]; then
         return 0
     fi
 
     failed_migration_sql="SELECT 1 FROM _prisma_migrations WHERE migration_name = '$ENTITY_SEQUENCE_INDEX_MIGRATION' AND finished_at IS NULL AND rolled_back_at IS NULL LIMIT 1;"
-    failed_migration="$(run_postgres_psql -Atc "$failed_migration_sql")"
+    if ! failed_migration="$(run_database_scalar "$failed_migration_sql")"; then
+        echo "ERROR: Failed to check $ENTITY_SEQUENCE_INDEX_MIGRATION migration state"
+        return 1
+    fi
     if [ "$failed_migration" != "1" ]; then
         return 0
     fi
 
-    # Prisma 5.x migration-engine uses this session-level advisory lock.
-    # If it is not available, another migration is still active.
-    advisory_lock_available="$(run_postgres_psql -Atc 'SELECT pg_try_advisory_lock(72707369);')"
-    if [ "$advisory_lock_available" != "t" ]; then
+    # Prisma 5.x migration-engine uses this session-level advisory lock. This is
+    # only a snapshot probe; migrate resolve still uses its own advisory-lock retry.
+    advisory_lock_sql='SELECT CASE WHEN pg_try_advisory_lock(72707369) THEN pg_advisory_unlock(72707369)::text ELSE false::text END;'
+    if ! advisory_lock_available="$(run_database_scalar "$advisory_lock_sql")"; then
+        echo "ERROR: Failed to check Prisma advisory migration lock state"
+        return 1
+    fi
+    if [ "$advisory_lock_available" != "true" ]; then
         echo ""
         echo "==> $ENTITY_SEQUENCE_INDEX_MIGRATION still appears to be active"
         echo "    Skipping automatic recovery and letting migrate deploy wait for Prisma's advisory lock."
@@ -306,10 +315,11 @@ warn_if_entity_sequence_index_missing() {
     local index_exists
     local index_exists_sql
 
-    [ -n "$POSTGRES_SERVICE" ] || return 0
-
     index_exists_sql="SELECT 1 FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid WHERE c.relname = '$ENTITY_SEQUENCE_INDEX_NAME' AND i.indisvalid LIMIT 1;"
-    index_exists="$(run_postgres_psql -Atc "$index_exists_sql")"
+    if ! index_exists="$(run_database_scalar "$index_exists_sql")"; then
+        echo "ERROR: Failed to query optional $ENTITY_SEQUENCE_INDEX_NAME index state"
+        return 1
+    fi
     if [ "$index_exists" != "1" ]; then
         echo ""
         echo "WARNING: Optional index $ENTITY_SEQUENCE_INDEX_NAME is not present."
@@ -329,17 +339,12 @@ run_post_migration_indexes() {
         return 0
     fi
 
-    if [ -z "$POSTGRES_SERVICE" ]; then
-        echo "ERROR: RUN_POST_MIGRATION_INDEXES=true requires POSTGRES_SERVICE to point at the compose Postgres service"
-        return 1
-    fi
-
     echo ""
     echo "==> Building post-migration indexes..."
 
     drop_invalid_entity_sequence_index
     create_index_sql="CREATE INDEX CONCURRENTLY IF NOT EXISTS \"$ENTITY_SEQUENCE_INDEX_NAME\" ON \"operations\"(\"user_id\", \"entity_type\", \"entity_id\", \"server_seq\");"
-    run_postgres_psql -c "$create_index_sql"
+    run_database_execute "$create_index_sql"
 }
 
 # Run migrations before replacing the app container. This keeps the currently
@@ -357,7 +362,6 @@ fi
 
 echo ""
 echo "==> Applying database migrations before app restart..."
-recover_failed_entity_sequence_index_migration
 run_migrations_with_retry
 run_post_migration_indexes
 

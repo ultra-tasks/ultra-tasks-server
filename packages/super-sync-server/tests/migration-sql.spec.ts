@@ -32,6 +32,10 @@ describe('performance migrations', () => {
     const composeFile = readFileSync(join(currentDir, '../docker-compose.yml'), 'utf8');
     const envExample = readFileSync(join(currentDir, '../env.example'), 'utf8');
     const readmeFile = readFileSync(join(currentDir, '../README.md'), 'utf8');
+    const deployDbScalarScript = readFileSync(
+      join(currentDir, '../scripts/deploy-db-scalar.mjs'),
+      'utf8',
+    );
     const buildComposeFile = readFileSync(
       join(currentDir, '../docker-compose.build.yml'),
       'utf8',
@@ -43,7 +47,7 @@ describe('performance migrations', () => {
       'CREATE INDEX CONCURRENTLY IF NOT EXISTS \\"$ENTITY_SEQUENCE_INDEX_NAME\\" ON \\"operations\\"(\\"user_id\\", \\"entity_type\\", \\"entity_id\\", \\"server_seq\\");';
     const failedMigrationSql =
       "SELECT 1 FROM _prisma_migrations WHERE migration_name = '$ENTITY_SEQUENCE_INDEX_MIGRATION' AND finished_at IS NULL AND rolled_back_at IS NULL LIMIT 1;";
-    const recoveryCall = '\nrecover_failed_entity_sequence_index_migration\n';
+    const recoveryCall = '\n    recover_failed_entity_sequence_index_migration\n';
     const migrationCall = '\nrun_migrations_with_retry\n';
     const indexCall = '\nrun_post_migration_indexes\n\n# The migration above';
     const startCommand = 'up -d --wait --wait-timeout "$WAIT_TIMEOUT"';
@@ -62,6 +66,10 @@ describe('performance migrations', () => {
     expect(deployScript).toContain('value="${value%%[[:space:]]#*}"');
     expect(deployScript).toContain('EXTERNAL_DB_START_SERVICES="supersync caddy"');
     expect(deployScript).toContain('--no-deps $EXTERNAL_DB_START_SERVICES');
+    expect(deployScript).toContain('run_database_scalar');
+    expect(deployScript).toContain('-T supersync node scripts/deploy-db-scalar.mjs');
+    expect(deployScript).toContain('prisma db execute --stdin');
+    expect(deployScript).not.toContain('requires POSTGRES_SERVICE');
     expect(deployScript).toContain('GHCR_USER|GHCR_TOKEN|RUN_POST_MIGRATION_INDEXES');
     expect(deployScript).toContain('POSTGRES_WAIT_TIMEOUT');
     expect(deployScript).toContain('POSTGRES_SERVICE="${POSTGRES_SERVICE-postgres}"');
@@ -72,6 +80,10 @@ describe('performance migrations', () => {
     expect(deployScript).toContain('20260511000000_add_entity_sequence_index');
     expect(deployScript).toContain(failedMigrationSql);
     expect(recoveryFunction).toContain('pg_try_advisory_lock(72707369)');
+    expect(recoveryFunction).toContain('pg_advisory_unlock(72707369)');
+    expect(recoveryFunction).toContain('if ! migration_table_exists=');
+    expect(recoveryFunction).toContain('if ! failed_migration=');
+    expect(recoveryFunction).toContain('if ! advisory_lock_available=');
     expect(recoveryFunction).toContain('drop_invalid_entity_sequence_index');
     expect(deployScript).toContain('migrate resolve --rolled-back');
     expect(deployScript).toContain('migrate deploy after known index migration recovery');
@@ -81,7 +93,9 @@ describe('performance migrations', () => {
     expect(deployScript).toContain('warn_if_entity_sequence_index_missing');
     expect(deployScript).toContain('RUN_POST_MIGRATION_INDEXES');
     expect(deployScript).toContain(indexSql);
-    expect(deployScript).toContain('DROP INDEX CONCURRENTLY');
+    expect(deployScript).toContain('DROP INDEX CONCURRENTLY IF EXISTS');
+    expect(deployScript).toContain('if ! invalid_index=');
+    expect(deployScript).toContain('if ! index_exists=');
     expect(deployScript).not.toContain('migrate resolve --applied');
     expect(deployScript).toContain(migrationCommand);
     expect(deployScript).toMatch(/else\s+exit_code=\$\?/);
@@ -108,9 +122,14 @@ describe('performance migrations', () => {
     expect(buildComposeFile).not.toContain('up -d --build');
     expect(envExample).toContain('POSTGRES_SERVICE=postgres');
     expect(readmeFile).toContain('Upgrade note');
+    expect(readmeFile).toContain('migrate resolve --rolled-back');
+    expect(readmeFile).toContain('DROP INDEX CONCURRENTLY IF EXISTS');
     expect(readmeFile).toContain('CREATE INDEX CONCURRENTLY IF NOT EXISTS');
     expect(readmeFile).toContain('out-of-band index');
     expect(readmeFile).toContain('dependencies disabled');
+    expect(deployDbScalarScript).toContain('Scalar deploy probe');
+    expect(deployDbScalarScript).toContain('$queryRawUnsafe');
+    expect(deployDbScalarScript).toContain('$disconnect');
     expect(schemaFile).toContain('@@index([userId, entityType, entityId])');
     expect(schemaFile).toContain('built out-of-band');
     expect(schemaFile).not.toContain(
