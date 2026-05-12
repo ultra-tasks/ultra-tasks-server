@@ -84,6 +84,22 @@ export class StorageQuotaService {
    *   2. Offline / admin reconciliation scripts.
    * Hot-path tracking uses incrementStorageUsage / decrementStorageUsage with
    * deltas computed locally on the Node side.
+   *
+   * KNOWN BYTE-COUNTING MISMATCH (tracked for follow-up):
+   * `pg_column_size` returns the TOAST-compressed on-disk size, while the
+   * hot-path delta (sync.routes.ts `computeOpsStorageBytes`) uses
+   * `Buffer.byteLength(JSON.stringify(...))` — the uncompressed UTF-8 length.
+   * For large compressible JSONB payloads (~2KB+) the compressed size can be
+   * substantially smaller, so a reconcile can shrink a counter that was
+   * incremented with the larger uncompressed numbers, making the quota
+   * artificially generous after each reconcile.
+   *
+   * A no-DoS fix is to add a `payload_bytes` column populated at insert time
+   * with the uncompressed length and SUM that column here. That is a schema
+   * migration and is outside the scope of this service-only file; switching
+   * to `octet_length(payload::text)` in-place would re-detoast every row and
+   * resurrect the original disk-I/O DoS that pg_column_size also caused (see
+   * sync.const.ts `APPROX_BYTES_PER_OP`).
    */
   async calculateStorageUsage(userId: number): Promise<{
     operationsBytes: number;
@@ -256,12 +272,22 @@ export class StorageQuotaService {
   }
 
   /**
-   * Clear any in-flight reconcile lock for a user. Call when user data is
-   * wiped (clean-slate, account deletion) so a stale rejected promise does
-   * not block future reconciles.
+   * Clear per-user in-memory state. Call when user data is wiped (clean-slate,
+   * account deletion) so stale references do not leak or trigger spurious work:
+   *   - `inflightReconciles`: a stale rejected promise would block future
+   *     reconciles via the dedupe map.
+   *   - `forcedReconciles`: a stale marker would force an unnecessary scan on
+   *     the next quota check after the wipe.
+   *   - `storageUsageLocks`: queued lock chain for a now-erased user is
+   *     orphaned work; clear the head so no follower in that chain runs after
+   *     the wipe.
+   * `storageUsageLockContext` is per-async-context (AsyncLocalStorage), not
+   * per-user state — nothing to clear there.
    */
   clearForUser(userId: number): void {
     this.inflightReconciles.delete(userId);
+    this.forcedReconciles.delete(userId);
+    this.storageUsageLocks.delete(userId);
   }
 
   /**

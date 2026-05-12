@@ -407,6 +407,47 @@ describe('StorageQuotaService', () => {
     it('should not throw when no lock exists', () => {
       expect(() => service.clearForUser(42)).not.toThrow();
     });
+
+    it('should clear inflightReconciles, forcedReconciles, and storageUsageLocks for the user', () => {
+      // After a clean-slate / account wipe these per-user maps must not retain
+      // stale entries that would (a) block future reconciles via the dedupe
+      // map, (b) force a spurious extra scan on the next quota check, or
+      // (c) leave an orphaned queued lock chain for the now-erased user.
+      const internals = service as unknown as {
+        inflightReconciles: Map<number, Promise<void>>;
+        forcedReconciles: Set<number>;
+        storageUsageLocks: Map<number, Promise<void>>;
+      };
+      internals.inflightReconciles.set(7, Promise.resolve());
+      internals.forcedReconciles.add(7);
+      internals.storageUsageLocks.set(7, Promise.resolve());
+
+      service.clearForUser(7);
+
+      expect(internals.inflightReconciles.has(7)).toBe(false);
+      expect(internals.forcedReconciles.has(7)).toBe(false);
+      expect(internals.storageUsageLocks.has(7)).toBe(false);
+    });
+
+    it('should not affect other users state', () => {
+      const internals = service as unknown as {
+        inflightReconciles: Map<number, Promise<void>>;
+        forcedReconciles: Set<number>;
+        storageUsageLocks: Map<number, Promise<void>>;
+      };
+      internals.inflightReconciles.set(7, Promise.resolve());
+      internals.forcedReconciles.add(7);
+      internals.storageUsageLocks.set(7, Promise.resolve());
+      internals.inflightReconciles.set(8, Promise.resolve());
+      internals.forcedReconciles.add(8);
+      internals.storageUsageLocks.set(8, Promise.resolve());
+
+      service.clearForUser(7);
+
+      expect(internals.inflightReconciles.has(8)).toBe(true);
+      expect(internals.forcedReconciles.has(8)).toBe(true);
+      expect(internals.storageUsageLocks.has(8)).toBe(true);
+    });
   });
 
   describe('incrementStorageUsage', () => {
