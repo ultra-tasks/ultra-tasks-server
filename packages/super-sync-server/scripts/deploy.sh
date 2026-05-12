@@ -98,6 +98,10 @@ load_deploy_env() {
     done < ".env"
 }
 
+has_placeholder_ghcr_credentials() {
+    [ "$GHCR_USER" = "your-github-username" ] || [ "$GHCR_TOKEN" = "your-github-token" ]
+}
+
 # Pull latest code (scripts, docker-compose.yml, etc.)
 echo "==> Pulling latest code..."
 git pull --ff-only || { echo "WARNING: git pull failed — continuing with current files"; }
@@ -110,9 +114,14 @@ load_deploy_env
 
 # Login to GHCR if credentials provided
 if [ -n "$GHCR_TOKEN" ] && [ -n "$GHCR_USER" ]; then
-    echo "==> Logging in to GHCR..."
-    echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
-    echo ""
+    if has_placeholder_ghcr_credentials; then
+        echo "==> Skipping GHCR login (placeholder credentials in .env)"
+        echo ""
+    else
+        echo "==> Logging in to GHCR..."
+        echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+        echo ""
+    fi
 fi
 
 # Check if monitoring compose exists and include it
@@ -161,7 +170,9 @@ run_prisma() {
 }
 
 run_database_scalar() {
-    docker compose $COMPOSE_FILES run --rm --no-deps -T supersync node scripts/deploy-db-scalar.mjs "$1"
+    docker compose $COMPOSE_FILES run --rm --no-deps -T \
+        -v "$SERVER_DIR/scripts/deploy-db-scalar.mjs:/tmp/deploy-db-scalar.mjs:ro" \
+        supersync node /tmp/deploy-db-scalar.mjs "$1"
 }
 
 run_database_execute() {
@@ -172,6 +183,121 @@ run_database_execute() {
 
 is_prisma_advisory_lock_error() {
     grep -qiE 'advisory[[:space:]-]+lock' <<<"$1"
+}
+
+quote_sql_identifier() {
+    local identifier="${1//\"/\"\"}"
+
+    printf '"%s"' "$identifier"
+}
+
+get_current_db_schema() {
+    run_database_scalar "SELECT current_schema();"
+}
+
+entity_sequence_index_state_sql() {
+    cat <<SQL
+WITH target_indexes AS (
+  SELECT
+    i.indisvalid,
+    i.indisready,
+    tbl_ns.nspname AS table_schema,
+    tbl.relname AS table_name,
+    am.amname AS index_method,
+    i.indisunique,
+    i.indpred IS NULL AS has_no_predicate,
+    i.indexprs IS NULL AS has_no_expressions,
+    ARRAY(
+      SELECT a.attname
+      FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord)
+      JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+      ORDER BY k.ord
+    ) AS columns
+  FROM pg_class idx
+  JOIN pg_namespace idx_ns ON idx_ns.oid = idx.relnamespace
+  JOIN pg_index i ON i.indexrelid = idx.oid
+  JOIN pg_class tbl ON tbl.oid = i.indrelid
+  JOIN pg_namespace tbl_ns ON tbl_ns.oid = tbl.relnamespace
+  JOIN pg_am am ON am.oid = idx.relam
+  WHERE idx.relname = '$ENTITY_SEQUENCE_INDEX_NAME'
+    AND idx_ns.nspname = current_schema()
+)
+SELECT CASE
+  WHEN NOT EXISTS (SELECT 1 FROM target_indexes) THEN 'missing'
+  WHEN EXISTS (SELECT 1 FROM target_indexes WHERE NOT indisvalid OR NOT indisready) THEN 'invalid'
+  WHEN EXISTS (
+    SELECT 1
+    FROM target_indexes
+    WHERE table_schema = current_schema()
+      AND table_name = 'operations'
+      AND index_method = 'btree'
+      AND NOT indisunique
+      AND has_no_predicate
+      AND has_no_expressions
+      AND columns = ARRAY['user_id', 'entity_type', 'entity_id', 'server_seq']::name[]
+  ) THEN 'valid'
+  ELSE 'wrong'
+END;
+SQL
+}
+
+get_entity_sequence_index_state() {
+    run_database_scalar "$(entity_sequence_index_state_sql)"
+}
+
+build_drop_entity_sequence_index_sql() {
+    local db_schema
+
+    db_schema="$(get_current_db_schema)"
+    printf 'DROP INDEX CONCURRENTLY IF EXISTS %s.%s;' \
+        "$(quote_sql_identifier "$db_schema")" \
+        "$(quote_sql_identifier "$ENTITY_SEQUENCE_INDEX_NAME")"
+}
+
+build_create_entity_sequence_index_sql() {
+    local db_schema
+    local index_name
+    local table_name
+
+    db_schema="$(get_current_db_schema)"
+    index_name="$(quote_sql_identifier "$ENTITY_SEQUENCE_INDEX_NAME")"
+    table_name="$(quote_sql_identifier "$db_schema").$(quote_sql_identifier "operations")"
+
+    printf 'CREATE INDEX CONCURRENTLY IF NOT EXISTS %s ON %s("user_id", "entity_type", "entity_id", "server_seq");' \
+        "$index_name" \
+        "$table_name"
+}
+
+require_valid_entity_sequence_index_definition() {
+    local index_state
+
+    if ! index_state="$(get_entity_sequence_index_state)"; then
+        echo "ERROR: Failed to query optional $ENTITY_SEQUENCE_INDEX_NAME index state"
+        return 1
+    fi
+
+    case "$index_state" in
+        valid)
+            return 0
+            ;;
+        missing)
+            echo "ERROR: Optional index $ENTITY_SEQUENCE_INDEX_NAME was not created"
+            return 1
+            ;;
+        invalid)
+            echo "ERROR: Optional index $ENTITY_SEQUENCE_INDEX_NAME exists but is invalid"
+            return 1
+            ;;
+        wrong)
+            echo "ERROR: Existing index $ENTITY_SEQUENCE_INDEX_NAME has an unexpected definition"
+            echo "       Drop or rename it manually before rebuilding optional indexes."
+            return 1
+            ;;
+        *)
+            echo "ERROR: Unexpected $ENTITY_SEQUENCE_INDEX_NAME index state: $index_state"
+            return 1
+            ;;
+    esac
 }
 
 run_prisma_with_advisory_lock_retry() {
@@ -246,18 +372,17 @@ run_migrations_with_retry() {
 }
 
 drop_invalid_entity_sequence_index() {
-    local invalid_index
-    local invalid_index_sql
+    local index_state
     local drop_index_sql
 
-    invalid_index_sql="SELECT 1 FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid WHERE c.relname = '$ENTITY_SEQUENCE_INDEX_NAME' AND NOT i.indisvalid LIMIT 1;"
-    if ! invalid_index="$(run_database_scalar "$invalid_index_sql")"; then
+    if ! index_state="$(get_entity_sequence_index_state)"; then
         echo "ERROR: Failed to query invalid $ENTITY_SEQUENCE_INDEX_NAME index state"
         return 1
     fi
-    if [ "$invalid_index" = "1" ]; then
-        echo "    Dropping invalid partial index $ENTITY_SEQUENCE_INDEX_NAME"
-        drop_index_sql="DROP INDEX CONCURRENTLY IF EXISTS \"$ENTITY_SEQUENCE_INDEX_NAME\";"
+
+    if [ "$index_state" = "invalid" ]; then
+        echo "    Dropping invalid optional index $ENTITY_SEQUENCE_INDEX_NAME"
+        drop_index_sql="$(build_drop_entity_sequence_index_sql)"
         run_database_execute "$drop_index_sql"
     fi
 }
@@ -271,7 +396,7 @@ recover_failed_entity_sequence_index_migration() {
 
     KNOWN_INDEX_MIGRATION_RECOVERED=false
 
-    if ! migration_table_exists="$(run_database_scalar "SELECT (to_regclass('public._prisma_migrations') IS NOT NULL)::text;")"; then
+    if ! migration_table_exists="$(run_database_scalar "SELECT (to_regclass(format('%I._prisma_migrations', current_schema())) IS NOT NULL)::text;")"; then
         echo "ERROR: Failed to check Prisma migration table state"
         return 1
     fi
@@ -312,30 +437,49 @@ recover_failed_entity_sequence_index_migration() {
 }
 
 warn_if_entity_sequence_index_missing() {
-    local index_exists
-    local index_exists_sql
+    local index_state
 
-    index_exists_sql="SELECT 1 FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid WHERE c.relname = '$ENTITY_SEQUENCE_INDEX_NAME' AND i.indisvalid LIMIT 1;"
-    if ! index_exists="$(run_database_scalar "$index_exists_sql")"; then
+    if ! index_state="$(get_entity_sequence_index_state)"; then
         echo "ERROR: Failed to query optional $ENTITY_SEQUENCE_INDEX_NAME index state"
         return 1
     fi
-    if [ "$index_exists" != "1" ]; then
-        echo ""
-        echo "WARNING: Optional index $ENTITY_SEQUENCE_INDEX_NAME is not present."
-        echo "         Conflict-detection queries may be slower until it is built."
-        echo "         Run RUN_POST_MIGRATION_INDEXES=true ./scripts/deploy.sh off-hours."
-    fi
+
+    case "$index_state" in
+        valid)
+            return 0
+            ;;
+        missing)
+            echo ""
+            echo "WARNING: Optional index $ENTITY_SEQUENCE_INDEX_NAME is not present."
+            echo "         Conflict-detection queries may be slower until it is built."
+            echo "         Run RUN_POST_MIGRATION_INDEXES=true ./scripts/deploy.sh off-hours."
+            ;;
+        invalid)
+            echo ""
+            echo "WARNING: Optional index $ENTITY_SEQUENCE_INDEX_NAME exists but is invalid."
+            echo "         Run RUN_POST_MIGRATION_INDEXES=true ./scripts/deploy.sh off-hours to rebuild it."
+            ;;
+        wrong)
+            echo ""
+            echo "WARNING: Optional index $ENTITY_SEQUENCE_INDEX_NAME exists with an unexpected definition."
+            echo "         Drop or rename it manually before rebuilding optional indexes."
+            ;;
+        *)
+            echo "ERROR: Unexpected $ENTITY_SEQUENCE_INDEX_NAME index state: $index_state"
+            return 1
+            ;;
+    esac
 }
 
 run_post_migration_indexes() {
     local create_index_sql
+    local index_state
 
     if [ "${RUN_POST_MIGRATION_INDEXES:-false}" != "true" ]; then
         echo ""
         echo "==> Skipping optional post-migration index builds"
         echo "    Set RUN_POST_MIGRATION_INDEXES=true during an off-hours deploy to build $ENTITY_SEQUENCE_INDEX_NAME"
-        warn_if_entity_sequence_index_missing
+        warn_if_entity_sequence_index_missing || echo "WARNING: Could not verify optional $ENTITY_SEQUENCE_INDEX_NAME index state; continuing."
         return 0
     fi
 
@@ -343,8 +487,18 @@ run_post_migration_indexes() {
     echo "==> Building post-migration indexes..."
 
     drop_invalid_entity_sequence_index
-    create_index_sql="CREATE INDEX CONCURRENTLY IF NOT EXISTS \"$ENTITY_SEQUENCE_INDEX_NAME\" ON \"operations\"(\"user_id\", \"entity_type\", \"entity_id\", \"server_seq\");"
+
+    if ! index_state="$(get_entity_sequence_index_state)"; then
+        echo "ERROR: Failed to query optional $ENTITY_SEQUENCE_INDEX_NAME index state"
+        return 1
+    fi
+    if [ "$index_state" = "wrong" ]; then
+        require_valid_entity_sequence_index_definition
+    fi
+
+    create_index_sql="$(build_create_entity_sequence_index_sql)"
     run_database_execute "$create_index_sql"
+    require_valid_entity_sequence_index_definition
 }
 
 # Run migrations before replacing the app container. This keeps the currently

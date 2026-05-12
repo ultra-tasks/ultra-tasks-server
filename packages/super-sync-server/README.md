@@ -63,11 +63,12 @@ continues to apply pending migrations. Do not reset a production database for
 this warning; this migration now intentionally contains no SQL, and the physical
 index is managed by `deploy.sh`.
 
-If `POSTGRES_SERVICE=` is set because `DATABASE_URL` points to an external
-PostgreSQL server, `deploy.sh` starts only the app/proxy services with compose
-dependencies disabled so the bundled Postgres container is not required. The
-deploy script still runs Prisma migrations, known failed-migration recovery, and
-optional index builds through the configured `DATABASE_URL`.
+If `DATABASE_URL` points to an external PostgreSQL server, set
+`POSTGRES_SERVICE=` to the empty value. `deploy.sh` then starts only the
+app/proxy services with compose dependencies disabled so the bundled Postgres
+container is not required. The deploy script still runs Prisma migrations, known
+failed-migration recovery, and optional index builds through the configured
+`DATABASE_URL`.
 
 If you need to recover an external database manually, drop any invalid partial
 index, roll back the failed Prisma migration row, and then rebuild the optional

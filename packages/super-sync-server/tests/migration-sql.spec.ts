@@ -44,7 +44,7 @@ describe('performance migrations', () => {
     const migrationCommand =
       'docker compose $COMPOSE_FILES run --rm --no-deps supersync npx prisma "$@"';
     const indexSql =
-      'CREATE INDEX CONCURRENTLY IF NOT EXISTS \\"$ENTITY_SEQUENCE_INDEX_NAME\\" ON \\"operations\\"(\\"user_id\\", \\"entity_type\\", \\"entity_id\\", \\"server_seq\\");';
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS %s ON %s("user_id", "entity_type", "entity_id", "server_seq");';
     const failedMigrationSql =
       "SELECT 1 FROM _prisma_migrations WHERE migration_name = '$ENTITY_SEQUENCE_INDEX_MIGRATION' AND finished_at IS NULL AND rolled_back_at IS NULL LIMIT 1;";
     const recoveryCall = '\n    recover_failed_entity_sequence_index_migration\n';
@@ -67,7 +67,14 @@ describe('performance migrations', () => {
     expect(deployScript).toContain('EXTERNAL_DB_START_SERVICES="supersync caddy"');
     expect(deployScript).toContain('--no-deps $EXTERNAL_DB_START_SERVICES');
     expect(deployScript).toContain('run_database_scalar');
-    expect(deployScript).toContain('-T supersync node scripts/deploy-db-scalar.mjs');
+    expect(deployScript).toContain('has_placeholder_ghcr_credentials');
+    expect(deployScript).toContain(
+      'Skipping GHCR login (placeholder credentials in .env)',
+    );
+    expect(deployScript).toContain(
+      '-v "$SERVER_DIR/scripts/deploy-db-scalar.mjs:/tmp/deploy-db-scalar.mjs:ro"',
+    );
+    expect(deployScript).toContain('supersync node /tmp/deploy-db-scalar.mjs "$1"');
     expect(deployScript).toContain('prisma db execute --stdin');
     expect(deployScript).not.toContain('requires POSTGRES_SERVICE');
     expect(deployScript).toContain('GHCR_USER|GHCR_TOKEN|RUN_POST_MIGRATION_INDEXES');
@@ -90,12 +97,23 @@ describe('performance migrations', () => {
     expect(deployScript).toContain('Prisma advisory migration lock');
     expect(deployScript).toContain("grep -qiE 'advisory[[:space:]-]+lock'");
     expect(deployScript).not.toContain('|P1002');
+    expect(deployScript).toContain('quote_sql_identifier');
+    expect(deployScript).toContain('get_current_db_schema');
+    expect(deployScript).toContain('entity_sequence_index_state_sql');
+    expect(deployScript).toContain('idx_ns.nspname = current_schema()');
+    expect(deployScript).toContain(
+      "columns = ARRAY['user_id', 'entity_type', 'entity_id', 'server_seq']::name[]",
+    );
+    expect(deployScript).toContain('require_valid_entity_sequence_index_definition');
+    expect(deployScript).toContain('unexpected definition');
     expect(deployScript).toContain('warn_if_entity_sequence_index_missing');
+    expect(deployScript).toContain(
+      'warn_if_entity_sequence_index_missing || echo "WARNING: Could not verify optional $ENTITY_SEQUENCE_INDEX_NAME index state; continuing."',
+    );
     expect(deployScript).toContain('RUN_POST_MIGRATION_INDEXES');
     expect(deployScript).toContain(indexSql);
     expect(deployScript).toContain('DROP INDEX CONCURRENTLY IF EXISTS');
-    expect(deployScript).toContain('if ! invalid_index=');
-    expect(deployScript).toContain('if ! index_exists=');
+    expect(deployScript).toContain('if ! index_state=');
     expect(deployScript).not.toContain('migrate resolve --applied');
     expect(deployScript).toContain(migrationCommand);
     expect(deployScript).toMatch(/else\s+exit_code=\$\?/);
@@ -120,8 +138,12 @@ describe('performance migrations', () => {
     expect(composeFile).toContain('DATABASE_URL=${DATABASE_URL:-postgresql://');
     expect(buildComposeFile).toContain('./scripts/deploy.sh --build');
     expect(buildComposeFile).not.toContain('up -d --build');
-    expect(envExample).toContain('POSTGRES_SERVICE=postgres');
+    expect(envExample).not.toMatch(/^GHCR_USER=/m);
+    expect(envExample).not.toMatch(/^GHCR_TOKEN=/m);
+    expect(envExample).toMatch(/^# POSTGRES_SERVICE=$/m);
+    expect(envExample).not.toMatch(/^POSTGRES_SERVICE=/m);
     expect(readmeFile).toContain('Upgrade note');
+    expect(readmeFile).toMatch(/set\s+`POSTGRES_SERVICE=` to the empty value/);
     expect(readmeFile).toContain('migrate resolve --rolled-back');
     expect(readmeFile).toContain('DROP INDEX CONCURRENTLY IF EXISTS');
     expect(readmeFile).toContain('CREATE INDEX CONCURRENTLY IF NOT EXISTS');
