@@ -390,6 +390,30 @@ describe('Storage Quota Cleanup', () => {
       expect(offendingCalls).toHaveLength(0);
     });
 
+    it('should only fetch enough restore points to decide cleanup behavior', async () => {
+      const { initSyncService, getSyncService } =
+        await import('../src/sync/sync.service');
+      const { prisma } = await import('../src/db');
+      initSyncService();
+      const service = getSyncService();
+
+      createRestorePoint(clientId, userId);
+      createOp(clientId, userId);
+      createRestorePoint(clientId, userId);
+
+      vi.mocked(prisma.operation.findMany).mockClear();
+
+      await service.deleteOldestRestorePointAndOps(userId);
+
+      expect(prisma.operation.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orderBy: { serverSeq: 'asc' },
+          select: { serverSeq: true, opType: true },
+          take: 2,
+        }),
+      );
+    });
+
     it('should keep single restore point but delete ops before it', async () => {
       const { initSyncService, getSyncService } =
         await import('../src/sync/sync.service');
@@ -557,6 +581,37 @@ describe('Storage Quota Cleanup', () => {
       expect(result.freedBytes).toBe(0);
       expect(result.deletedRestorePoints).toBe(0);
       expect(result.deletedOps).toBe(0);
+    });
+
+    it('should only fetch enough restore points before each cleanup iteration', async () => {
+      const { initSyncService, getSyncService } =
+        await import('../src/sync/sync.service');
+      const { prisma } = await import('../src/db');
+      initSyncService();
+      const service = getSyncService();
+
+      testUsers.set(userId, {
+        id: userId,
+        email: 'test@test.com',
+        storageUsedBytes: BigInt(150 * 1024 * 1024),
+        storageQuotaBytes: BigInt(100 * 1024 * 1024),
+      });
+
+      createRestorePoint(clientId, userId);
+      createOp(clientId, userId);
+      createRestorePoint(clientId, userId);
+
+      vi.mocked(prisma.operation.findMany).mockClear();
+
+      await service.freeStorageForUpload(userId, 1000);
+
+      expect(prisma.operation.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orderBy: { serverSeq: 'asc' },
+          select: { serverSeq: true },
+          take: 2,
+        }),
+      );
     });
 
     it('should return failure when only one restore point exists', async () => {

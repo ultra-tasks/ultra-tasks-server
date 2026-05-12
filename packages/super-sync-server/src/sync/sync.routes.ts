@@ -387,6 +387,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
                 lastKnownServerSeq,
                 clientId,
                 PIGGYBACK_LIMIT,
+                false,
               );
               newOps = opsResult.ops;
               latestSeq = opsResult.latestSeq;
@@ -494,6 +495,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
             lastKnownServerSeq,
             clientId,
             PIGGYBACK_LIMIT,
+            false,
           );
           newOps = opsResult.ops;
           latestSeq = opsResult.latestSeq;
@@ -742,6 +744,39 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
           }
         }
 
+        // Reject duplicate SYNC_IMPORT before we acquire the per-user lock — a
+        // duplicate rejection is cheap (one indexed lookup) and skipping the
+        // lock lets concurrent legitimate clients keep moving.
+        // Exceptions that bypass this check:
+        // - 'recovery': Explicit backup restore or repair (user action)
+        // - 'migration': Legacy data migration (should be allowed to override)
+        // - 'isCleanSlate': Password change or explicit clean slate request
+        // Only 'initial' (first-time server migration) should be rejected if one exists.
+        if (reason === 'initial' && !isCleanSlate) {
+          const existingImport = await prisma.operation.findFirst({
+            where: {
+              userId,
+              opType: { in: ['SYNC_IMPORT', 'BACKUP_IMPORT', 'REPAIR'] },
+            },
+            select: { id: true, clientId: true },
+          });
+
+          if (existingImport) {
+            Logger.warn(
+              `[user:${userId}] Rejecting duplicate SYNC_IMPORT from client ${clientId}. ` +
+                `Existing import from client ${existingImport.clientId} (id: ${existingImport.id}). ` +
+                `Client should download and merge instead.`,
+            );
+            return reply.status(409).send({
+              error: 'SYNC_IMPORT_EXISTS',
+              errorCode: 'SYNC_IMPORT_EXISTS',
+              message:
+                'A SYNC_IMPORT already exists. Download existing data and upload your changes as regular operations.',
+              existingImportId: existingImport.id,
+            });
+          }
+        }
+
         // Create a SYNC_IMPORT operation
         // Use the correct NgRx action type so the operation can be replayed on other clients
         // FIX: Use client's opId if provided to prevent ID mismatch bugs
@@ -799,39 +834,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
               if (!quotaOk) return null;
             }
 
-            // FIX: Reject duplicate SYNC_IMPORT to prevent data loss
-            // Only the FIRST client to sync with an empty server should create SYNC_IMPORT.
-            // Subsequent clients should download existing data and upload their ops as regular ops.
-            // Exceptions that bypass this check:
-            // - 'recovery': Explicit backup restore or repair (user action)
-            // - 'migration': Legacy data migration (should be allowed to override)
-            // - 'isCleanSlate': Password change or explicit clean slate request
-            // Only 'initial' (first-time server migration) should be rejected if one exists.
-            if (reason === 'initial' && !isCleanSlate) {
-              const existingImport = await prisma.operation.findFirst({
-                where: {
-                  userId,
-                  opType: { in: ['SYNC_IMPORT', 'BACKUP_IMPORT', 'REPAIR'] },
-                },
-                select: { id: true, clientId: true },
-              });
-
-              if (existingImport) {
-                Logger.warn(
-                  `[user:${userId}] Rejecting duplicate SYNC_IMPORT from client ${clientId}. ` +
-                    `Existing import from client ${existingImport.clientId} (id: ${existingImport.id}). ` +
-                    `Client should download and merge instead.`,
-                );
-                reply.status(409).send({
-                  error: 'SYNC_IMPORT_EXISTS',
-                  errorCode: 'SYNC_IMPORT_EXISTS',
-                  message:
-                    'A SYNC_IMPORT already exists. Download existing data and upload your changes as regular operations.',
-                  existingImportId: existingImport.id,
-                });
-                return null;
-              }
-            }
+            // Duplicate SYNC_IMPORT rejection already handled before the lock.
 
             const results = await syncService.uploadOps(
               userId,

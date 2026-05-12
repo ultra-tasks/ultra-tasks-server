@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import * as zlib from 'zlib';
 import { promisify } from 'util';
 import {
@@ -28,6 +28,48 @@ describe('decompressBody helper', () => {
       const decompressed = await decompressBody(compressed, undefined);
 
       expect(JSON.parse(decompressed.toString('utf-8'))).toEqual(testPayload);
+    });
+
+    it('should reject gzip output beyond maxOutputLength', async () => {
+      const jsonPayload = JSON.stringify(testPayload);
+      const compressed = await gzipAsync(Buffer.from(jsonPayload, 'utf-8'));
+
+      await expect(decompressBody(compressed, undefined, 1)).rejects.toThrow();
+    });
+
+    it('should pass maxOutputLength to zlib.gunzip', async () => {
+      const gunzipMock = vi.fn(
+        (
+          _body: Buffer,
+          _options: zlib.ZlibOptions | ((err: Error | null, result: Buffer) => void),
+          callback?: (err: Error | null, result: Buffer) => void,
+        ) => {
+          if (callback) {
+            callback(null, Buffer.from(JSON.stringify(testPayload), 'utf-8'));
+          }
+        },
+      );
+
+      try {
+        vi.resetModules();
+        vi.doMock('zlib', () => ({ gunzip: gunzipMock }));
+
+        const { decompressBody: decompressBodyWithMockedZlib } =
+          await import('../src/sync/compressed-body-parser');
+        await decompressBodyWithMockedZlib(
+          Buffer.from('mock-gzip-body'),
+          undefined,
+          1024,
+        );
+
+        expect(gunzipMock).toHaveBeenCalled();
+        expect(gunzipMock.mock.calls[0][1]).toMatchObject({
+          maxOutputLength: 1024,
+        });
+      } finally {
+        vi.doUnmock('zlib');
+        vi.resetModules();
+      }
     });
   });
 
@@ -147,6 +189,45 @@ describe('parseCompressedJsonBody helper', () => {
     if (result.ok) {
       expect(result.body).toEqual(testPayload);
       expect(result.isBase64).toBe(true);
+    }
+  });
+
+  it('should pass maxDecompressedSize to zlib.gunzip as maxOutputLength', async () => {
+    const gunzipMock = vi.fn(
+      (
+        _body: Buffer,
+        _options: zlib.ZlibOptions | ((err: Error | null, result: Buffer) => void),
+        callback?: (err: Error | null, result: Buffer) => void,
+      ) => {
+        if (callback) {
+          callback(null, Buffer.from(JSON.stringify(testPayload), 'utf-8'));
+        }
+      },
+    );
+
+    try {
+      vi.resetModules();
+      vi.doMock('zlib', () => ({ gunzip: gunzipMock }));
+
+      const { parseCompressedJsonBody: parseCompressedJsonBodyWithMockedZlib } =
+        await import('../src/sync/compressed-body-parser');
+      const result = await parseCompressedJsonBodyWithMockedZlib(
+        Buffer.from('mock-gzip-body'),
+        undefined,
+        {
+          maxCompressedSize: 1024,
+          maxDecompressedSize: 456,
+        },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(gunzipMock).toHaveBeenCalled();
+      expect(gunzipMock.mock.calls[0][1]).toMatchObject({
+        maxOutputLength: 456,
+      });
+    } finally {
+      vi.doUnmock('zlib');
+      vi.resetModules();
     }
   });
 

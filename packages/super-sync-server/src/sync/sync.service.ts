@@ -675,6 +675,7 @@ export class SyncService {
     sinceSeq: number,
     excludeClient?: string,
     limit: number = 500,
+    includeSnapshotMetadata: boolean = true,
   ): Promise<{
     ops: ServerOperation[];
     latestSeq: number;
@@ -687,6 +688,7 @@ export class SyncService {
       sinceSeq,
       excludeClient,
       limit,
+      includeSnapshotMetadata,
     );
   }
 
@@ -891,6 +893,7 @@ export class SyncService {
       },
       orderBy: { serverSeq: 'asc' },
       select: { serverSeq: true, opType: true },
+      take: 2,
     });
 
     if (restorePoints.length === 0) {
@@ -1065,7 +1068,7 @@ export class SyncService {
         );
       }
 
-      // Count restore points remaining
+      // Only need to know whether at least two restore points remain.
       const restorePoints = await prisma.operation.findMany({
         where: {
           userId,
@@ -1073,6 +1076,7 @@ export class SyncService {
         },
         orderBy: { serverSeq: 'asc' },
         select: { serverSeq: true },
+        take: 2,
       });
 
       // Minimum: 1 restore point + all ops after it
@@ -1108,7 +1112,7 @@ export class SyncService {
 
       Logger.info(
         `[user:${userId}] Auto-cleanup iteration: freed ${Math.round(result.freedBytes / 1024)}KB, ` +
-          `${restorePoints.length - 1} restore points remaining`,
+          `${restorePoints.length - 1} restore point(s) remaining in current cleanup window`,
       );
     }
 
