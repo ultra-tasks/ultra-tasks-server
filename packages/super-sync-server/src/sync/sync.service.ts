@@ -297,29 +297,6 @@ export class SyncService {
             );
           }
 
-          // Atomic counter write inside the same transaction as the data write.
-          // GREATEST(..., 0) guards against negative drift (the counter is
-          // advisory; reconcile self-heals if it ever drifts). Skip when clean
-          // slate already reset the counter to zero earlier in this transaction.
-          if (acceptedDeltaBytes > 0 && !isCleanSlate) {
-            const delta = BigInt(Math.floor(acceptedDeltaBytes));
-            await tx.$executeRaw`
-              UPDATE users
-              SET storage_used_bytes = GREATEST(storage_used_bytes + ${delta}::bigint, 0::bigint)
-              WHERE id = ${userId}
-            `;
-          } else if (acceptedDeltaBytes > 0 && isCleanSlate) {
-            // Clean slate reset the counter to 0 above; the only "real" usage
-            // after the wipe is the ops being uploaded right now. Set rather
-            // than increment so we don't double-count anything left in the row.
-            const delta = BigInt(Math.floor(acceptedDeltaBytes));
-            await tx.$executeRaw`
-              UPDATE users
-              SET storage_used_bytes = ${delta}::bigint
-              WHERE id = ${userId}
-            `;
-          }
-
           // Update device last seen
           await tx.syncDevice.upsert({
             where: {
@@ -341,6 +318,29 @@ export class SyncService {
               lastSeenAt: BigInt(now),
             },
           });
+
+          // W1: write the storage counter as the LAST statement before COMMIT
+          // so the row-level write lock on `users` is held for only the
+          // commit round-trip, not for the entire 60s transaction window.
+          // GREATEST(..., 0) guards against negative drift (the counter is
+          // advisory; reconcile self-heals if it ever drifts). Clean slate
+          // already reset the counter to zero above, so SET (rather than
+          // increment) avoids double-counting anything left in the row.
+          if (acceptedDeltaBytes > 0 && !isCleanSlate) {
+            const delta = BigInt(Math.floor(acceptedDeltaBytes));
+            await tx.$executeRaw`
+              UPDATE users
+              SET storage_used_bytes = GREATEST(storage_used_bytes + ${delta}::bigint, 0::bigint)
+              WHERE id = ${userId}
+            `;
+          } else if (acceptedDeltaBytes > 0 && isCleanSlate) {
+            const delta = BigInt(Math.floor(acceptedDeltaBytes));
+            await tx.$executeRaw`
+              UPDATE users
+              SET storage_used_bytes = ${delta}::bigint
+              WHERE id = ${userId}
+            `;
+          }
         },
         {
           // Large operations like SYNC_IMPORT/BACKUP_IMPORT can have payloads up to 20MB.
