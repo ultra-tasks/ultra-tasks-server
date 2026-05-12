@@ -5,7 +5,6 @@
  * when storage quota is exceeded.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import Fastify, { FastifyInstance } from 'fastify';
 import { uuidv7 } from 'uuidv7';
 
 // Store for test data
@@ -220,9 +219,7 @@ vi.mock('../src/db', () => {
         const delta = interpolated.find((v) => typeof v === 'bigint') as
           | bigint
           | undefined;
-        const uid = interpolated.find((v) => typeof v === 'number') as
-          | number
-          | undefined;
+        const uid = interpolated.find((v) => typeof v === 'number') as number | undefined;
         if (delta === undefined || uid === undefined) return 0;
         const user = testUsers.get(uid);
         if (!user) return 0;
@@ -386,12 +383,10 @@ describe('Storage Quota Cleanup', () => {
 
       await service.deleteOldestRestorePointAndOps(userId);
 
-      const offendingCalls = vi
-        .mocked(prisma.$queryRaw)
-        .mock.calls.filter((call) => {
-          const queryParts = call[0] as unknown as TemplateStringsArray;
-          return Array.from(queryParts).join('').includes('pg_column_size');
-        });
+      const offendingCalls = vi.mocked(prisma.$queryRaw).mock.calls.filter((call) => {
+        const queryParts = call[0] as unknown as TemplateStringsArray;
+        return Array.from(queryParts).join('').includes('pg_column_size');
+      });
       expect(offendingCalls).toHaveLength(0);
     });
 
@@ -629,6 +624,47 @@ describe('Storage Quota Cleanup', () => {
       expect(result.deletedRestorePoints).toBeGreaterThanOrEqual(1);
       expect(result.deletedOps).toBeGreaterThan(0);
       expect(result.freedBytes).toBeGreaterThan(0);
+    });
+
+    it('should keep cleaning if exact reconcile disproves approximate success', async () => {
+      const { initSyncService, getSyncService } =
+        await import('../src/sync/sync.service');
+      initSyncService();
+      const service = getSyncService();
+
+      const quota = 100 * 1024 * 1024;
+      testUsers.set(userId, {
+        id: userId,
+        email: 'test@test.com',
+        storageUsedBytes: BigInt(quota + 1000),
+        storageQuotaBytes: BigInt(quota),
+      });
+
+      createRestorePoint(clientId, userId); // seq 1 - first approximate delete
+      createOp(clientId, userId); // seq 2
+      createRestorePoint(clientId, userId); // seq 3 - second delete needed
+      createOp(clientId, userId); // seq 4
+      createRestorePoint(clientId, userId); // seq 5 - must keep
+
+      let reconcileCalls = 0;
+      service.updateStorageUsage = async () => {
+        reconcileCalls++;
+        const current = testUsers.get(userId);
+        testUsers.set(userId, {
+          ...current,
+          // First reconcile says the approximate 1KB decrement was too optimistic.
+          // Second reconcile says enough real storage has been freed.
+          storageUsedBytes:
+            reconcileCalls === 1 ? BigInt(quota + 500) : BigInt(quota - 500),
+        });
+      };
+
+      const result = await service.freeStorageForUpload(userId, 0);
+
+      expect(result.success).toBe(true);
+      expect(result.deletedRestorePoints).toBe(2);
+      expect(result.deletedOps).toBe(3);
+      expect(reconcileCalls).toBe(2);
     });
 
     it('should stop when only one restore point remains even if quota still exceeded', async () => {

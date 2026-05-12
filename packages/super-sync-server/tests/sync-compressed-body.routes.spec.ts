@@ -10,9 +10,15 @@ const mocks = vi.hoisted(() => {
     checkStorageQuota: vi.fn(),
     uploadOps: vi.fn(),
     cacheRequestResults: vi.fn(),
+    cacheSnapshot: vi.fn(),
+    prepareSnapshotCache: vi.fn(),
     updateStorageUsage: vi.fn(),
+    incrementStorageUsage: vi.fn(),
+    decrementStorageUsage: vi.fn(),
     getLatestSeq: vi.fn(),
     getOpsSinceWithSeq: vi.fn(),
+    getStorageInfo: vi.fn(),
+    getCachedSnapshotBytes: vi.fn(),
   };
 
   return {
@@ -70,12 +76,35 @@ describe('Sync compressed body routes', () => {
       quota: 100 * 1024 * 1024,
     });
     mocks.syncService.uploadOps.mockResolvedValue([{ accepted: true, serverSeq: 1 }]);
+    mocks.syncService.cacheSnapshot.mockResolvedValue({
+      cached: true,
+      bytesWritten: 0,
+      previousBytes: 0,
+      deltaBytes: 0,
+    });
+    mocks.syncService.prepareSnapshotCache.mockImplementation((state: unknown) => {
+      const serialized = JSON.stringify(state);
+      const data = zlib.gzipSync(serialized);
+      return {
+        data,
+        bytes: data.length,
+        stateBytes: Buffer.byteLength(serialized, 'utf8'),
+        cacheable: true,
+      };
+    });
     mocks.syncService.updateStorageUsage.mockResolvedValue(undefined);
+    mocks.syncService.incrementStorageUsage.mockResolvedValue(undefined);
+    mocks.syncService.decrementStorageUsage.mockResolvedValue(undefined);
     mocks.syncService.getLatestSeq.mockResolvedValue(1);
     mocks.syncService.getOpsSinceWithSeq.mockResolvedValue({
       ops: [],
       latestSeq: 1,
     });
+    mocks.syncService.getStorageInfo.mockResolvedValue({
+      storageUsedBytes: 0,
+      storageQuotaBytes: 100 * 1024 * 1024,
+    });
+    mocks.syncService.getCachedSnapshotBytes.mockResolvedValue(0);
 
     app = Fastify();
     await app.register(syncRoutes, { prefix: '/api/sync' });
@@ -146,5 +175,84 @@ describe('Sync compressed body routes', () => {
     expect(response.statusCode).toBe(400);
     expect(response.json().error).toBe('Failed to decompress gzip body');
     expect(mocks.syncService.uploadOps).not.toHaveBeenCalled();
+  });
+
+  it('should reject clean-slate snapshot when replacement exceeds quota', async () => {
+    const clientId = 'clean-slate-quota-client';
+    mocks.syncService.prepareSnapshotCache.mockReturnValueOnce({
+      data: Buffer.from('cached-snapshot'),
+      bytes: 80,
+      stateBytes: 30,
+      cacheable: true,
+    });
+    mocks.syncService.getStorageInfo.mockResolvedValueOnce({
+      storageUsedBytes: 1000,
+      storageQuotaBytes: 100,
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sync/snapshot',
+      headers: { authorization: `Bearer ${authToken}` },
+      payload: {
+        state: { TASK: { 'task-1': { id: 'task-1' } } },
+        clientId,
+        reason: 'initial',
+        vectorClock: {},
+        isCleanSlate: true,
+      },
+    });
+
+    expect(response.statusCode).toBe(413);
+    expect(response.json().errorCode).toBe('STORAGE_QUOTA_EXCEEDED');
+    expect(mocks.syncService.uploadOps).not.toHaveBeenCalled();
+  });
+
+  it('should count snapshot op bytes and cache replacement delta after upload', async () => {
+    const clientId = 'snapshot-delta-client';
+    const vectorClock = { [clientId]: 1 };
+    const preparedSnapshot = {
+      data: Buffer.from('cached-snapshot'),
+      bytes: 40,
+      stateBytes: 25,
+      cacheable: true,
+    };
+    mocks.syncService.prepareSnapshotCache.mockReturnValueOnce(preparedSnapshot);
+    mocks.syncService.getCachedSnapshotBytes.mockResolvedValueOnce(10);
+    mocks.syncService.uploadOps.mockResolvedValueOnce([{ accepted: true, serverSeq: 7 }]);
+    mocks.syncService.cacheSnapshot.mockResolvedValueOnce({
+      cached: true,
+      bytesWritten: 40,
+      previousBytes: 10,
+      deltaBytes: 30,
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sync/snapshot',
+      headers: { authorization: `Bearer ${authToken}` },
+      payload: {
+        state: { TASK: { 'task-1': { id: 'task-1' } } },
+        clientId,
+        reason: 'recovery',
+        vectorClock,
+      },
+    });
+
+    const vectorClockBytes = Buffer.byteLength(JSON.stringify(vectorClock), 'utf8');
+    const expectedDelta = preparedSnapshot.stateBytes + vectorClockBytes + 30;
+
+    expect(response.statusCode).toBe(200);
+    expect(mocks.syncService.checkStorageQuota).toHaveBeenCalledWith(1, expectedDelta);
+    expect(mocks.syncService.cacheSnapshot).toHaveBeenCalledWith(
+      1,
+      { TASK: { 'task-1': { id: 'task-1' } } },
+      7,
+      preparedSnapshot,
+    );
+    expect(mocks.syncService.incrementStorageUsage).toHaveBeenCalledWith(
+      1,
+      expectedDelta,
+    );
   });
 });

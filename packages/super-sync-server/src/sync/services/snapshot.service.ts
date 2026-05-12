@@ -64,6 +64,20 @@ export interface RestorePoint {
   description?: string;
 }
 
+export interface PreparedSnapshotCache {
+  data: Buffer;
+  bytes: number;
+  stateBytes: number;
+  cacheable: boolean;
+}
+
+export interface CacheSnapshotResult {
+  cached: boolean;
+  bytesWritten: number;
+  previousBytes: number;
+  deltaBytes: number;
+}
+
 export class SnapshotService {
   /**
    * FIX 1.7: In-memory lock to prevent concurrent snapshot generation for the same user.
@@ -119,28 +133,64 @@ export class SnapshotService {
   /**
    * Cache a snapshot for a user.
    */
-  async cacheSnapshot(userId: number, state: unknown, serverSeq: number): Promise<void> {
-    const now = Date.now();
-    // Compress snapshot
-    const compressed = zlib.gzipSync(JSON.stringify(state));
+  prepareSnapshotCache(state: unknown): PreparedSnapshotCache {
+    const serialized = JSON.stringify(state);
+    const data = zlib.gzipSync(serialized);
+    return {
+      data,
+      bytes: data.length,
+      stateBytes: Buffer.byteLength(serialized, 'utf8'),
+      cacheable: data.length <= MAX_SNAPSHOT_SIZE_BYTES,
+    };
+  }
 
-    if (compressed.length > MAX_SNAPSHOT_SIZE_BYTES) {
+  async getCachedSnapshotBytes(userId: number): Promise<number> {
+    const result = await prisma.$queryRaw<[{ bytes: number | bigint | null }]>`
+      SELECT COALESCE(octet_length(snapshot_data), 0) as bytes
+      FROM user_sync_state WHERE user_id = ${userId}
+    `;
+    return Number(result[0]?.bytes ?? 0);
+  }
+
+  async cacheSnapshot(
+    userId: number,
+    state: unknown,
+    serverSeq: number,
+    preparedSnapshot?: PreparedSnapshotCache,
+  ): Promise<CacheSnapshotResult> {
+    const now = Date.now();
+    const prepared = preparedSnapshot ?? this.prepareSnapshotCache(state);
+
+    if (!prepared.cacheable) {
       Logger.error(
-        `[user:${userId}] Snapshot too large: ${compressed.length} bytes ` +
+        `[user:${userId}] Snapshot too large: ${prepared.bytes} bytes ` +
           `(max ${MAX_SNAPSHOT_SIZE_BYTES}). Skipping cache.`,
       );
-      return;
+      return {
+        cached: false,
+        bytesWritten: 0,
+        previousBytes: 0,
+        deltaBytes: 0,
+      };
     }
 
+    const previousBytes = await this.getCachedSnapshotBytes(userId);
     await prisma.userSyncState.update({
       where: { userId },
       data: {
-        snapshotData: compressed,
+        snapshotData: prepared.data,
         lastSnapshotSeq: serverSeq,
         snapshotAt: BigInt(now),
         snapshotSchemaVersion: CURRENT_SCHEMA_VERSION,
       },
     });
+
+    return {
+      cached: true,
+      bytesWritten: prepared.bytes,
+      previousBytes,
+      deltaBytes: prepared.bytes - previousBytes,
+    };
   }
 
   /**

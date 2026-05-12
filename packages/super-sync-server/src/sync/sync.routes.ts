@@ -26,13 +26,15 @@ import {
   type CompressedJsonBodyParseResult,
 } from './compressed-body-parser';
 
+type ZodIssue = z.ZodError['issues'][number];
+
 /**
  * Helper to create validation error response.
  * In production, hides detailed Zod error info to prevent schema leakage.
  */
 const createValidationErrorResponse = (
-  zodIssues: z.ZodIssue[],
-): { error: string; details?: z.ZodIssue[] } => {
+  zodIssues: ZodIssue[],
+): { error: string; details?: ZodIssue[] } => {
   if (process.env.NODE_ENV === 'production') {
     return { error: 'Validation failed' };
   }
@@ -85,6 +87,34 @@ const computeOpsStorageBytes = (
   return total;
 };
 
+const computeJsonStorageBytes = (value: unknown, fallback: unknown): number => {
+  try {
+    return Buffer.byteLength(JSON.stringify(value ?? fallback), 'utf8');
+  } catch {
+    return 0;
+  }
+};
+
+const applyStorageUsageDelta = async (
+  userId: number,
+  deltaBytes: number,
+  context: string,
+): Promise<void> => {
+  if (!Number.isFinite(deltaBytes) || deltaBytes === 0) return;
+  const syncService = getSyncService();
+  try {
+    if (deltaBytes > 0) {
+      await syncService.incrementStorageUsage(userId, deltaBytes);
+    } else {
+      await syncService.decrementStorageUsage(userId, Math.abs(deltaBytes));
+    }
+  } catch (err) {
+    Logger.warn(
+      `[user:${userId}] Failed to update storage usage cache ${context}: ${errorMessage(err)}`,
+    );
+  }
+};
+
 type CompressedJsonBodyParseFailure = Extract<
   CompressedJsonBodyParseResult,
   { ok: false }
@@ -125,11 +155,11 @@ const sendCompressedBodyParseFailure = (
  */
 async function enforceStorageQuota(
   userId: number,
-  payloadSize: number,
+  storageDeltaBytes: number,
   reply: FastifyReply,
 ): Promise<boolean> {
   const syncService = getSyncService();
-  let quotaCheck = await syncService.checkStorageQuota(userId, payloadSize);
+  let quotaCheck = await syncService.checkStorageQuota(userId, storageDeltaBytes);
   if (quotaCheck.allowed) return true;
 
   // Cache miss path only — reconcile once before resorting to destructive
@@ -142,7 +172,7 @@ async function enforceStorageQuota(
   );
   try {
     await syncService.updateStorageUsage(userId);
-    quotaCheck = await syncService.checkStorageQuota(userId, payloadSize);
+    quotaCheck = await syncService.checkStorageQuota(userId, storageDeltaBytes);
     if (quotaCheck.allowed) {
       Logger.info(
         `[user:${userId}] Quota OK after reconcile: ${quotaCheck.currentUsage}/${quotaCheck.quota}`,
@@ -160,7 +190,7 @@ async function enforceStorageQuota(
   );
 
   // Iteratively delete old data until we have enough space
-  const cleanupResult = await syncService.freeStorageForUpload(userId, payloadSize);
+  const cleanupResult = await syncService.freeStorageForUpload(userId, storageDeltaBytes);
 
   if (cleanupResult.success) {
     Logger.info(
@@ -171,7 +201,7 @@ async function enforceStorageQuota(
   }
 
   // Truly out of space - return error
-  const finalQuota = await syncService.checkStorageQuota(userId, payloadSize);
+  const finalQuota = await syncService.checkStorageQuota(userId, storageDeltaBytes);
   Logger.warn(
     `[user:${userId}] Storage quota still exceeded after cleanup: ${finalQuota.currentUsage}/${finalQuota.quota} bytes`,
   );
@@ -186,6 +216,29 @@ async function enforceStorageQuota(
       deletedRestorePoints: cleanupResult.deletedRestorePoints,
       deletedOps: cleanupResult.deletedOps,
     },
+  });
+  return false;
+}
+
+async function enforceCleanSlateStorageQuota(
+  userId: number,
+  finalStorageBytes: number,
+  reply: FastifyReply,
+): Promise<boolean> {
+  const syncService = getSyncService();
+  const storageInfo = await syncService.getStorageInfo(userId);
+  if (finalStorageBytes <= storageInfo.storageQuotaBytes) return true;
+
+  Logger.warn(
+    `[user:${userId}] Clean-slate snapshot exceeds quota: ` +
+      `${finalStorageBytes}/${storageInfo.storageQuotaBytes} bytes`,
+  );
+  reply.status(413).send({
+    error: 'Storage quota exceeded',
+    errorCode: SYNC_ERROR_CODES.STORAGE_QUOTA_EXCEEDED,
+    storageUsedBytes: 0,
+    storageQuotaBytes: storageInfo.storageQuotaBytes,
+    autoCleanupAttempted: false,
   });
   return false;
 }
@@ -659,16 +712,57 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         } = parseResult.data;
         const syncService = getSyncService();
 
-        // Check storage quota before processing.
-        // Skip the quota gate for isCleanSlate uploads — uploadOps will wipe all
-        // existing data and reset storageUsedBytes to 0 inside its tx, so any
-        // current cache value is about to become meaningless. Gating on it can
-        // trigger destructive freeStorageForUpload cleanup for storage the
-        // clean-slate would have freed anyway. Use Buffer.byteLength for
-        // accurate UTF-8 byte size (not UTF-16 code units).
-        const payloadSize = Buffer.byteLength(JSON.stringify(body), 'utf8');
-        if (!isCleanSlate) {
-          const quotaOk = await enforceStorageQuota(userId, payloadSize, reply);
+        // Create a SYNC_IMPORT operation
+        // Use the correct NgRx action type so the operation can be replayed on other clients
+        // FIX: Use client's opId if provided to prevent ID mismatch bugs
+        // When client doesn't send opId (legacy clients), fall back to server-generated UUID
+        const op = {
+          id: opId ?? uuidv7(),
+          clientId,
+          actionType: '[SP_ALL] Load(import) all data',
+          opType: (snapshotOpType ?? 'SYNC_IMPORT') as
+            | 'SYNC_IMPORT'
+            | 'BACKUP_IMPORT'
+            | 'REPAIR',
+          entityType: 'ALL',
+          payload: state,
+          vectorClock,
+          timestamp: Date.now(),
+          schemaVersion: schemaVersion ?? 1,
+          isPayloadEncrypted: isPayloadEncrypted ?? false,
+          syncImportReason,
+        };
+
+        const preparedSnapshot = syncService.prepareSnapshotCache(state);
+        const estimatedOpStorageBytes =
+          preparedSnapshot.stateBytes + computeJsonStorageBytes(op.vectorClock, {});
+        const previousSnapshotBytes =
+          !isCleanSlate && preparedSnapshot.cacheable
+            ? await syncService.getCachedSnapshotBytes(userId)
+            : 0;
+        const estimatedSnapshotCacheDelta = preparedSnapshot.cacheable
+          ? preparedSnapshot.bytes - previousSnapshotBytes
+          : 0;
+
+        // Check storage quota before processing. For clean-slate uploads, use a
+        // zero-current-usage baseline because uploadOps will wipe existing data
+        // and reset storageUsedBytes inside its transaction. For regular
+        // snapshots, include the operation payload plus the cached snapshot
+        // replacement delta; checking only the request body can under-count by
+        // nearly 2x because the server stores both the op and snapshot cache.
+        if (isCleanSlate) {
+          const finalStorageBytes =
+            estimatedOpStorageBytes +
+            (preparedSnapshot.cacheable ? preparedSnapshot.bytes : 0);
+          const quotaOk = await enforceCleanSlateStorageQuota(
+            userId,
+            finalStorageBytes,
+            reply,
+          );
+          if (!quotaOk) return;
+        } else {
+          const additionalBytes = estimatedOpStorageBytes + estimatedSnapshotCacheDelta;
+          const quotaOk = await enforceStorageQuota(userId, additionalBytes, reply);
           if (!quotaOk) return;
         }
 
@@ -705,50 +799,24 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
           }
         }
 
-        // Create a SYNC_IMPORT operation
-        // Use the correct NgRx action type so the operation can be replayed on other clients
-        // FIX: Use client's opId if provided to prevent ID mismatch bugs
-        // When client doesn't send opId (legacy clients), fall back to server-generated UUID
-        const op = {
-          id: opId ?? uuidv7(),
-          clientId,
-          actionType: '[SP_ALL] Load(import) all data',
-          opType: (snapshotOpType ?? 'SYNC_IMPORT') as
-            | 'SYNC_IMPORT'
-            | 'BACKUP_IMPORT'
-            | 'REPAIR',
-          entityType: 'ALL',
-          payload: state,
-          vectorClock,
-          timestamp: Date.now(),
-          schemaVersion: schemaVersion ?? 1,
-          isPayloadEncrypted: isPayloadEncrypted ?? false,
-          syncImportReason,
-        };
-
         const results = await syncService.uploadOps(userId, clientId, [op], isCleanSlate);
         const result = results[0];
 
         if (result.accepted && result.serverSeq !== undefined) {
           // Cache the snapshot
-          await syncService.cacheSnapshot(userId, state, result.serverSeq);
-          // Increment counter by the request body size. We deliberately reuse
-          // `payloadSize` rather than re-stringify the ~50MB state object —
-          // memory pressure on a 512MB container would be severe. Slight
-          // over-count vs strict payload+vectorClock (includes a few hundred
-          // bytes of JSON envelope), acceptable for advisory quota. For
-          // isCleanSlate uploads, uploadOps already reset the counter to 0,
-          // so this becomes the new baseline. Wrapped in try/catch — snapshot
-          // is persisted, must not 500.
-          if (payloadSize > 0) {
-            try {
-              await syncService.incrementStorageUsage(userId, payloadSize);
-            } catch (err) {
-              Logger.warn(
-                `[user:${userId}] Failed to increment storage usage cache after snapshot: ${errorMessage(err)}`,
-              );
-            }
-          }
+          const cacheResult = await syncService.cacheSnapshot(
+            userId,
+            state,
+            result.serverSeq,
+            preparedSnapshot,
+          );
+          const storedOpBytes =
+            preparedSnapshot.stateBytes + computeJsonStorageBytes(op.vectorClock, {});
+          await applyStorageUsageDelta(
+            userId,
+            storedOpBytes + cacheResult.deltaBytes,
+            'after snapshot',
+          );
         }
 
         Logger.info(`Snapshot uploaded for user ${userId}, reason: ${reason}`);

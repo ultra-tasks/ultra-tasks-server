@@ -13,6 +13,7 @@ vi.mock('../src/db', () => ({
       findMany: vi.fn(),
       count: vi.fn(),
     },
+    $queryRaw: vi.fn(),
     $transaction: vi.fn(),
   },
 }));
@@ -24,6 +25,7 @@ describe('SnapshotService', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(prisma.$queryRaw).mockResolvedValue([{ bytes: 0 }] as any);
     service = new SnapshotService();
   });
 
@@ -98,7 +100,7 @@ describe('SnapshotService', () => {
       const state = { TASK: { 'task-1': { id: 'task-1' } } };
       vi.mocked(prisma.userSyncState.update).mockResolvedValue({} as any);
 
-      await service.cacheSnapshot(1, state, 10);
+      const result = await service.cacheSnapshot(1, state, 10);
 
       expect(prisma.userSyncState.update).toHaveBeenCalledWith({
         where: { userId: 1 },
@@ -108,6 +110,48 @@ describe('SnapshotService', () => {
           snapshotAt: BigInt(now),
           snapshotSchemaVersion: expect.any(Number),
         },
+      });
+      expect(result.cached).toBe(true);
+      expect(result.previousBytes).toBe(0);
+      expect(result.bytesWritten).toBeGreaterThan(0);
+      expect(result.deltaBytes).toBe(result.bytesWritten);
+    });
+
+    it('should report replacement byte delta when caching snapshot', async () => {
+      vi.useFakeTimers();
+      const now = 1700000000000;
+      vi.setSystemTime(now);
+
+      const preparedSnapshot = {
+        data: Buffer.from('prepared-cache'),
+        bytes: 14,
+        stateBytes: 42,
+        cacheable: true,
+      };
+      vi.mocked(prisma.$queryRaw).mockResolvedValue([{ bytes: BigInt(5) }] as any);
+      vi.mocked(prisma.userSyncState.update).mockResolvedValue({} as any);
+
+      const result = await service.cacheSnapshot(
+        1,
+        { ignored: true },
+        10,
+        preparedSnapshot,
+      );
+
+      expect(prisma.userSyncState.update).toHaveBeenCalledWith({
+        where: { userId: 1 },
+        data: {
+          snapshotData: preparedSnapshot.data,
+          lastSnapshotSeq: 10,
+          snapshotAt: BigInt(now),
+          snapshotSchemaVersion: expect.any(Number),
+        },
+      });
+      expect(result).toEqual({
+        cached: true,
+        bytesWritten: 14,
+        previousBytes: 5,
+        deltaBytes: 9,
       });
     });
 

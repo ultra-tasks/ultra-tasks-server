@@ -9,22 +9,21 @@ import {
   limitVectorClockSize,
   VectorClock,
   SYNC_ERROR_CODES,
-  ConflictType,
   ConflictResult,
 } from './sync.types';
 import { APPROX_BYTES_PER_OP } from './sync.const';
 import { Logger } from '../logger';
-import { CURRENT_SCHEMA_VERSION } from '@sp/shared-schema';
 import { Prisma } from '@prisma/client';
 import {
   ValidationService,
-  ALLOWED_ENTITY_TYPES,
   RateLimitService,
   RequestDeduplicationService,
   DeviceService,
   OperationDownloadService,
   StorageQuotaService,
   SnapshotService,
+  type PreparedSnapshotCache,
+  type CacheSnapshotResult,
 } from './services';
 
 /**
@@ -706,8 +705,21 @@ export class SyncService {
     return this.snapshotService.getCachedSnapshot(userId);
   }
 
-  async cacheSnapshot(userId: number, state: unknown, serverSeq: number): Promise<void> {
-    return this.snapshotService.cacheSnapshot(userId, state, serverSeq);
+  prepareSnapshotCache(state: unknown): PreparedSnapshotCache {
+    return this.snapshotService.prepareSnapshotCache(state);
+  }
+
+  async getCachedSnapshotBytes(userId: number): Promise<number> {
+    return this.snapshotService.getCachedSnapshotBytes(userId);
+  }
+
+  async cacheSnapshot(
+    userId: number,
+    state: unknown,
+    serverSeq: number,
+    preparedSnapshot?: PreparedSnapshotCache,
+  ): Promise<CacheSnapshotResult> {
+    return this.snapshotService.cacheSnapshot(userId, state, serverSeq, preparedSnapshot);
   }
 
   async generateSnapshot(userId: number): Promise<{
@@ -824,7 +836,6 @@ export class SyncService {
 
     let totalDeleted = 0;
     const affectedUserIds: number[] = [];
-
 
     for (const state of states) {
       const snapshotAt = Number(state.snapshotAt);
@@ -1003,16 +1014,25 @@ export class SyncService {
     while (iterations < MAX_CLEANUP_ITERATIONS) {
       iterations++;
 
-      // Check if we now have enough space
+      // Check if we now have enough space. The cached counter may have been
+      // moved by approximate count*const deletes, so verify once with the exact
+      // reconciled counter before declaring success.
       const quotaCheck = await this.checkStorageQuota(userId, requiredBytes);
       if (quotaCheck.allowed) {
         await reconcileCounter();
-        return {
-          success: true,
-          freedBytes: totalFreedBytes,
-          deletedRestorePoints,
-          deletedOps: totalDeletedOps,
-        };
+        const reconciledQuotaCheck = await this.checkStorageQuota(userId, requiredBytes);
+        if (reconciledQuotaCheck.allowed) {
+          return {
+            success: true,
+            freedBytes: totalFreedBytes,
+            deletedRestorePoints,
+            deletedOps: totalDeletedOps,
+          };
+        }
+        Logger.warn(
+          `[user:${userId}] Storage still exceeded after exact reconcile: ` +
+            `${reconciledQuotaCheck.currentUsage}/${reconciledQuotaCheck.quota} bytes`,
+        );
       }
 
       // Count restore points remaining
