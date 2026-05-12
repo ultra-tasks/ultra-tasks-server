@@ -37,14 +37,46 @@ The easiest way to run the server is using the provided Docker Compose configura
 
 ```bash
 # 1. Copy environment example
-cp .env.example .env
+cp env.example .env
 
 # 2. Configure .env (Set JWT_SECRET, DOMAIN, POSTGRES_PASSWORD)
 nano .env
 
-# 3. Start the stack (Server + Postgres + Caddy)
-docker-compose up -d
+# 3. Deploy the stack and run database migrations
+./scripts/deploy.sh
 ```
+
+`docker compose up` is not a deployment substitute: container startup migrations
+are disabled by default so app restarts cannot race the deploy migrator.
+
+> **Upgrade note:** after this change, `docker compose pull && docker compose up -d`
+> can leave the app running against unapplied migrations. Use `./scripts/deploy.sh`
+> for production updates, or `./scripts/deploy.sh --build` for local image builds.
+
+Large optional indexes are built outside Prisma migrations. Run the deploy
+off-hours with `RUN_POST_MIGRATION_INDEXES=true` to build them.
+
+Older databases that saw the original `20260511000000_add_entity_sequence_index`
+migration may warn that the applied migration file changed. Prisma's production
+`migrate deploy` command reports modified applied migrations as warnings and then
+continues to apply pending migrations. Do not reset a production database for
+this warning; this migration now intentionally contains no SQL, and the physical
+index is managed by `deploy.sh`.
+
+If `POSTGRES_SERVICE=` is set because `DATABASE_URL` points to an external
+PostgreSQL server, `deploy.sh` starts only the app/proxy services with compose
+dependencies disabled so the bundled Postgres container is not required. In that
+mode the deploy script also cannot run optional index builds through Docker
+Compose. Run the same index build manually, off-hours, against that database:
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "operations_user_id_entity_type_entity_id_server_seq_idx"
+  ON "operations"("user_id", "entity_type", "entity_id", "server_seq");
+```
+
+Because that optional index is intentionally managed outside Prisma, do not run
+Prisma schema reset/push commands against a production-shaped database to "fix"
+the difference. Those commands can drop the out-of-band index.
 
 ### Manual Setup (Development)
 
@@ -56,7 +88,7 @@ npm install
 npx prisma generate
 
 # Set up .env
-cp .env.example .env
+cp env.example .env
 # Edit .env to point to your PostgreSQL instance (DATABASE_URL)
 
 # Push schema to DB
