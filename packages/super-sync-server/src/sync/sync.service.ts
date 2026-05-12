@@ -1000,15 +1000,40 @@ export class SyncService {
     // Reconcile the approximate counter once at the end via a single
     // calculateStorageUsage scan. Slow but bounded to a single user per
     // quota-cleanup event (not per upload like the previous regression).
-    const reconcileCounter = async (): Promise<void> => {
+    //
+    // If reconcile fails we must NOT leave the counter at its post-decrement
+    // (artificially low) value — that would let the user bypass quota until
+    // the next successful reconcile. Roll the optimistic decrement back so the
+    // counter returns to its pre-cleanup state (which was correctly tracked by
+    // incremental upload deltas).
+    const reconcileCounter = async (): Promise<boolean> => {
       try {
         await this.updateStorageUsage(userId);
+        return true;
       } catch (err) {
         Logger.warn(
           `[user:${userId}] Failed to reconcile storage usage after cleanup: ${
             (err as Error).message
           }`,
         );
+        return false;
+      }
+    };
+    const reconcileOrRollback = async (): Promise<void> => {
+      const ok = await reconcileCounter();
+      if (!ok && totalFreedBytes > 0) {
+        try {
+          await this.storageQuotaService.incrementStorageUsage(userId, totalFreedBytes);
+          Logger.warn(
+            `[user:${userId}] Rolled back ${totalFreedBytes} bytes of optimistic cleanup decrement after reconcile failure`,
+          );
+        } catch (err) {
+          Logger.error(
+            `[user:${userId}] Failed to roll back cleanup decrement: ${
+              (err as Error).message
+            }`,
+          );
+        }
       }
     };
 
@@ -1021,7 +1046,10 @@ export class SyncService {
       // reconciled counter before declaring success.
       const quotaCheck = await this.checkStorageQuota(userId, requiredBytes);
       if (quotaCheck.allowed) {
-        await reconcileCounter();
+        // On the success-path we want fresh truth, but if reconcile fails we
+        // also want the rollback (otherwise we'd be making the success
+        // decision against an artificially-low counter).
+        await reconcileOrRollback();
         const reconciledQuotaCheck = await this.checkStorageQuota(userId, requiredBytes);
         if (reconciledQuotaCheck.allowed) {
           return {
@@ -1053,7 +1081,7 @@ export class SyncService {
         Logger.warn(
           `[user:${userId}] Cannot free more storage: only ${restorePoints.length} restore point(s) remaining`,
         );
-        await reconcileCounter();
+        await reconcileOrRollback();
         return {
           success: false,
           freedBytes: totalFreedBytes,
@@ -1065,7 +1093,7 @@ export class SyncService {
       // Delete oldest restore point + all ops before it
       const result = await this.deleteOldestRestorePointAndOps(userId);
       if (!result.success) {
-        await reconcileCounter();
+        await reconcileOrRollback();
         return {
           success: false,
           freedBytes: totalFreedBytes,
@@ -1088,7 +1116,7 @@ export class SyncService {
     Logger.warn(
       `[user:${userId}] Storage cleanup exceeded max iterations (${MAX_CLEANUP_ITERATIONS})`,
     );
-    await reconcileCounter();
+    await reconcileOrRollback();
     return {
       success: false,
       freedBytes: totalFreedBytes,

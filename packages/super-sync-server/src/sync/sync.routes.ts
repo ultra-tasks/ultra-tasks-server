@@ -26,6 +26,7 @@ import {
   parseCompressedJsonBody,
   type CompressedJsonBodyParseResult,
 } from './compressed-body-parser';
+import { APPROX_BYTES_PER_OP } from './sync.const';
 
 type ZodIssue = z.ZodError['issues'][number];
 
@@ -64,8 +65,8 @@ const errorMessage = (err: unknown): string =>
  * counter accurate via incremental deltas.
  *
  * Robust against malformed payloads: if JSON.stringify throws (e.g. BigInt,
- * circular ref), the op's contribution is skipped rather than crashing the
- * upload response after ops were persisted.
+ * circular ref), the op is charged APPROX_BYTES_PER_OP so the counter cannot
+ * be bypassed by submitting unserializable ops that still persist as JSONB.
  */
 const computeOpsStorageBytes = (
   ops: Array<{ id?: string; payload: unknown; vectorClock: unknown }>,
@@ -77,13 +78,17 @@ const computeOpsStorageBytes = (
       total += Buffer.byteLength(JSON.stringify(op.payload ?? null), 'utf8');
       total += Buffer.byteLength(JSON.stringify(op.vectorClock ?? {}), 'utf8');
     } catch {
-      // Skip unserializable op — counter under-counts slightly. Quota is
-      // advisory; offline reconciliation corrects drift.
+      // Charge conservative fallback so unserializable ops still count toward
+      // quota. Persisting via Prisma JSONB does not require JSON.stringify on
+      // the Node side, so a throw here does not mean the op was dropped.
+      total += APPROX_BYTES_PER_OP;
       skipped++;
     }
   }
   if (skipped > 0) {
-    Logger.warn(`computeOpsStorageBytes: skipped ${skipped} unserializable op(s)`);
+    Logger.warn(
+      `computeOpsStorageBytes: ${skipped} unserializable op(s) charged at APPROX_BYTES_PER_OP`,
+    );
   }
   return total;
 };
@@ -416,10 +421,12 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
           userId,
           async () => {
             // Check storage quota before processing (after dedup to allow retries).
-            // Use Buffer.byteLength so multi-byte UTF-8 content is measured in bytes,
-            // not UTF-16 code units (under-counts non-ASCII by up to 3x).
-            const payloadSize = Buffer.byteLength(JSON.stringify(body), 'utf8');
-            const quotaOk = await enforceStorageQuota(userId, payloadSize, reply);
+            // Account using the same per-op payload+vectorClock measure that the
+            // post-accept counter increment uses, so the gate and the increment
+            // cannot disagree on what "size" means.
+            const typedOpsForGate = ops as unknown as Operation[];
+            const estimatedDelta = computeOpsStorageBytes(typedOpsForGate);
+            const quotaOk = await enforceStorageQuota(userId, estimatedDelta, reply);
             if (!quotaOk) return null;
 
             // Process operations - cast to Operation[] since Zod validates the structure
@@ -716,6 +723,24 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
           syncImportReason,
         } = parseResult.data;
         const syncService = getSyncService();
+
+        // Cheap pre-quota gate BEFORE prepareSnapshotCache so quota-exhausted
+        // clients can't burn CPU on JSON.stringify + zlib.gzipSync. Uses only
+        // the cached counter — exact check (which may include a slow reconcile)
+        // still runs inside the locked window below. Skip for clean-slate which
+        // wipes existing usage.
+        if (!isCleanSlate) {
+          const cachedInfo = await syncService.getStorageInfo(userId);
+          if (cachedInfo.storageUsedBytes >= cachedInfo.storageQuotaBytes) {
+            return reply.status(413).send({
+              error: 'Storage quota exceeded',
+              code: 'STORAGE_QUOTA_EXCEEDED',
+              storageUsedBytes: cachedInfo.storageUsedBytes,
+              storageQuotaBytes: cachedInfo.storageQuotaBytes,
+              autoCleanupAttempted: false,
+            });
+          }
+        }
 
         // Create a SYNC_IMPORT operation
         // Use the correct NgRx action type so the operation can be replayed on other clients
