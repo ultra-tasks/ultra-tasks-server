@@ -1586,13 +1586,24 @@ describe('SnapshotService', () => {
     it('SYNC_IMPORT must not allow prototype pollution via __proto__ in the uploaded payload', () => {
       // Regression: a malicious client could upload a SYNC_IMPORT payload
       // whose `appDataComplete` contains a `__proto__` key. The previous
-      // implementation used Object.assign(state, fullState) which triggers
-      // the prototype setter (Object.assign uses [[Set]] semantics) and
-      // pollutes Object.prototype for every plain object in the process —
-      // a server-wide compromise from a single malicious upload.
+      // implementation used `Object.assign(state, fullState)`. Because
+      // `Object.assign` uses `[[Set]]` semantics on the target, an own
+      // `__proto__` data property in `fullState` triggers the prototype
+      // setter on `state`, swapping `state`'s prototype chain to the
+      // attacker-controlled object. `state` then exposes attacker keys
+      // (e.g. `polluted: true`) via the prototype chain — a poisoned
+      // snapshot served to every client.
+      //
+      // Note: `Object.assign({}, {__proto__: …})` does NOT pollute the
+      // *global* `Object.prototype` — only the target's own prototype
+      // reference. So asserting `Object.prototype.polluted === undefined`
+      // is tautological (it would pass even with the buggy code).
+      // The real invariant is that `state`'s prototype reference is
+      // still `Object.prototype` and that `state.polluted` is undefined
+      // via the chain.
       //
       // Construct a malicious payload via JSON.parse so __proto__ is an
-      // own property (V8 / spec behaviour since 2018).
+      // own data property (V8 / spec behaviour since 2018).
       const maliciousPayload = JSON.parse(
         JSON.stringify({
           appDataComplete: {
@@ -1618,15 +1629,41 @@ describe('SnapshotService', () => {
       ];
 
       try {
-        service.replayOpsToState(ops as any);
-        // The benign keys must be copied.
-        // (Object.prototype itself must not gain a `polluted` property.)
-        // Cast through unknown because TS narrows {} to never for arbitrary
-        // index access.
-        expect(({} as { polluted?: unknown }).polluted).toBeUndefined();
+        const result = service.replayOpsToState(ops as any) as Record<string, unknown> & {
+          polluted?: unknown;
+        };
+
+        // Benign keys must still be copied — the fix must not regress
+        // functionality.
+        expect(result.TASK).toEqual({ 'new-task': { id: 'new-task' } });
+
+        // Primary invariant: the replayed state's prototype is still
+        // Object.prototype (not the attacker-controlled object). This is
+        // what flips under the buggy `Object.assign` implementation —
+        // `Object.getPrototypeOf(state) === Object.prototype` becomes
+        // `false`.
+        expect(Object.getPrototypeOf(result)).toBe(Object.prototype);
+
+        // Consequence of the prototype swap: `state.polluted` would be
+        // truthy via the chain. The fixed code keeps the chain clean.
+        expect(result.polluted).toBeUndefined();
+        // Also assert via hasOwnProperty for clarity — the key must not
+        // appear as an own property either.
+        expect(Object.prototype.hasOwnProperty.call(result, 'polluted')).toBe(false);
+        // Also assert via hasOwnProperty for `__proto__` — defensive: even
+        // if some future implementation defines it as an own data
+        // property via `Object.defineProperty`, the SYNC_IMPORT loop must
+        // skip it.
+        expect(Object.prototype.hasOwnProperty.call(result, '__proto__')).toBe(false);
+
+        // Defense in depth: confirm the global Object.prototype was not
+        // affected either (it cannot be, given the above semantics, but
+        // a future implementation could regress this).
         expect((Object.prototype as { polluted?: unknown }).polluted).toBeUndefined();
+        expect(({} as { polluted?: unknown }).polluted).toBeUndefined();
       } finally {
-        // Defensive cleanup in case the assertion fires after pollution.
+        // Defensive cleanup in case a future regression accidentally
+        // pollutes the global prototype — keep subsequent tests clean.
         delete (Object.prototype as { polluted?: unknown }).polluted;
       }
     });
