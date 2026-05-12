@@ -207,12 +207,14 @@ WITH target_indexes AS (
     i.indisunique,
     i.indpred IS NULL AS has_no_predicate,
     i.indexprs IS NULL AS has_no_expressions,
+    i.indnkeyatts AS key_column_count,
     ARRAY(
       SELECT a.attname
       FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord)
       JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+      WHERE k.ord <= i.indnkeyatts
       ORDER BY k.ord
-    ) AS columns
+    ) AS key_columns
   FROM pg_class idx
   JOIN pg_namespace idx_ns ON idx_ns.oid = idx.relnamespace
   JOIN pg_index i ON i.indexrelid = idx.oid
@@ -234,7 +236,8 @@ SELECT CASE
       AND NOT indisunique
       AND has_no_predicate
       AND has_no_expressions
-      AND columns = ARRAY['user_id', 'entity_type', 'entity_id', 'server_seq']::name[]
+      AND key_column_count = 4
+      AND key_columns = ARRAY['user_id', 'entity_type', 'entity_id', 'server_seq']::name[]
   ) THEN 'valid'
   ELSE 'wrong'
 END;

@@ -72,9 +72,12 @@ failed-migration recovery, and optional index builds through the configured
 
 If you need to recover an external database manually, drop any invalid partial
 index, roll back the failed Prisma migration row, and then rebuild the optional
-index off-hours:
+index off-hours. Run the SQL with the same schema/search path used by
+`DATABASE_URL`:
 
 ```sql
+-- Replace public if DATABASE_URL uses a different Prisma schema/search path.
+SET search_path TO public;
 DROP INDEX CONCURRENTLY IF EXISTS "operations_user_id_entity_type_entity_id_server_seq_idx";
 ```
 
@@ -84,6 +87,8 @@ npx prisma migrate deploy
 ```
 
 ```sql
+-- Replace public if DATABASE_URL uses a different Prisma schema/search path.
+SET search_path TO public;
 CREATE INDEX CONCURRENTLY IF NOT EXISTS "operations_user_id_entity_type_entity_id_server_seq_idx"
   ON "operations"("user_id", "entity_type", "entity_id", "server_seq");
 ```

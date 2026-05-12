@@ -101,8 +101,11 @@ describe('performance migrations', () => {
     expect(deployScript).toContain('get_current_db_schema');
     expect(deployScript).toContain('entity_sequence_index_state_sql');
     expect(deployScript).toContain('idx_ns.nspname = current_schema()');
+    expect(deployScript).toContain('i.indnkeyatts AS key_column_count');
+    expect(deployScript).toContain('WHERE k.ord <= i.indnkeyatts');
+    expect(deployScript).toContain('key_column_count = 4');
     expect(deployScript).toContain(
-      "columns = ARRAY['user_id', 'entity_type', 'entity_id', 'server_seq']::name[]",
+      "key_columns = ARRAY['user_id', 'entity_type', 'entity_id', 'server_seq']::name[]",
     );
     expect(deployScript).toContain('require_valid_entity_sequence_index_definition');
     expect(deployScript).toContain('unexpected definition');
@@ -145,6 +148,8 @@ describe('performance migrations', () => {
     expect(readmeFile).toContain('Upgrade note');
     expect(readmeFile).toMatch(/set\s+`POSTGRES_SERVICE=` to the empty value/);
     expect(readmeFile).toContain('migrate resolve --rolled-back');
+    expect(readmeFile).toContain('same schema/search path used by');
+    expect(readmeFile).toContain('SET search_path TO public');
     expect(readmeFile).toContain('DROP INDEX CONCURRENTLY IF EXISTS');
     expect(readmeFile).toContain('CREATE INDEX CONCURRENTLY IF NOT EXISTS');
     expect(readmeFile).toContain('out-of-band index');
