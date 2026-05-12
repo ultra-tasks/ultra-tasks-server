@@ -5,11 +5,44 @@ export {
 
 /**
  * Approximate bytes-per-op used when decrementing `users.storage_used_bytes`
- * during cleanup-deletes. The exact figure would require detoasting every
- * deleted payload via `pg_column_size`, which was the source of the production
- * disk-I/O DoS. Picked as a conservative over-estimate vs the observed median
- * task-op (~150-300 bytes) so the cleanup loop reliably makes progress; drift
- * is reconciled once at the end of `freeStorageForUpload` via a single
+ * during DELTA-op cleanup-deletes. ONLY valid for ordinary CRT/UPD/DEL ops
+ * whose payloads observably cluster around 150-300 bytes — picking 1024 is a
+ * conservative over-estimate so the cleanup loop reliably makes progress;
+ * drift is reconciled once at the end of `freeStorageForUpload` via a single
  * `updateStorageUsage` scan.
+ *
+ * DO NOT use for full-state ops (SYNC_IMPORT / BACKUP_IMPORT / REPAIR). Their
+ * payloads can be up to 20MB, so 1024 undercounts by ~20000x and the cached
+ * counter ends up permanently low if reconcile fails. `deleteOldestRestorePointAndOps`
+ * measures the exact `pg_column_size(payload)` for those 1-2 rows BEFORE
+ * deleting; the per-row scan there is bounded to the restore-point fan-out
+ * (very small) and does not reintroduce the SUM(pg_column_size) DoS that
+ * scanning every delta op caused.
  */
 export const APPROX_BYTES_PER_OP = 1024;
+
+/**
+ * Locally-computed approximation of how many bytes an operation's payload and
+ * vector clock will occupy on disk. Used by both the route layer (for quota
+ * gating and post-commit counter deltas) and the service layer (for the atomic
+ * counter write inside the upload transaction). Keeping a single
+ * implementation guarantees the gate and the increment cannot disagree about
+ * what "size" means.
+ *
+ * Robust against malformed payloads: if JSON.stringify throws (e.g. BigInt,
+ * circular ref), the op is charged APPROX_BYTES_PER_OP so the counter cannot
+ * be bypassed by submitting unserializable ops that still persist as JSONB.
+ */
+export const computeOpStorageBytes = (op: {
+  payload: unknown;
+  vectorClock: unknown;
+}): number => {
+  try {
+    return (
+      Buffer.byteLength(JSON.stringify(op.payload ?? null), 'utf8') +
+      Buffer.byteLength(JSON.stringify(op.vectorClock ?? {}), 'utf8')
+    );
+  } catch {
+    return APPROX_BYTES_PER_OP;
+  }
+};

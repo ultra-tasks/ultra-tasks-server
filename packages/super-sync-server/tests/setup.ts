@@ -288,6 +288,11 @@ vi.mock('../src/db', () => {
           update: vi.fn().mockResolvedValue({}),
         },
         $queryRaw: vi.fn().mockResolvedValue([{ total: BigInt(0) }]),
+        // The upload transaction writes the storage counter atomically via
+        // $executeRaw to keep the data write and the counter delta in a single
+        // commit. Default mock is a no-op; specs that care about counter
+        // behaviour mock it explicitly.
+        $executeRaw: vi.fn().mockResolvedValue(0),
       };
       if (typeof callback === 'function') {
         return callback(tx);
@@ -320,6 +325,7 @@ vi.mock('../src/db', () => {
       update: vi.fn(),
     },
     $queryRaw: vi.fn().mockResolvedValue([{ total: BigInt(0) }]),
+    $executeRaw: vi.fn().mockResolvedValue(0),
   };
 
   return {

@@ -301,6 +301,11 @@ vi.mock('../src/db', async () => {
       }),
       update: vi.fn().mockResolvedValue({}),
     },
+    // The upload transaction now writes the storage counter atomically via
+    // $executeRaw to keep the data write and the counter delta in a single
+    // commit. Mock is a no-op here — the existing spec asserts behaviour at
+    // the op level and does not inspect storage_used_bytes inside this file.
+    $executeRaw: vi.fn().mockResolvedValue(0),
   });
 
   return {

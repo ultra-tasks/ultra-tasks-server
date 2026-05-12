@@ -381,7 +381,10 @@ describe('Duplicate Operation Pre-check', () => {
         accepted: false,
         errorCode: SYNC_ERROR_CODES.INTERNAL_ERROR,
       });
-      expect(results[0].error).toContain('non-id unique constraint');
+      // Generic, non-leaky message. The original Prisma exception text (which
+      // can include SQL fragments, column / FK names) is only emitted to the
+      // server log; the per-op error returned to the client must not leak it.
+      expect(results[0].error).toBe('Transaction failed - please retry');
       expect(tx.userSyncState.update).toHaveBeenCalledTimes(1);
       expect(tx.syncDevice.upsert).not.toHaveBeenCalled();
     });

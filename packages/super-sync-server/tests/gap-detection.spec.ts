@@ -172,6 +172,8 @@ vi.mock('../src/db', async () => {
         return state.users.get(args.where.id) || null;
       }),
     },
+    // Upload transaction writes the storage counter atomically via $executeRaw.
+    $executeRaw: vi.fn().mockResolvedValue(0),
   });
 
   return {

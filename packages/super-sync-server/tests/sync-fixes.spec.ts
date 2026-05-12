@@ -171,6 +171,8 @@ vi.mock('../src/db', () => {
             count: vi.fn().mockResolvedValue(1),
           },
           $queryRaw: vi.fn().mockResolvedValue([]),
+          // Upload transaction writes the storage counter atomically via $executeRaw.
+          $executeRaw: vi.fn().mockResolvedValue(0),
         };
         return callback(tx);
       }),

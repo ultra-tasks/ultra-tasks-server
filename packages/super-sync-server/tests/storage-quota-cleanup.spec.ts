@@ -105,6 +105,8 @@ vi.mock('../src/db', () => {
             upsert: vi.fn().mockResolvedValue({}),
             count: vi.fn().mockResolvedValue(1),
           },
+          // Upload transaction writes the storage counter atomically via $executeRaw.
+          $executeRaw: vi.fn().mockResolvedValue(0),
         };
         return callback(tx);
       }),
@@ -193,11 +195,20 @@ vi.mock('../src/db', () => {
       },
       $queryRaw: vi
         .fn()
-        .mockImplementation(async (_query, userIdArg, deleteUpToSeqArg) => {
-          // Compute total bytes from test operations that match the SQL WHERE params.
-          // Only used by calculateStorageUsage (offline path) — hot paths no
-          // longer SUM pg_column_size.
-          let total = BigInt(0);
+        .mockImplementation(async (query, userIdArg, deleteUpToSeqArg) => {
+          // The same mock serves two SQL shapes:
+          //  1. calculateStorageUsage's full-table SUM(pg_column_size)
+          //     scan (slow path) — returns `[{ total }]`.
+          //  2. deleteOldestRestorePointAndOps's BOUNDED full-state scan
+          //     filtered by `op_type IN (SYNC_IMPORT, BACKUP_IMPORT, REPAIR)`
+          //     — returns `[{ exact_bytes, full_state_count }]`.
+          // Detect by inspecting the SQL template fragments.
+          const queryParts = query as unknown as TemplateStringsArray;
+          const sql = Array.isArray(queryParts) ? queryParts.join('') : '';
+          const isFullStateScan = sql.includes('op_type IN');
+
+          let totalBytes = BigInt(0);
+          let fullStateCount = BigInt(0);
           for (const op of testOperations.values()) {
             if (typeof userIdArg === 'number' && op.userId !== userIdArg) {
               continue;
@@ -205,12 +216,23 @@ vi.mock('../src/db', () => {
             if (typeof deleteUpToSeqArg === 'number' && op.serverSeq > deleteUpToSeqArg) {
               continue;
             }
-
+            const isRestorePoint =
+              op.opType === 'SYNC_IMPORT' ||
+              op.opType === 'BACKUP_IMPORT' ||
+              op.opType === 'REPAIR';
+            if (isFullStateScan && !isRestorePoint) {
+              continue;
+            }
             const payloadSize = op.payload ? JSON.stringify(op.payload).length : 0;
             const clockSize = op.vectorClock ? JSON.stringify(op.vectorClock).length : 0;
-            total += BigInt(payloadSize + clockSize);
+            totalBytes += BigInt(payloadSize + clockSize);
+            if (isRestorePoint) fullStateCount++;
           }
-          return [{ total }];
+
+          if (isFullStateScan) {
+            return [{ exact_bytes: totalBytes, full_state_count: fullStateCount }];
+          }
+          return [{ total: totalBytes }];
         }),
       // decrementStorageUsage uses $executeRaw with a clamped UPDATE.
       // Simulate by mutating the matching user's storageUsedBytes in-place.
@@ -371,11 +393,14 @@ describe('Storage Quota Cleanup', () => {
       expect(testOperations.size).toBe(4); // ops 4, 5, 6, 7 remain
     });
 
-    it('should not run any per-row pg_column_size query during cleanup-delete', async () => {
-      // The cleanup path used to SUM(pg_column_size(payload)) over the range
-      // being deleted, which forced PostgreSQL to detoast every payload and
-      // caused the production disk-I/O DoS. Counter is now decremented via
-      // an approximate count*const decrement; no $queryRaw should run.
+    it('should not run pg_column_size over the full delta-op range during cleanup-delete', async () => {
+      // The cleanup path used to SUM(pg_column_size(payload)) over the FULL
+      // range being deleted, which forced PostgreSQL to detoast every payload
+      // and caused the production disk-I/O DoS. Counter is decremented via an
+      // approximate count*const decrement for delta ops; the only allowed
+      // pg_column_size scan is over the bounded restore-point rows
+      // (op_type IN (SYNC_IMPORT, BACKUP_IMPORT, REPAIR)) so the 20MB-ish
+      // full-state payloads do not undercount.
       const { initSyncService, getSyncService } =
         await import('../src/sync/sync.service');
       const { prisma } = await import('../src/db');
@@ -392,7 +417,10 @@ describe('Storage Quota Cleanup', () => {
 
       const offendingCalls = vi.mocked(prisma.$queryRaw).mock.calls.filter((call) => {
         const queryParts = call[0] as unknown as TemplateStringsArray;
-        return Array.from(queryParts).join('').includes('pg_column_size');
+        const sql = Array.from(queryParts).join('');
+        // Only block the unbounded variant; the bounded full-state scan is
+        // expected and gated by an `op_type IN (...)` filter.
+        return sql.includes('pg_column_size') && !sql.includes('op_type IN');
       });
       expect(offendingCalls).toHaveLength(0);
     });
@@ -702,11 +730,18 @@ describe('Storage Quota Cleanup', () => {
         storageQuotaBytes: BigInt(quota),
       });
 
-      createRestorePoint(clientId, userId); // seq 1 - first approximate delete
+      // Use a larger payload so the exact-pg_column_size measurement for the
+      // restore point produces a freedBytes value comparable to the realistic
+      // 20MB-scale payloads this code path was tuned for. With tiny payloads
+      // (`{}`), the new exact accounting would mean each iteration barely
+      // dents the counter and the success-then-reconcile-disproves flow this
+      // test exercises never fires.
+      const restorePayload = { state: 'x'.repeat(2000) };
+      createOp(clientId, userId, { opType: 'SYNC_IMPORT', payload: restorePayload }); // seq 1 - first approximate delete
       createOp(clientId, userId); // seq 2
-      createRestorePoint(clientId, userId); // seq 3 - second delete needed
+      createOp(clientId, userId, { opType: 'SYNC_IMPORT', payload: restorePayload }); // seq 3 - second delete needed
       createOp(clientId, userId); // seq 4
-      createRestorePoint(clientId, userId); // seq 5 - must keep
+      createOp(clientId, userId, { opType: 'SYNC_IMPORT', payload: restorePayload }); // seq 5 - must keep
 
       let reconcileCalls = 0;
       service.updateStorageUsage = async () => {

@@ -11,7 +11,7 @@ import {
   SYNC_ERROR_CODES,
   ConflictResult,
 } from './sync.types';
-import { APPROX_BYTES_PER_OP } from './sync.const';
+import { APPROX_BYTES_PER_OP, computeOpStorageBytes } from './sync.const';
 import { Logger } from '../logger';
 import { Prisma } from '@prisma/client';
 import {
@@ -273,9 +273,42 @@ export class SyncService {
             update: {}, // No-op update to ensure it exists
           });
 
+          // Track the delta-bytes for accepted ops so we can write
+          // `users.storage_used_bytes` atomically in the same transaction as the
+          // op inserts. Doing the counter write outside this transaction (as
+          // the route layer used to) opens a window where the data commits but
+          // the counter does not — if the process dies between, the in-memory
+          // `markStorageNeedsReconcile` marker is lost too.
+          let acceptedDeltaBytes = 0;
           for (const op of ops) {
             const result = await this.processOperation(userId, clientId, op, now, tx);
             results.push(result);
+            if (result.accepted) {
+              acceptedDeltaBytes += computeOpStorageBytes(op);
+            }
+          }
+
+          // Atomic counter write inside the same transaction as the data write.
+          // GREATEST(..., 0) guards against negative drift (the counter is
+          // advisory; reconcile self-heals if it ever drifts). Skip when clean
+          // slate already reset the counter to zero earlier in this transaction.
+          if (acceptedDeltaBytes > 0 && !isCleanSlate) {
+            const delta = BigInt(Math.floor(acceptedDeltaBytes));
+            await tx.$executeRaw`
+              UPDATE users
+              SET storage_used_bytes = GREATEST(storage_used_bytes + ${delta}::bigint, 0::bigint)
+              WHERE id = ${userId}
+            `;
+          } else if (acceptedDeltaBytes > 0 && isCleanSlate) {
+            // Clean slate reset the counter to 0 above; the only "real" usage
+            // after the wipe is the ops being uploaded right now. Set rather
+            // than increment so we don't double-count anything left in the row.
+            const delta = BigInt(Math.floor(acceptedDeltaBytes));
+            await tx.$executeRaw`
+              UPDATE users
+              SET storage_used_bytes = ${delta}::bigint
+              WHERE id = ${userId}
+            `;
           }
 
           // Update device last seen
@@ -312,11 +345,14 @@ export class SyncService {
         },
       );
 
-      // Clear caches after clean slate transaction completes successfully
+      // Clear caches after clean slate transaction completes successfully.
+      // Include request dedup so a retry from before the wipe cannot return
+      // cached results that reference now-deleted state.
       if (isCleanSlate) {
         this.rateLimitService.clearForUser(userId);
         this.snapshotService.clearForUser(userId);
         this.storageQuotaService.clearForUser(userId);
+        this.requestDeduplicationService.clearForUser(userId);
       }
     } catch (err) {
       // Transaction failed - all operations were rolled back
@@ -346,8 +382,11 @@ export class SyncService {
         Logger.error(`Transaction failed for user ${userId}: ${errorMessage}`);
       }
 
-      // Mark all "successful" results as failed due to transaction rollback
-      // Use INTERNAL_ERROR for all transient failures - client will retry
+      // Mark all "successful" results as failed due to transaction rollback.
+      // Use INTERNAL_ERROR for all transient failures - client will retry.
+      // The raw `errorMessage` is logged above but never returned to the client:
+      // Prisma exceptions can include SQL fragments, column names, and FK names,
+      // so the per-op error string is a generic, non-leaky message instead.
       return ops.map((op) => ({
         opId: op.id,
         accepted: false,
@@ -355,7 +394,7 @@ export class SyncService {
           ? 'Concurrent transaction conflict - please retry'
           : isTimeout
             ? 'Transaction timeout - server busy, please retry'
-            : `Transaction rolled back: ${errorMessage}`,
+            : 'Transaction failed - please retry',
         errorCode: SYNC_ERROR_CODES.INTERNAL_ERROR,
       }));
     }
@@ -885,8 +924,18 @@ export class SyncService {
           affectedUserIds.push(state.userId);
           // Deliberately leave storageUsedBytes stale-high here. A count-based
           // approximate decrement can undercount users with many tiny ops and
-          // let them bypass quota indefinitely. The quota-miss path performs one
-          // exact reconcile for the affected user before rejecting uploads.
+          // let them bypass quota indefinitely. Mark the user as needing an
+          // exact reconcile so their next request self-heals the drift instead
+          // of waiting for the daily pass — and, crucially, so that a crash
+          // mid-loop still lets surviving deletes self-reconcile rather than
+          // leaving the counter stale-high indefinitely.
+          // NOTE: the marker is in-memory (process-local). A persistent
+          // `users.storage_needs_reconcile` column would survive restarts; see
+          // TODO below.
+          // TODO: persist the reconcile marker in a DB column so it survives
+          // restarts of a single-instance deployment and works correctly across
+          // a multi-instance deployment behind a load balancer.
+          this.storageQuotaService.markNeedsReconcile(state.userId);
         }
       }
     }
@@ -946,10 +995,28 @@ export class SyncService {
       return { deletedCount: 0, freedBytes: 0, success: false };
     }
 
-    // freedBytes is an approximate decrement applied to the cached counter so
-    // freeStorageForUpload's loop can make progress without recomputing per-row
-    // pg_column_size (the original DoS pattern). Reconciled to exact value once
-    // at the end of freeStorageForUpload via a single updateStorageUsage call.
+    // Full-state ops (SYNC_IMPORT/BACKUP_IMPORT/REPAIR) can be up to 20MB each,
+    // so the APPROX_BYTES_PER_OP=1024 fallback used for delta ops would undercount
+    // by ~20000x and leave the cached counter permanently low if a reconcile
+    // failure later rolls back to that figure. Measure the exact bytes for the
+    // restore-point rows in the deletion window via pg_column_size BEFORE we
+    // delete them — `deleteOldestRestorePointAndOps` deletes at most ONE
+    // restore point per call (or zero, when it keeps the single remaining one),
+    // so this is a bounded 0-1 row scan that does not reintroduce the DoS the
+    // earlier SUM(pg_column_size) over every delta op caused.
+    const fullStateRows = await prisma.$queryRaw<
+      Array<{ exact_bytes: bigint | null; full_state_count: bigint }>
+    >`
+      SELECT
+        COALESCE(SUM(pg_column_size(payload) + pg_column_size(vector_clock)), 0) AS exact_bytes,
+        COUNT(*)::bigint AS full_state_count
+      FROM operations
+      WHERE user_id = ${userId}
+        AND server_seq <= ${deleteUpToSeq}
+        AND op_type IN ('SYNC_IMPORT', 'BACKUP_IMPORT', 'REPAIR')
+    `;
+    const fullStateExactBytes = Number(fullStateRows[0]?.exact_bytes ?? 0);
+    const fullStateCount = Number(fullStateRows[0]?.full_state_count ?? 0);
 
     // Delete the operations
     const result = await prisma.operation.deleteMany({
@@ -959,7 +1026,15 @@ export class SyncService {
       },
     });
 
-    const freedBytes = result.count * APPROX_BYTES_PER_OP;
+    // freedBytes is split: exact size for the 0-1 restore-point rows just
+    // measured (catches the 20MB-ish payloads that the APPROX_BYTES_PER_OP
+    // approximation undercounts by ~20000x), plus the approximate
+    // count*APPROX_BYTES_PER_OP for the remaining delta ops (median 150-300B
+    // — modest over-estimate so the cleanup loop progresses without scanning
+    // every delta payload). Reconciled to exact value once at the end of
+    // freeStorageForUpload via a single updateStorageUsage call.
+    const deltaOpsCount = Math.max(0, result.count - fullStateCount);
+    const freedBytes = fullStateExactBytes + deltaOpsCount * APPROX_BYTES_PER_OP;
 
     if (result.count > 0) {
       // Clear stale snapshot cache if it references deleted operations
@@ -1187,10 +1262,14 @@ export class SyncService {
       });
     });
 
-    // Clear caches
+    // Clear caches. Include the request-dedup cache so a retry of an
+    // ops-upload from the pre-wipe state cannot resurrect its cached results
+    // post-wipe. (Process-local only; persists across requests within the
+    // single instance.)
     this.rateLimitService.clearForUser(userId);
     this.snapshotService.clearForUser(userId);
     this.storageQuotaService.clearForUser(userId);
+    this.requestDeduplicationService.clearForUser(userId);
   }
 
   async isDeviceOwner(userId: number, clientId: string): Promise<boolean> {
