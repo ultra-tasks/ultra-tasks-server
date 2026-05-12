@@ -1,4 +1,11 @@
-import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import {
+  FastifyInstance,
+  FastifyReply,
+  FastifyRequest,
+  type RequestPayload,
+  type preParsingHookHandler,
+} from 'fastify';
+import { Transform, type TransformCallback } from 'node:stream';
 import { z } from 'zod';
 import { uuidv7 } from 'uuidv7';
 import {
@@ -61,8 +68,106 @@ const createValidationErrorResponse = (
 // - Ops uploads are incremental and smaller
 // - Snapshots can be larger for backup/repair imports
 const MAX_COMPRESSED_SIZE_OPS = 10 * 1024 * 1024; // 10MB for /ops
-const MAX_COMPRESSED_SIZE_SNAPSHOT = 30 * 1024 * 1024; // 30MB for /snapshot (matches bodyLimit)
+const MAX_COMPRESSED_SIZE_SNAPSHOT = 30 * 1024 * 1024; // 30MB binary gzip for /snapshot
 const MAX_DECOMPRESSED_SIZE = 100 * 1024 * 1024; // 100MB - catches malicious high-ratio compression
+
+// Fastify's route bodyLimit runs before our parser can decode Android's
+// Content-Transfer-Encoding: base64 wrapper. Use the raw base64 envelope limit
+// at the HTTP layer, then enforce the true binary gzip limit in
+// parseCompressedJsonBody().
+const getMaxRawBodySizeForCompressedPayload = (maxCompressedSize: number): number =>
+  Math.ceil(maxCompressedSize / 3) * 4 + 4;
+const MAX_RAW_BODY_SIZE_OPS = getMaxRawBodySizeForCompressedPayload(
+  MAX_COMPRESSED_SIZE_OPS,
+);
+const MAX_RAW_BODY_SIZE_SNAPSHOT = getMaxRawBodySizeForCompressedPayload(
+  MAX_COMPRESSED_SIZE_SNAPSHOT,
+);
+
+type PayloadTooLargeError = Error & {
+  code: string;
+  statusCode: number;
+};
+
+const createPayloadTooLargeError = (limitBytes: number): PayloadTooLargeError =>
+  Object.assign(new Error(`Request body exceeded ${limitBytes} byte limit`), {
+    code: 'FST_ERR_CTP_BODY_TOO_LARGE',
+    statusCode: 413,
+  });
+
+const getHeaderString = (
+  value: string | string[] | number | undefined,
+): string | undefined => {
+  if (Array.isArray(value)) return value[0];
+  if (typeof value === 'number') return String(value);
+  return value;
+};
+
+const hasHeaderToken = (
+  value: string | string[] | number | undefined,
+  expectedToken: string,
+): boolean =>
+  getHeaderString(value)
+    ?.split(',')
+    .some((token) => token.trim().toLowerCase() === expectedToken) ?? false;
+
+const getParsedContentLength = (
+  value: string | string[] | number | undefined,
+): number | null => {
+  const contentLength = getHeaderString(value);
+  if (contentLength === undefined) return null;
+
+  const parsed = Number.parseInt(contentLength, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+};
+
+class RawBodyLimitTransform extends Transform {
+  receivedEncodedLength = 0;
+
+  constructor(private readonly limitBytes: number) {
+    super();
+  }
+
+  _transform(
+    chunk: Buffer | string,
+    encoding: BufferEncoding,
+    callback: TransformCallback,
+  ): void {
+    const chunkBytes = Buffer.isBuffer(chunk)
+      ? chunk.length
+      : Buffer.byteLength(chunk, encoding);
+    this.receivedEncodedLength += chunkBytes;
+
+    if (this.receivedEncodedLength > this.limitBytes) {
+      callback(createPayloadTooLargeError(this.limitBytes));
+      return;
+    }
+
+    callback(null, chunk);
+  }
+}
+
+const createRawBodyLimitPreParsingHook =
+  (maxCompressedSize: number, maxBase64RawSize: number): preParsingHookHandler =>
+  (
+    request: FastifyRequest,
+    _reply: FastifyReply,
+    payload: RequestPayload,
+    done,
+  ): void => {
+    const isBase64GzipRequest =
+      hasHeaderToken(request.headers['content-encoding'], 'gzip') &&
+      hasHeaderToken(request.headers['content-transfer-encoding'], 'base64');
+    const rawBodyLimit = isBase64GzipRequest ? maxBase64RawSize : maxCompressedSize;
+    const contentLength = getParsedContentLength(request.headers['content-length']);
+
+    if (contentLength !== null && contentLength > rawBodyLimit) {
+      done(createPayloadTooLargeError(rawBodyLimit));
+      return;
+    }
+
+    done(null, payload.pipe(new RawBodyLimitTransform(rawBodyLimit)));
+  };
 
 // Error helper
 const errorMessage = (err: unknown): string =>
@@ -318,11 +423,14 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
   fastify.post<{ Body: UploadOpsRequest }>(
     '/ops',
     {
-      // Cap raw request body at the same compressed limit we enforce after
-      // parsing, so the server cannot be made to buffer up to the global 20MB
-      // limit just to reject in `parseCompressedJsonBody`. Reduces gzip-bomb
-      // amplification surface.
-      bodyLimit: MAX_COMPRESSED_SIZE_OPS,
+      // Cap raw request body at the base64 envelope of the binary gzip limit.
+      // `parseCompressedJsonBody` still enforces MAX_COMPRESSED_SIZE_OPS
+      // against decoded gzip bytes.
+      bodyLimit: MAX_RAW_BODY_SIZE_OPS,
+      preParsing: createRawBodyLimitPreParsingHook(
+        MAX_COMPRESSED_SIZE_OPS,
+        MAX_RAW_BODY_SIZE_OPS,
+      ),
       config: {
         rateLimit: {
           max: 100,
@@ -711,7 +819,11 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
   fastify.post<{ Body: unknown }>(
     '/snapshot',
     {
-      bodyLimit: 30 * 1024 * 1024, // 30MB - needed for backup/repair imports
+      bodyLimit: MAX_RAW_BODY_SIZE_SNAPSHOT,
+      preParsing: createRawBodyLimitPreParsingHook(
+        MAX_COMPRESSED_SIZE_SNAPSHOT,
+        MAX_RAW_BODY_SIZE_SNAPSHOT,
+      ),
     },
     async (req: FastifyRequest<{ Body: unknown }>, reply: FastifyReply) => {
       try {
@@ -879,12 +991,14 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
               );
               if (!quotaOk) return null;
             } else {
-              const previousSnapshotBytes = preparedSnapshot.cacheable
-                ? await syncService.getCachedSnapshotBytes(userId)
-                : 0;
-              const estimatedSnapshotCacheDelta = preparedSnapshot.cacheable
-                ? preparedSnapshot.bytes - previousSnapshotBytes
-                : 0;
+              let estimatedSnapshotCacheDelta = 0;
+              if (!op.isPayloadEncrypted) {
+                const previousSnapshotBytes =
+                  await syncService.getCachedSnapshotBytes(userId);
+                estimatedSnapshotCacheDelta = preparedSnapshot.cacheable
+                  ? preparedSnapshot.bytes - previousSnapshotBytes
+                  : -previousSnapshotBytes;
+              }
               const additionalBytes =
                 estimatedOpStorageBytes + estimatedSnapshotCacheDelta;
               const quotaOk = await enforceStorageQuota(userId, additionalBytes, reply);

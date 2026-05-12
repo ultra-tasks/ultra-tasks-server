@@ -136,7 +136,14 @@ export RUN_MIGRATIONS_ON_STARTUP="${RUN_MIGRATIONS_ON_STARTUP:-false}"
 WAIT_TIMEOUT="${DEPLOY_WAIT_TIMEOUT:-900}"
 echo ""
 echo "==> Starting containers (wait timeout: ${WAIT_TIMEOUT}s)..."
-if ! docker compose $COMPOSE_FILES up -d --wait --wait-timeout "$WAIT_TIMEOUT" 2>&1; then
+START_STATUS=0
+if [ -n "$POSTGRES_SERVICE" ]; then
+    START_RESULT=$(docker compose $COMPOSE_FILES up -d --wait --wait-timeout "$WAIT_TIMEOUT" 2>&1) || START_STATUS=$?
+else
+    START_RESULT=$(docker compose $COMPOSE_FILES up -d --wait --wait-timeout "$WAIT_TIMEOUT" --no-deps supersync caddy 2>&1) || START_STATUS=$?
+fi
+if [ "${START_STATUS:-0}" -ne 0 ]; then
+    echo "$START_RESULT"
     echo ""
     echo "==> Container startup failed!"
 
@@ -154,6 +161,7 @@ if ! docker compose $COMPOSE_FILES up -d --wait --wait-timeout "$WAIT_TIMEOUT" 2
     } || true
     exit 1
 fi
+echo "$START_RESULT"
 echo "    All containers healthy"
 
 # Verify HTTPS health check
