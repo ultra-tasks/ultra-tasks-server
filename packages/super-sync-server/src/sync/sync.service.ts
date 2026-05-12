@@ -280,12 +280,21 @@ export class SyncService {
           // the counter does not — if the process dies between, the in-memory
           // `markStorageNeedsReconcile` marker is lost too.
           let acceptedDeltaBytes = 0;
+          let unserializableAccepted = 0;
           for (const op of ops) {
             const result = await this.processOperation(userId, clientId, op, now, tx);
             results.push(result);
             if (result.accepted) {
-              acceptedDeltaBytes += computeOpStorageBytes(op);
+              const sized = computeOpStorageBytes(op);
+              acceptedDeltaBytes += sized.bytes;
+              if (sized.fallback) unserializableAccepted += 1;
             }
+          }
+          if (unserializableAccepted > 0) {
+            Logger.warn(
+              `computeOpsStorageBytes: ${unserializableAccepted} unserializable op(s) ` +
+                `charged at APPROX_BYTES_PER_OP for user=${userId} (uploadOps)`,
+            );
           }
 
           // Atomic counter write inside the same transaction as the data write.

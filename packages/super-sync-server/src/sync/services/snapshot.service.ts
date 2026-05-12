@@ -51,6 +51,15 @@ const MAX_REPLAY_STATE_SIZE_BYTES = 100 * 1024 * 1024;
  */
 const REPLAY_SIZE_CHECK_INTERVAL = 1000;
 
+/**
+ * Reject these as property keys when applying user-supplied ids to the
+ * replayed state object. Assigning to `state[key]` with one of these names
+ * triggers a prototype-mutating setter (`__proto__`) or replaces an
+ * inherited slot (`constructor`/`prototype`).
+ */
+const isUnsafeEntityKey = (key: string): boolean =>
+  key === '__proto__' || key === 'constructor' || key === 'prototype';
+
 const encryptedOpsNotSupportedMessage = (encryptedOpCount: number): string =>
   `ENCRYPTED_OPS_NOT_SUPPORTED: Cannot generate snapshot - ${encryptedOpCount} operations have encrypted payloads. ` +
   `Server-side restore is not available when E2E encryption is enabled. ` +
@@ -568,11 +577,35 @@ export class SnapshotService {
           maxCacheBytes !== undefined
             ? Math.min(MAX_SNAPSHOT_SIZE_BYTES, maxCacheBytes + previousCachedBytes)
             : MAX_SNAPSHOT_SIZE_BYTES;
-        if (compressed.length > effectiveCap && maxCacheBytes !== undefined) {
+        const overHardCeiling = compressed.length > MAX_SNAPSHOT_SIZE_BYTES;
+        if (compressed.length > effectiveCap) {
           Logger.info(
             `[user:${userId}] Skipping snapshot cache write: ` +
-              `compressed ${compressed.length}B > cap ${effectiveCap}B (remaining quota window)`,
+              `compressed ${compressed.length}B > cap ${effectiveCap}B` +
+              (overHardCeiling
+                ? ` (exceeds MAX_SNAPSHOT_SIZE_BYTES=${MAX_SNAPSHOT_SIZE_BYTES})`
+                : ` (remaining quota window)`),
           );
+        }
+        // W4: when the regenerated blob exceeds the hard ceiling, mirror
+        // `cacheSnapshot`'s clear-stale logic instead of leaving a poisoned
+        // old blob in place. Race-safe: only clear when our seq is newer.
+        if (overHardCeiling && previousCachedBytes > 0) {
+          const clearResult = await tx.userSyncState.updateMany({
+            where: {
+              userId,
+              OR: [{ lastSnapshotSeq: null }, { lastSnapshotSeq: { lt: latestSeq } }],
+            },
+            data: {
+              snapshotData: null,
+              lastSnapshotSeq: null,
+              snapshotAt: null,
+              snapshotSchemaVersion: null,
+            },
+          });
+          if (clearResult.count > 0) {
+            cacheDelta = -previousCachedBytes;
+          }
         }
         if (compressed.length <= effectiveCap) {
           const cacheData = {
@@ -949,9 +982,7 @@ export class SnapshotService {
           // trigger the setter and pollute the prototype chain.
           const fullStateRecord = fullState as Record<string, unknown>;
           for (const key of Object.keys(fullStateRecord)) {
-            if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
-              continue;
-            }
+            if (isUnsafeEntityKey(key)) continue;
             state[key] = fullStateRecord[key] as Record<string, unknown>;
           }
           continue;
@@ -963,6 +994,14 @@ export class SnapshotService {
           state[processEntityType] = {};
         }
 
+        // Client-supplied id used as a property key. Bracket-assignment of
+        // `__proto__` (or `constructor`/`prototype`) invokes the
+        // `Object.prototype.__proto__` setter, which would swap the prototype
+        // of the entity map and let malicious payload keys leak via the
+        // prototype chain. Skip these keys entirely.
+        if (processEntityId && isUnsafeEntityKey(processEntityId)) {
+          continue;
+        }
         switch (processOpType) {
           case 'CRT':
           case 'UPD':
@@ -992,6 +1031,11 @@ export class SnapshotService {
               if (batchPayload.entities && typeof batchPayload.entities === 'object') {
                 const entities = batchPayload.entities as Record<string, unknown>;
                 for (const [id, entity] of Object.entries(entities)) {
+                  // Same prototype-pollution guard as the per-op entityId
+                  // check: JSON.parse can produce `__proto__` as an own data
+                  // property of `entities`, and `state[type][id] = …` with
+                  // that id would trigger the setter.
+                  if (isUnsafeEntityKey(id)) continue;
                   state[processEntityType][id] = {
                     ...(state[processEntityType][id] as Record<string, unknown>),
                     ...(entity as Record<string, unknown>),

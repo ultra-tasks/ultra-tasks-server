@@ -278,16 +278,17 @@ export class StorageQuotaService {
    *     reconciles via the dedupe map.
    *   - `forcedReconciles`: a stale marker would force an unnecessary scan on
    *     the next quota check after the wipe.
-   *   - `storageUsageLocks`: queued lock chain for a now-erased user is
-   *     orphaned work; clear the head so no follower in that chain runs after
-   *     the wipe.
+   * Do NOT delete `storageUsageLocks[userId]` here: the chain is identity-
+   * guarded and self-deletes on drain (see `runWithStorageUsageLock`'s
+   * `finally`). Removing the head while a follower is queued behind it would
+   * let a fresh caller see no `previous` and start a concurrent chain that
+   * races the in-flight one on the counter.
    * `storageUsageLockContext` is per-async-context (AsyncLocalStorage), not
    * per-user state — nothing to clear there.
    */
   clearForUser(userId: number): void {
     this.inflightReconciles.delete(userId);
     this.forcedReconciles.delete(userId);
-    this.storageUsageLocks.delete(userId);
   }
 
   /**

@@ -25,13 +25,11 @@ import {
 import {
   parseCompressedJsonBody,
   isSingleTokenGzipEncoding,
+  normalizeContentEncoding,
   type CompressedJsonBodyParseResult,
 } from './compressed-body-parser';
 import { computeOpStorageBytes } from './sync.const';
-import {
-  EncryptedOpsNotSupportedError,
-  MAX_SNAPSHOT_SIZE_BYTES,
-} from './services/snapshot.service';
+import { EncryptedOpsNotSupportedError } from './services/snapshot.service';
 
 type ZodIssue = z.ZodError['issues'][number];
 
@@ -85,16 +83,22 @@ const errorMessage = (err: unknown): string =>
  *
  * Delegates to the shared `computeOpStorageBytes` helper so the gate here and
  * the in-transaction counter increment inside `uploadOps` cannot disagree on
- * what "size" means.
+ * what "size" means. The `fallback` counter is the number of ops in this
+ * batch whose payload could not be JSON-serialized — kept so route callers
+ * can log how often unserializable ops are charged at APPROX_BYTES_PER_OP
+ * without ever logging op content.
  */
 const computeOpsStorageBytes = (
   ops: Array<{ id?: string; payload: unknown; vectorClock: unknown }>,
-): number => {
-  let total = 0;
+): { bytes: number; fallback: number } => {
+  let bytes = 0;
+  let fallback = 0;
   for (const op of ops) {
-    total += computeOpStorageBytes(op);
+    const sized = computeOpStorageBytes(op);
+    bytes += sized.bytes;
+    if (sized.fallback) fallback += 1;
   }
-  return total;
+  return { bytes, fallback };
 };
 
 const computeJsonStorageBytes = (value: unknown, fallback: unknown): number => {
@@ -286,9 +290,21 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
     { parseAs: 'buffer' },
     (req, body: Buffer, done) => {
       // B10: normalize Content-Encoding so RFC-valid values like ' Gzip ' or
-      // arrays still hit the gzip branch. Layered encodings are rejected by
-      // the parser as 'unsupported-content-encoding'.
-      if (isSingleTokenGzipEncoding(req.headers['content-encoding'])) {
+      // arrays still hit the gzip branch.
+      const encoding = normalizeContentEncoding(req.headers['content-encoding']);
+      // W9: reject layered or non-gzip encodings with 415 Unsupported Media
+      // Type so clients (and operators) get a clear error rather than a
+      // misleading 400 invalid-json when we try to JSON.parse gzip bytes.
+      if (encoding.layered || (encoding.value !== '' && encoding.value !== 'gzip')) {
+        const err = new Error(
+          `Unsupported Content-Encoding: ${encoding.value || 'identity (with separators)'}. ` +
+            `Only single-token 'gzip' or identity is accepted.`,
+        ) as Error & { statusCode?: number };
+        err.statusCode = 415;
+        done(err, undefined);
+        return;
+      }
+      if (encoding.value === 'gzip') {
         // Return raw buffer for gzip - will be decompressed in route handler
         done(null, body);
       } else {
@@ -464,7 +480,14 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
             // post-accept counter increment uses, so the gate and the increment
             // cannot disagree on what "size" means.
             const typedOpsForGate = ops as unknown as Operation[];
-            const estimatedDelta = computeOpsStorageBytes(typedOpsForGate);
+            const { bytes: estimatedDelta, fallback: gateFallback } =
+              computeOpsStorageBytes(typedOpsForGate);
+            if (gateFallback > 0) {
+              Logger.warn(
+                `computeOpsStorageBytes: ${gateFallback}/${typedOpsForGate.length} unserializable op(s) ` +
+                  `charged at APPROX_BYTES_PER_OP for user=${userId} (gate)`,
+              );
+            }
             const quotaOk = await enforceStorageQuota(userId, estimatedDelta, reply);
             if (!quotaOk) return null;
 
@@ -904,14 +927,12 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
                 // B4: snapshot is too big for the cache (>50MB compressed).
                 // Do NOT subtract `previousSnapshotBytes` — the cache will be
                 // cleared by `cacheSnapshot`, but the op-row write still
-                // persists the full state. Use the larger of `stateBytes` and
-                // `MAX_SNAPSHOT_SIZE_BYTES` as the worst-case gate value so
-                // very large oversize uploads can't slip past on a low
-                // raw-JSON estimate that doesn't capture JSONB/TOAST overhead.
-                additionalBytes = Math.max(
-                  estimatedOpStorageBytes,
-                  MAX_SNAPSHOT_SIZE_BYTES,
-                );
+                // persists the full state. `estimatedOpStorageBytes` (the
+                // uncompressed stateBytes + vector clock) is already > the
+                // 50MB cacheable threshold whenever `!cacheable`, so it
+                // dominates the floor that previously sat at
+                // MAX_SNAPSHOT_SIZE_BYTES.
+                additionalBytes = estimatedOpStorageBytes;
               }
               const quotaOk = await enforceStorageQuota(userId, additionalBytes, reply);
               if (!quotaOk) return null;

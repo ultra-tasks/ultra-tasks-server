@@ -32,17 +32,21 @@ export const APPROX_BYTES_PER_OP = 1024;
  * Robust against malformed payloads: if JSON.stringify throws (e.g. BigInt,
  * circular ref), the op is charged APPROX_BYTES_PER_OP so the counter cannot
  * be bypassed by submitting unserializable ops that still persist as JSONB.
+ * `fallback` is `true` in that case so callers can observe the rate of
+ * unserializable ops via a single log line (never the op content).
  */
 export const computeOpStorageBytes = (op: {
   payload: unknown;
   vectorClock: unknown;
-}): number => {
+}): { bytes: number; fallback: boolean } => {
   try {
-    return (
-      Buffer.byteLength(JSON.stringify(op.payload ?? null), 'utf8') +
-      Buffer.byteLength(JSON.stringify(op.vectorClock ?? {}), 'utf8')
-    );
+    return {
+      bytes:
+        Buffer.byteLength(JSON.stringify(op.payload ?? null), 'utf8') +
+        Buffer.byteLength(JSON.stringify(op.vectorClock ?? {}), 'utf8'),
+      fallback: false,
+    };
   } catch {
-    return APPROX_BYTES_PER_OP;
+    return { bytes: APPROX_BYTES_PER_OP, fallback: true };
   }
 };

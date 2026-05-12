@@ -408,11 +408,15 @@ describe('StorageQuotaService', () => {
       expect(() => service.clearForUser(42)).not.toThrow();
     });
 
-    it('should clear inflightReconciles, forcedReconciles, and storageUsageLocks for the user', () => {
-      // After a clean-slate / account wipe these per-user maps must not retain
-      // stale entries that would (a) block future reconciles via the dedupe
-      // map, (b) force a spurious extra scan on the next quota check, or
-      // (c) leave an orphaned queued lock chain for the now-erased user.
+    it('should clear inflightReconciles and forcedReconciles, but preserve storageUsageLocks chain', () => {
+      // After a clean-slate / account wipe, stale entries in inflightReconciles
+      // would block future reconciles via the dedupe map; stale forcedReconciles
+      // would force a spurious extra scan on the next quota check. Both are
+      // cleared. storageUsageLocks intentionally is NOT cleared here — deleting
+      // a chain head while a follower is queued behind it lets a new caller
+      // see no `previous` and race the in-flight chain on the counter. The
+      // chain self-deletes on drain via the identity-guarded finally in
+      // runWithStorageUsageLock.
       const internals = service as unknown as {
         inflightReconciles: Map<number, Promise<void>>;
         forcedReconciles: Set<number>;
@@ -426,7 +430,7 @@ describe('StorageQuotaService', () => {
 
       expect(internals.inflightReconciles.has(7)).toBe(false);
       expect(internals.forcedReconciles.has(7)).toBe(false);
-      expect(internals.storageUsageLocks.has(7)).toBe(false);
+      expect(internals.storageUsageLocks.has(7)).toBe(true);
     });
 
     it('should not affect other users state', () => {
@@ -447,6 +451,41 @@ describe('StorageQuotaService', () => {
       expect(internals.inflightReconciles.has(8)).toBe(true);
       expect(internals.forcedReconciles.has(8)).toBe(true);
       expect(internals.storageUsageLocks.has(8)).toBe(true);
+    });
+
+    it('should not break a queued mutex chain when clearForUser races with a waiting caller', async () => {
+      // Regression: deleting storageUsageLocks[userId] mid-chain would let a
+      // second caller arriving after the wipe start a fresh, concurrent chain.
+      // After this fix clearForUser leaves storageUsageLocks alone, so the
+      // chain stays intact and follow-on callers serialize behind the in-flight
+      // operation.
+      let aStarted = false;
+      let aFinished = false;
+      let bStarted = false;
+      const releaseA = await new Promise<() => void>((resolveOuter) => {
+        const promiseA = service.runWithStorageUsageLock(99, async () => {
+          aStarted = true;
+          await new Promise<void>((resolve) => {
+            resolveOuter(resolve);
+          });
+          aFinished = true;
+        });
+        // Don't await promiseA — we want to race a concurrent caller.
+        void promiseA;
+      });
+      // Yield so A's body runs.
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(aStarted).toBe(true);
+      service.clearForUser(99);
+      const promiseB = service.runWithStorageUsageLock(99, async () => {
+        bStarted = true;
+        expect(aFinished).toBe(true);
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(bStarted).toBe(false); // B is queued behind A's chain, not racing
+      releaseA();
+      await promiseB;
+      expect(bStarted).toBe(true);
     });
   });
 
