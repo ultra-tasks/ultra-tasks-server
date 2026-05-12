@@ -5,6 +5,7 @@ import { StorageQuotaService } from '../src/sync/services/storage-quota.service'
 vi.mock('../src/db', () => ({
   prisma: {
     $queryRaw: vi.fn(),
+    $executeRaw: vi.fn(),
     user: {
       findUnique: vi.fn(),
       update: vi.fn(),
@@ -161,6 +162,68 @@ describe('StorageQuotaService', () => {
         data: { storageUsedBytes: BigInt(100000) },
       });
     });
+  });
+
+  describe('incrementStorageUsage', () => {
+    it('should atomically increment storage_used_bytes', async () => {
+      vi.mocked(prisma.user.update).mockResolvedValue({} as any);
+
+      await service.incrementStorageUsage(1, 4096);
+
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: { storageUsedBytes: { increment: BigInt(4096) } },
+      });
+    });
+
+    it('should floor non-integer deltas', async () => {
+      vi.mocked(prisma.user.update).mockResolvedValue({} as any);
+
+      await service.incrementStorageUsage(1, 4096.9);
+
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: { storageUsedBytes: { increment: BigInt(4096) } },
+      });
+    });
+
+    it.each([0, -1, NaN, Infinity, -Infinity])(
+      'should be a no-op for non-positive or non-finite delta %p',
+      async (delta) => {
+        vi.mocked(prisma.user.update).mockResolvedValue({} as any);
+
+        await service.incrementStorageUsage(1, delta);
+
+        expect(prisma.user.update).not.toHaveBeenCalled();
+      },
+    );
+  });
+
+  describe('decrementStorageUsage', () => {
+    it('should run a clamped UPDATE via $executeRaw', async () => {
+      vi.mocked(prisma.$executeRaw).mockResolvedValue(1 as any);
+
+      await service.decrementStorageUsage(1, 2048);
+
+      expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+      const callArgs = vi.mocked(prisma.$executeRaw).mock.calls[0];
+      // First arg is the tagged template TemplateStringsArray; subsequent args
+      // are the interpolated values (delta BigInt + userId).
+      const interpolatedValues = callArgs.slice(1);
+      expect(interpolatedValues).toContain(BigInt(2048));
+      expect(interpolatedValues).toContain(1);
+    });
+
+    it.each([0, -1, NaN, Infinity])(
+      'should be a no-op for non-positive or non-finite delta %p',
+      async (delta) => {
+        vi.mocked(prisma.$executeRaw).mockResolvedValue(0 as any);
+
+        await service.decrementStorageUsage(1, delta);
+
+        expect(prisma.$executeRaw).not.toHaveBeenCalled();
+      },
+    );
   });
 
   describe('getStorageInfo', () => {

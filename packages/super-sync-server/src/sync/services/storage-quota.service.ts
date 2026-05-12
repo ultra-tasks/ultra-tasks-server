@@ -18,11 +18,14 @@ export class StorageQuotaService {
   /**
    * Calculate actual storage usage for a user by summing on-disk payload sizes.
    *
-   * OFFLINE / ADMIN USE ONLY. SUM(pg_column_size(payload)) forces PostgreSQL to
-   * detoast every payload for the user (TOAST table reads), which on active
-   * users takes minutes and saturates disk I/O. Never call this on the request
-   * path. Hot-path tracking uses incrementStorageUsage / decrementStorageUsage
-   * with deltas computed locally on the Node side.
+   * SLOW PATH — DO NOT CALL PER REQUEST. SUM(pg_column_size(payload)) forces
+   * PostgreSQL to detoast every payload for the user (TOAST table reads),
+   * which on active users takes minutes and saturates disk I/O. Reserved for:
+   *   1. Quota-cache reconciliation, run at most once per quota-cleanup event
+   *      (rare per user) — see SyncService.freeStorageForUpload.
+   *   2. Offline / admin reconciliation scripts.
+   * Hot-path tracking uses incrementStorageUsage / decrementStorageUsage with
+   * deltas computed locally on the Node side.
    */
   async calculateStorageUsage(userId: number): Promise<{
     operationsBytes: number;
@@ -105,11 +108,7 @@ export class StorageQuotaService {
 
   /**
    * Recompute the cached storage usage from scratch via calculateStorageUsage.
-   *
-   * OFFLINE / ADMIN USE ONLY. Same warning as calculateStorageUsage: forces
-   * full-payload detoasting and was the source of a production disk-I/O DoS
-   * when called on the request path. Use incrementStorageUsage /
-   * decrementStorageUsage on hot paths. Keep this for admin backfill scripts.
+   * Same slow-path warning applies — see calculateStorageUsage.
    */
   async updateStorageUsage(userId: number): Promise<void> {
     const { totalBytes } = await this.calculateStorageUsage(userId);

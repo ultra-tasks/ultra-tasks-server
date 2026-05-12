@@ -196,6 +196,8 @@ vi.mock('../src/db', () => {
         .fn()
         .mockImplementation(async (_query, userIdArg, deleteUpToSeqArg) => {
           // Compute total bytes from test operations that match the SQL WHERE params.
+          // Only used by calculateStorageUsage (offline path) — hot paths no
+          // longer SUM pg_column_size.
           let total = BigInt(0);
           for (const op of testOperations.values()) {
             if (typeof userIdArg === 'number' && op.userId !== userIdArg) {
@@ -211,6 +213,24 @@ vi.mock('../src/db', () => {
           }
           return [{ total }];
         }),
+      // decrementStorageUsage uses $executeRaw with a clamped UPDATE.
+      // Simulate by mutating the matching user's storageUsedBytes in-place.
+      $executeRaw: vi.fn().mockImplementation(async (...args: unknown[]) => {
+        const interpolated = args.slice(1);
+        const delta = interpolated.find((v) => typeof v === 'bigint') as
+          | bigint
+          | undefined;
+        const uid = interpolated.find((v) => typeof v === 'number') as
+          | number
+          | undefined;
+        if (delta === undefined || uid === undefined) return 0;
+        const user = testUsers.get(uid);
+        if (!user) return 0;
+        const current = BigInt(user.storageUsedBytes ?? 0);
+        const next = current > delta ? current - delta : BigInt(0);
+        testUsers.set(uid, { ...user, storageUsedBytes: next });
+        return 1;
+      }),
     },
     initDb: vi.fn(),
     getDb: vi.fn(),
@@ -347,7 +367,11 @@ describe('Storage Quota Cleanup', () => {
       expect(testOperations.size).toBe(4); // ops 4, 5, 6, 7 remain
     });
 
-    it('should avoid materializing deleted JSON payloads as text', async () => {
+    it('should not run any per-row pg_column_size query during cleanup-delete', async () => {
+      // The cleanup path used to SUM(pg_column_size(payload)) over the range
+      // being deleted, which forced PostgreSQL to detoast every payload and
+      // caused the production disk-I/O DoS. Counter is now decremented via
+      // an approximate count*const decrement; no $queryRaw should run.
       const { initSyncService, getSyncService } =
         await import('../src/sync/sync.service');
       const { prisma } = await import('../src/db');
@@ -358,21 +382,17 @@ describe('Storage Quota Cleanup', () => {
       createOp(clientId, userId);
       createRestorePoint(clientId, userId);
 
+      vi.mocked(prisma.$queryRaw).mockClear();
+
       await service.deleteOldestRestorePointAndOps(userId);
 
-      const [queryParts] = vi.mocked(prisma.$queryRaw).mock.calls[0] as unknown as [
-        TemplateStringsArray,
-        number,
-        number,
-      ];
-      const query = Array.from(queryParts).join('');
-
-      expect(query).toContain('pg_column_size(payload)');
-      expect(query).toContain('pg_column_size(vector_clock)');
-      expect(query).toMatch(/WHERE user_id =/);
-      expect(query).toMatch(/server_seq <=/);
-      expect(query).not.toContain('payload::text');
-      expect(query).not.toContain('vector_clock::text');
+      const offendingCalls = vi
+        .mocked(prisma.$queryRaw)
+        .mock.calls.filter((call) => {
+          const queryParts = call[0] as unknown as TemplateStringsArray;
+          return Array.from(queryParts).join('').includes('pg_column_size');
+        });
+      expect(offendingCalls).toHaveLength(0);
     });
 
     it('should keep single restore point but delete ops before it', async () => {
@@ -571,34 +591,23 @@ describe('Storage Quota Cleanup', () => {
       expect(result.deletedRestorePoints).toBe(0);
     });
 
-    it('should delete multiple restore points iteratively until quota is satisfied', async () => {
+    it('should delete restore points iteratively until quota is satisfied', async () => {
+      // Counter is now decremented incrementally by deleteOldestRestorePointAndOps
+      // via $executeRaw (mocked above to mutate testUsers), so the loop can
+      // detect progress without per-row pg_column_size scans.
       const { initSyncService, getSyncService } =
         await import('../src/sync/sync.service');
       initSyncService();
       const service = getSyncService();
 
-      // Track storage updates to simulate freeing space after each deletion
-      let currentStorage = 150 * 1024 * 1024; // Start at 150MB
-      const storagePerRestorePoint = 30 * 1024 * 1024; // 30MB per restore point
-
-      // Mock user lookup to return decreasing storage after each update
-      const originalGet = testUsers.get.bind(testUsers);
-      testUsers.get = (key: number) => {
-        const user = originalGet(key);
-        if (user) {
-          return {
-            ...user,
-            storageUsedBytes: BigInt(currentStorage),
-          };
-        }
-        return user;
-      };
-
+      // Start a few KB above quota so cleanup's approximate decrement
+      // (count * 1024) can bring us under within a few iterations.
+      const quota = 100 * 1024 * 1024;
       testUsers.set(userId, {
         id: userId,
         email: 'test@test.com',
-        storageUsedBytes: BigInt(currentStorage),
-        storageQuotaBytes: BigInt(100 * 1024 * 1024), // 100MB quota
+        storageUsedBytes: BigInt(quota + 3000),
+        storageQuotaBytes: BigInt(quota),
       });
 
       // Create: RESTORE1, ops, RESTORE2, ops, RESTORE3, ops, RESTORE4 (current)
@@ -614,18 +623,8 @@ describe('Storage Quota Cleanup', () => {
 
       expect(testOperations.size).toBe(9);
 
-      // Mock updateStorageUsage to decrease storage
-      const originalUpdateStorageUsage = service.updateStorageUsage.bind(service);
-      service.updateStorageUsage = async (uid: number) => {
-        currentStorage -= storagePerRestorePoint;
-        if (currentStorage < 0) currentStorage = 0;
-        await originalUpdateStorageUsage(uid);
-      };
-
       const result = await service.freeStorageForUpload(userId, 1000);
 
-      // Should succeed after deleting enough restore points
-      // Need to delete 2 restore points to go from 150MB to 90MB (under 100MB quota)
       expect(result.success).toBe(true);
       expect(result.deletedRestorePoints).toBeGreaterThanOrEqual(1);
       expect(result.deletedOps).toBeGreaterThan(0);

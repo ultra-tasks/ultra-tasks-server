@@ -12,6 +12,7 @@ import {
   ConflictType,
   ConflictResult,
 } from './sync.types';
+import { APPROX_BYTES_PER_OP } from './sync.const';
 import { Logger } from '../logger';
 import { CURRENT_SCHEMA_VERSION } from '@sp/shared-schema';
 import { Prisma } from '@prisma/client';
@@ -824,7 +825,6 @@ export class SyncService {
     let totalDeleted = 0;
     const affectedUserIds: number[] = [];
 
-    const APPROX_BYTES_PER_OP = 1024;
 
     for (const state of states) {
       const snapshotAt = Number(state.snapshotAt);
@@ -911,7 +911,6 @@ export class SyncService {
     // freeStorageForUpload's loop can make progress without recomputing per-row
     // pg_column_size (the original DoS pattern). Reconciled to exact value once
     // at the end of freeStorageForUpload via a single updateStorageUsage call.
-    const APPROX_BYTES_PER_OP = 1024;
 
     // Delete the operations
     const result = await prisma.operation.deleteMany({

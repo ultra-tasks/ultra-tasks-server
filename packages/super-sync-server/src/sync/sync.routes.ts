@@ -12,6 +12,8 @@ import { getWsConnectionService } from './services/websocket-connection.service'
 import { Logger } from '../logger';
 import { prisma } from '../db';
 import {
+  Operation,
+  ServerOperation,
   UploadOpsRequest,
   UploadOpsResponse,
   DownloadOpsResponse,
@@ -63,9 +65,10 @@ const errorMessage = (err: unknown): string =>
  * upload response after ops were persisted.
  */
 const computeOpsStorageBytes = (
-  ops: Array<{ payload: unknown; vectorClock: unknown }>,
+  ops: Array<{ id?: string; payload: unknown; vectorClock: unknown }>,
 ): number => {
   let total = 0;
+  let skipped = 0;
   for (const op of ops) {
     try {
       total += Buffer.byteLength(JSON.stringify(op.payload ?? null), 'utf8');
@@ -73,7 +76,11 @@ const computeOpsStorageBytes = (
     } catch {
       // Skip unserializable op — counter under-counts slightly. Quota is
       // advisory; offline reconciliation corrects drift.
+      skipped++;
     }
+  }
+  if (skipped > 0) {
+    Logger.warn(`computeOpsStorageBytes: skipped ${skipped} unserializable op(s)`);
   }
   return total;
 };
@@ -310,7 +317,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
             // The original response may have contained newOps that the client missed if the
             // network dropped the response. By using the CURRENT request's lastKnownServerSeq,
             // we ensure the client gets all ops it hasn't seen yet.
-            let newOps: import('./sync.types').ServerOperation[] | undefined;
+            let newOps: ServerOperation[] | undefined;
             let latestSeq: number;
             let hasMorePiggyback = false;
             const PIGGYBACK_LIMIT = 500;
@@ -362,7 +369,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         const results = await syncService.uploadOps(
           userId,
           clientId,
-          ops as unknown as import('./sync.types').Operation[],
+          ops as unknown as Operation[],
           isCleanSlate,
         );
 
@@ -390,12 +397,13 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         // accepted and persisted, so a counter update failure must not 500 the
         // response (would cause client retry + double-upload).
         if (accepted > 0) {
-          const acceptedIds = new Set(
-            results.filter((r) => r.accepted).map((r) => r.opId),
-          );
-          const acceptedOps = (
-            ops as unknown as import('./sync.types').Operation[]
-          ).filter((op) => acceptedIds.has(op.id));
+          // results[i] corresponds to ops[i] (uploadOps preserves order).
+          // Zip rather than rebuild a Set — avoids two extra passes + alloc.
+          const typedOps = ops as unknown as Operation[];
+          const acceptedOps: Operation[] = [];
+          for (let i = 0; i < typedOps.length; i++) {
+            if (results[i]?.accepted) acceptedOps.push(typedOps[i]);
+          }
           const deltaBytes = computeOpsStorageBytes(acceptedOps);
           if (deltaBytes > 0) {
             try {
@@ -409,7 +417,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         }
 
         // Optionally include new ops from other clients (with atomic latestSeq read)
-        let newOps: import('./sync.types').ServerOperation[] | undefined;
+        let newOps: ServerOperation[] | undefined;
         let latestSeq: number;
         let hasMorePiggyback = false;
         const PIGGYBACK_LIMIT = 500;

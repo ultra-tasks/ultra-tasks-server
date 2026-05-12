@@ -95,7 +95,11 @@ describe('Cleanup Jobs', () => {
       expect(mockSyncService.deleteOldSyncedOpsForAllUsers).toHaveBeenCalledTimes(3);
     });
 
-    it('should update storage usage for affected users after op cleanup', async () => {
+    it('should not call full-scan updateStorageUsage after op cleanup', async () => {
+      // The daily cleanup used to call updateStorageUsage(userId) for every
+      // affected user, which forced a full-payload TOAST scan and caused the
+      // production disk-I/O DoS. Counter decrement now happens incrementally
+      // inside deleteOldSyncedOpsForAllUsers via decrementStorageUsage.
       mockSyncService.deleteOldSyncedOpsForAllUsers.mockResolvedValueOnce({
         totalDeleted: 100,
         affectedUserIds: [1, 2, 3],
@@ -104,11 +108,7 @@ describe('Cleanup Jobs', () => {
       startCleanupJobs();
       await vi.advanceTimersByTimeAsync(10_000);
 
-      // Should update storage for each affected user
-      expect(mockSyncService.updateStorageUsage).toHaveBeenCalledTimes(3);
-      expect(mockSyncService.updateStorageUsage).toHaveBeenCalledWith(1);
-      expect(mockSyncService.updateStorageUsage).toHaveBeenCalledWith(2);
-      expect(mockSyncService.updateStorageUsage).toHaveBeenCalledWith(3);
+      expect(mockSyncService.updateStorageUsage).not.toHaveBeenCalled();
     });
   });
 
