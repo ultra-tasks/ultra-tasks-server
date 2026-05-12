@@ -315,6 +315,80 @@ describe('SnapshotService', () => {
         'SNAPSHOT_REPLAY_INCOMPLETE',
       );
     });
+
+    it('should allow latest snapshot replay across a leading gap when the first surviving op is a full-state op', async () => {
+      // Scenario: after a clean-slate upload (sync.service preserves lastSeq but
+      // wipes ops) the next SYNC_IMPORT lands at lastSeq+1 (e.g. 102). Snapshot
+      // replay must accept the leading gap because SYNC_IMPORT resets state.
+      const updateSpy = vi.fn().mockResolvedValue({});
+
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn) => {
+        const mockTx = {
+          userSyncState: {
+            findUnique: vi
+              .fn()
+              .mockResolvedValueOnce({ lastSeq: 102 })
+              .mockResolvedValueOnce({ snapshotData: null, lastSnapshotSeq: null }),
+            update: updateSpy,
+          },
+          operation: {
+            count: vi.fn().mockResolvedValue(0),
+            findMany: vi.fn().mockResolvedValue([
+              {
+                id: 'op-102',
+                opType: 'SYNC_IMPORT',
+                entityType: 'NONE',
+                entityId: null,
+                payload: { task: { t1: { id: 't1', title: 'after-clean-slate' } } },
+                isPayloadEncrypted: false,
+                serverSeq: 102,
+                schemaVersion: 1,
+              },
+            ]),
+          },
+        };
+        return fn(mockTx as any);
+      });
+
+      const result = await service.generateSnapshot(1);
+      expect(result.serverSeq).toBe(102);
+      expect((result.state as any).task.t1.title).toBe('after-clean-slate');
+    });
+
+    it('should reject leading gap when the first surviving op is not a full-state op', async () => {
+      // Same shape as the clean-slate scenario but the surviving op is a CRT —
+      // applying it to empty state would silently corrupt the snapshot.
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn) => {
+        const mockTx = {
+          userSyncState: {
+            findUnique: vi
+              .fn()
+              .mockResolvedValueOnce({ lastSeq: 102 })
+              .mockResolvedValueOnce({ snapshotData: null, lastSnapshotSeq: null }),
+          },
+          operation: {
+            count: vi.fn().mockResolvedValue(0),
+            findMany: vi.fn().mockResolvedValue([
+              {
+                id: 'op-102',
+                opType: 'CRT',
+                entityType: 'TASK',
+                entityId: 'task-102',
+                payload: { id: 'task-102' },
+                isPayloadEncrypted: false,
+                serverSeq: 102,
+                schemaVersion: 1,
+              },
+            ]),
+          },
+        };
+        return fn(mockTx as any);
+      });
+
+      await expect(service.generateSnapshot(1)).rejects.toThrow(
+        'SNAPSHOT_REPLAY_INCOMPLETE',
+      );
+    });
   });
 
   describe('clearForUser', () => {

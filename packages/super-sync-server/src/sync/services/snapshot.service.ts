@@ -8,6 +8,7 @@
  * generation for the same user. This prevents duplicate expensive computation.
  */
 import * as zlib from 'zlib';
+import { Prisma } from '@prisma/client';
 import { prisma, Operation as PrismaOperation } from '../../db';
 import { Logger } from '../../logger';
 import {
@@ -277,7 +278,13 @@ export class SnapshotService {
             take: BATCH_SIZE,
           });
 
-          this._assertContiguousReplayBatch(batchOps, currentSeq + 1, latestSeq);
+          const expectedFirstSeq = this._resolveExpectedFirstSeq(
+            batchOps,
+            currentSeq,
+            startSeq,
+            latestSeq,
+          );
+          this._assertContiguousReplayBatch(batchOps, expectedFirstSeq, latestSeq);
 
           // Replay ops
           state = this.replayOpsToState(batchOps, state);
@@ -321,6 +328,10 @@ export class SnapshotService {
       },
       {
         timeout: 60000, // Snapshots can take time
+        // Prevent races between `_assertNoEncryptedOps` / `_assertCachedSnapshotBaseReplayable`
+        // and the subsequent `findMany` batches: a concurrent writer must not be able to
+        // slip an encrypted op into the snapshot window after the guards have passed.
+        isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
       },
     );
   }
@@ -481,7 +492,13 @@ export class SnapshotService {
             take: BATCH_SIZE,
           });
 
-          this._assertContiguousReplayBatch(batchOps, currentSeq + 1, targetSeq);
+          const expectedFirstSeq = this._resolveExpectedFirstSeq(
+            batchOps,
+            currentSeq,
+            startSeq,
+            targetSeq,
+          );
+          this._assertContiguousReplayBatch(batchOps, expectedFirstSeq, targetSeq);
 
           state = this.replayOpsToState(batchOps, state);
           currentSeq = batchOps[batchOps.length - 1].serverSeq;
@@ -495,6 +512,7 @@ export class SnapshotService {
       },
       {
         timeout: 60000, // Snapshot generation can take time
+        isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
       },
     );
   }
@@ -752,6 +770,42 @@ export class SnapshotService {
     if (encryptedOpCount > 0) {
       throw new Error(encryptedOpsNotSupportedMessage(encryptedOpCount));
     }
+  }
+
+  /**
+   * Decide where contiguity checking should start for the current batch.
+   *
+   * The replay base may sit below the lowest op that physically exists, e.g.:
+   *   - After a clean-slate upload (`sync.service.ts` preserves `lastSeq` but deletes ops).
+   *   - After retention pruning (`deleteOldestRestorePointAndOps`) trimmed older ops.
+   * In both cases the surviving lowest-seq op is guaranteed to be a full-state op
+   * (SYNC_IMPORT / BACKUP_IMPORT / REPAIR) that resets state during replay. Accept
+   * this leading gap only on the first batch and only when that invariant holds;
+   * mid-stream gaps still indicate corruption and must throw.
+   */
+  private _resolveExpectedFirstSeq(
+    batchOps: PrismaOperation[],
+    currentSeq: number,
+    startSeq: number,
+    targetSeq: number,
+  ): number {
+    if (currentSeq !== startSeq || batchOps.length === 0) {
+      return currentSeq + 1;
+    }
+    const firstOp = batchOps[0];
+    if (firstOp.serverSeq <= currentSeq + 1) {
+      return currentSeq + 1;
+    }
+    const isFullStateOp =
+      firstOp.opType === 'SYNC_IMPORT' ||
+      firstOp.opType === 'BACKUP_IMPORT' ||
+      firstOp.opType === 'REPAIR';
+    if (!isFullStateOp) {
+      throw new Error(
+        `SNAPSHOT_REPLAY_INCOMPLETE: Expected operation serverSeq ${currentSeq + 1} but got ${firstOp.serverSeq} while replaying to ${targetSeq}`,
+      );
+    }
+    return firstOp.serverSeq;
   }
 
   private _assertContiguousReplayBatch(

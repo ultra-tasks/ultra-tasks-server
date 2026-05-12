@@ -78,7 +78,54 @@ vi.mock('../src/db', async () => {
             .sort((a: any, b: any) => b.serverSeq - a.serverSeq);
           return applyOperationSelect(ops[0], args.select) || null;
         }
+        if (args.where?.opType?.in) {
+          const ops = Array.from(state.operations.values()).filter((op: any) => {
+            if (args.where.userId !== undefined && args.where.userId !== op.userId)
+              return false;
+            if (
+              args.where.serverSeq?.lte !== undefined &&
+              op.serverSeq > args.where.serverSeq.lte
+            )
+              return false;
+            if (!args.where.opType.in.includes(op.opType)) return false;
+            if (
+              args.where.isPayloadEncrypted !== undefined &&
+              op.isPayloadEncrypted !== args.where.isPayloadEncrypted
+            )
+              return false;
+            return true;
+          });
+          if (ops.length === 0) return null;
+          ops.sort((a: any, b: any) =>
+            args.orderBy?.serverSeq === 'desc'
+              ? b.serverSeq - a.serverSeq
+              : a.serverSeq - b.serverSeq,
+          );
+          return applyOperationSelect(ops[0], args.select) || ops[0];
+        }
         return null;
+      }),
+      count: vi.fn().mockImplementation(async (args: any) => {
+        return Array.from(state.operations.values()).filter((op: any) => {
+          if (args.where?.userId !== undefined && args.where.userId !== op.userId)
+            return false;
+          if (
+            args.where?.serverSeq?.gt !== undefined &&
+            op.serverSeq <= args.where.serverSeq.gt
+          )
+            return false;
+          if (
+            args.where?.serverSeq?.lte !== undefined &&
+            op.serverSeq > args.where.serverSeq.lte
+          )
+            return false;
+          if (
+            args.where?.isPayloadEncrypted !== undefined &&
+            op.isPayloadEncrypted !== args.where.isPayloadEncrypted
+          )
+            return false;
+          return true;
+        }).length;
       }),
       findMany: vi.fn().mockImplementation(async (args: any) => {
         const ops = Array.from(state.operations.values());
@@ -278,6 +325,54 @@ vi.mock('../src/db', async () => {
             return state.operations.get(args.where.id) || null;
           }
           return null;
+        }),
+        findFirst: vi.fn().mockImplementation(async (args: any) => {
+          const ops = Array.from(state.operations.values()).filter((op: any) => {
+            if (args.where?.userId !== undefined && args.where.userId !== op.userId)
+              return false;
+            if (
+              args.where?.serverSeq?.lte !== undefined &&
+              op.serverSeq > args.where.serverSeq.lte
+            )
+              return false;
+            if (args.where?.opType?.in && !args.where.opType.in.includes(op.opType))
+              return false;
+            if (
+              args.where?.isPayloadEncrypted !== undefined &&
+              op.isPayloadEncrypted !== args.where.isPayloadEncrypted
+            )
+              return false;
+            return true;
+          });
+          if (ops.length === 0) return null;
+          ops.sort((a: any, b: any) =>
+            args.orderBy?.serverSeq === 'desc'
+              ? b.serverSeq - a.serverSeq
+              : a.serverSeq - b.serverSeq,
+          );
+          return ops[0];
+        }),
+        count: vi.fn().mockImplementation(async (args: any) => {
+          return Array.from(state.operations.values()).filter((op: any) => {
+            if (args.where?.userId !== undefined && args.where.userId !== op.userId)
+              return false;
+            if (
+              args.where?.serverSeq?.gt !== undefined &&
+              op.serverSeq <= args.where.serverSeq.gt
+            )
+              return false;
+            if (
+              args.where?.serverSeq?.lte !== undefined &&
+              op.serverSeq > args.where.serverSeq.lte
+            )
+              return false;
+            if (
+              args.where?.isPayloadEncrypted !== undefined &&
+              op.isPayloadEncrypted !== args.where.isPayloadEncrypted
+            )
+              return false;
+            return true;
+          }).length;
         }),
       },
       syncDevice: {
