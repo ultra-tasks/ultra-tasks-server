@@ -26,6 +26,17 @@ vi.mock('../src/db', () => ({
 
 import { prisma } from '../src/db';
 
+const EXPECTED_REPLAY_OPERATION_SELECT = {
+  id: true,
+  serverSeq: true,
+  opType: true,
+  entityType: true,
+  entityId: true,
+  payload: true,
+  schemaVersion: true,
+  isPayloadEncrypted: true,
+};
+
 describe('SnapshotService', () => {
   let service: SnapshotService;
 
@@ -254,6 +265,131 @@ describe('SnapshotService', () => {
   });
 
   describe('generateSnapshot - FIX 1.7 concurrent lock', () => {
+    it('should only select replay fields needed to generate snapshots', async () => {
+      const findMany = vi.fn().mockResolvedValue([
+        {
+          id: 'op-1',
+          serverSeq: 1,
+          opType: 'CRT',
+          entityType: 'TASK',
+          entityId: 'task-1',
+          payload: { title: 'Test Task' },
+          schemaVersion: 1,
+          isPayloadEncrypted: false,
+        },
+      ]);
+      const mockTransaction = vi.mocked(prisma.$transaction);
+
+      mockTransaction.mockImplementation(async (fn) => {
+        const mockTx = {
+          userSyncState: {
+            findUnique: vi
+              .fn()
+              .mockResolvedValueOnce({ lastSeq: 1 })
+              .mockResolvedValueOnce({
+                snapshotData: null,
+                lastSnapshotSeq: null,
+                snapshotAt: null,
+                snapshotSchemaVersion: null,
+              }),
+            update: vi.fn().mockResolvedValue({}),
+          },
+          operation: { count: vi.fn().mockResolvedValue(0), findMany },
+        };
+        return fn(mockTx as any);
+      });
+
+      await service.generateSnapshot(1);
+
+      expect(findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            userId: 1,
+            serverSeq: { gt: 0, lte: 1 },
+          },
+          select: EXPECTED_REPLAY_OPERATION_SELECT,
+        }),
+      );
+      expect(findMany.mock.calls[0][0].select).not.toHaveProperty('clientId');
+      expect(findMany.mock.calls[0][0].select).not.toHaveProperty('vectorClock');
+      expect(findMany.mock.calls[0][0].select).not.toHaveProperty('receivedAt');
+    });
+
+    it('should reject latest snapshot generation when encrypted ops are in the replay range', async () => {
+      const update = vi.fn();
+      const findMany = vi.fn();
+
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn) => {
+        const mockTx = {
+          userSyncState: {
+            findUnique: vi
+              .fn()
+              .mockResolvedValueOnce({ lastSeq: 1 })
+              .mockResolvedValueOnce({
+                snapshotData: null,
+                lastSnapshotSeq: null,
+                snapshotAt: null,
+                snapshotSchemaVersion: null,
+              }),
+            update,
+          },
+          operation: {
+            count: vi.fn().mockResolvedValue(1),
+            findMany,
+          },
+        };
+        return fn(mockTx as any);
+      });
+
+      await expect(service.generateSnapshot(1)).rejects.toThrow(
+        'ENCRYPTED_OPS_NOT_SUPPORTED',
+      );
+      expect(findMany).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('should reject latest snapshot generation when replay cannot reach latestSeq', async () => {
+      const update = vi.fn();
+
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn) => {
+        const mockTx = {
+          userSyncState: {
+            findUnique: vi
+              .fn()
+              .mockResolvedValueOnce({ lastSeq: 2 })
+              .mockResolvedValueOnce({
+                snapshotData: null,
+                lastSnapshotSeq: null,
+                snapshotAt: null,
+                snapshotSchemaVersion: null,
+              }),
+            update,
+          },
+          operation: {
+            count: vi.fn().mockResolvedValue(0),
+            findMany: vi.fn().mockResolvedValue([
+              {
+                id: 'op-2',
+                serverSeq: 2,
+                opType: 'CRT',
+                entityType: 'TASK',
+                entityId: 'task-2',
+                payload: { title: 'Task 2' },
+                schemaVersion: 1,
+                isPayloadEncrypted: false,
+              },
+            ]),
+          },
+        };
+        return fn(mockTx as any);
+      });
+
+      await expect(service.generateSnapshot(1)).rejects.toThrow(
+        'SNAPSHOT_REPLAY_INCOMPLETE',
+      );
+      expect(update).not.toHaveBeenCalled();
+    });
+
     it('should prevent concurrent snapshot generation for same user', async () => {
       // Create a delayed response to simulate long snapshot generation
       let resolveFirst: (value: any) => void;
@@ -791,6 +927,32 @@ describe('SnapshotService', () => {
       );
     });
 
+    it('should reject historical snapshot generation when replay cannot reach targetSeq', async () => {
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn) => {
+        const mockTx = {
+          userSyncState: {
+            findUnique: vi
+              .fn()
+              .mockResolvedValueOnce({ lastSeq: 5 })
+              .mockResolvedValueOnce({
+                snapshotData: null,
+                lastSnapshotSeq: null,
+                snapshotSchemaVersion: null,
+              }),
+          },
+          operation: {
+            count: vi.fn().mockResolvedValue(0),
+            findMany: vi.fn().mockResolvedValue([]),
+          },
+        };
+        return fn(mockTx as any);
+      });
+
+      await expect(service.generateSnapshotAtSeq(1, 5)).rejects.toThrow(
+        'SNAPSHOT_REPLAY_INCOMPLETE',
+      );
+    });
+
     it('should throw error when replay range is not contiguous', async () => {
       vi.mocked(prisma.$transaction).mockImplementation(async (fn) => {
         const mockTx = {
@@ -822,6 +984,52 @@ describe('SnapshotService', () => {
       await expect(service.generateSnapshotAtSeq(1, 5)).rejects.toThrow(
         'SNAPSHOT_REPLAY_INCOMPLETE',
       );
+    });
+
+    it('should only select replay fields needed to generate snapshots at a sequence', async () => {
+      const findMany = vi.fn().mockResolvedValue([
+        {
+          id: 'op-1',
+          serverSeq: 1,
+          opType: 'CRT',
+          entityType: 'TASK',
+          entityId: 'task-1',
+          payload: { title: 'Test Task' },
+          schemaVersion: 1,
+          isPayloadEncrypted: false,
+        },
+      ]);
+
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn) => {
+        const mockTx = {
+          userSyncState: {
+            findUnique: vi
+              .fn()
+              .mockResolvedValueOnce({ lastSeq: 1 })
+              .mockResolvedValueOnce({
+                snapshotData: null,
+                lastSnapshotSeq: null,
+                snapshotSchemaVersion: null,
+              }),
+          },
+          operation: {
+            count: vi.fn().mockResolvedValue(0),
+            findMany,
+          },
+        };
+        return fn(mockTx as any);
+      });
+
+      await service.generateSnapshotAtSeq(1, 1);
+
+      expect(findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          select: EXPECTED_REPLAY_OPERATION_SELECT,
+        }),
+      );
+      expect(findMany.mock.calls[0][0].select).not.toHaveProperty('clientId');
+      expect(findMany.mock.calls[0][0].select).not.toHaveProperty('vectorClock');
+      expect(findMany.mock.calls[0][0].select).not.toHaveProperty('receivedAt');
     });
   });
 

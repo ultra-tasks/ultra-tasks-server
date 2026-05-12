@@ -74,6 +74,13 @@ export type { LwwUpdateActionTypeHelpers } from './lww-update-action-types';
 // Apply-operation result and option types.
 export type { ApplyOperationsResult, ApplyOperationsOptions } from './apply.types';
 
+// Generic operation replay coordinator.
+export { replayOperationBatch, yieldToEventLoop } from './replay-coordinator';
+export type {
+  OperationReplayArchiveFailureContext,
+  OperationReplayCoordinatorOptions,
+} from './replay-coordinator';
+
 // Remote operation application coordinator.
 export { applyRemoteOperations } from './remote-apply';
 export type {
@@ -119,11 +126,18 @@ export type {
 export type {
   ActionDispatchPort,
   ArchiveSideEffectPort,
+  ConflictUiDialogRequest,
+  ConflictUiNotification,
+  ConflictUiNotificationSeverity,
+  ConflictUiPort,
   DeferredLocalActionsPort,
   OperationApplyPort,
   OperationStorePort,
   RemoteApplyWindowPort,
   SyncActionLike,
+  SyncConfigPort,
+  SyncConfigSnapshot,
+  SyncPortMeta,
 } from './ports';
 
 // Conflict-resolution helpers.

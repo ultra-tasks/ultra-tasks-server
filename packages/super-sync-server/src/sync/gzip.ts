@@ -36,12 +36,18 @@ export const gzipAsync = (buffer: Buffer, options?: zlib.ZlibOptions): Promise<B
   });
 
 export const isDecompressedPayloadTooLargeError = (cause: unknown): boolean => {
-  if (!(cause instanceof Error)) return false;
+  const code =
+    cause !== null && typeof cause === 'object' && 'code' in cause
+      ? String((cause as { code?: unknown }).code)
+      : undefined;
 
-  const code = (cause as { code?: unknown }).code;
+  if (code === 'ERR_BUFFER_TOO_LARGE' || code === 'ERR_OUT_OF_RANGE') {
+    return true;
+  }
+
+  const message = cause instanceof Error ? cause.message : '';
   return (
-    code === 'ERR_BUFFER_TOO_LARGE' ||
-    code === 'ERR_OUT_OF_RANGE' ||
-    cause.message.includes('maxOutputLength')
+    message.includes('maxOutputLength') ||
+    message.includes('Cannot create a Buffer larger than')
   );
 };

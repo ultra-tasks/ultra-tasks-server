@@ -13,6 +13,59 @@ import {
 } from '../sync.types';
 import { Logger } from '../../logger';
 
+const OPERATION_DOWNLOAD_SELECT = {
+  id: true,
+  serverSeq: true,
+  clientId: true,
+  actionType: true,
+  opType: true,
+  entityType: true,
+  entityId: true,
+  payload: true,
+  vectorClock: true,
+  schemaVersion: true,
+  clientTimestamp: true,
+  receivedAt: true,
+  isPayloadEncrypted: true,
+  syncImportReason: true,
+} as const;
+
+type OperationDownloadRow = {
+  id: string;
+  serverSeq: number;
+  clientId: string;
+  actionType: string;
+  opType: string;
+  entityType: string;
+  entityId: string | null;
+  payload: unknown;
+  vectorClock: unknown;
+  schemaVersion: number;
+  clientTimestamp: bigint;
+  receivedAt: bigint;
+  isPayloadEncrypted: boolean;
+  syncImportReason: string | null;
+};
+
+const mapOperationRow = (row: OperationDownloadRow): ServerOperation => ({
+  serverSeq: row.serverSeq,
+  op: {
+    id: row.id,
+    clientId: row.clientId,
+    actionType: row.actionType,
+    opType: row.opType as Operation['opType'],
+    entityType: row.entityType,
+    entityId: row.entityId ?? undefined,
+    payload: row.payload,
+    vectorClock: row.vectorClock as VectorClock,
+    schemaVersion: row.schemaVersion,
+    timestamp: Number(row.clientTimestamp),
+    isPayloadEncrypted: row.isPayloadEncrypted,
+    syncImportReason: row.syncImportReason ?? undefined,
+  },
+  receivedAt: Number(row.receivedAt),
+});
+
 export class OperationDownloadService {
   /**
    * Get operations since a given sequence number.
@@ -34,26 +87,10 @@ export class OperationDownloadService {
         serverSeq: 'asc',
       },
       take: limit,
+      select: OPERATION_DOWNLOAD_SELECT,
     });
 
-    return ops.map((row) => ({
-      serverSeq: row.serverSeq,
-      op: {
-        id: row.id,
-        clientId: row.clientId,
-        actionType: row.actionType,
-        opType: row.opType as Operation['opType'],
-        entityType: row.entityType,
-        entityId: row.entityId ?? undefined,
-        payload: row.payload,
-        vectorClock: row.vectorClock as unknown as VectorClock,
-        schemaVersion: row.schemaVersion,
-        timestamp: Number(row.clientTimestamp),
-        isPayloadEncrypted: row.isPayloadEncrypted,
-        syncImportReason: row.syncImportReason ?? undefined,
-      },
-      receivedAt: Number(row.receivedAt),
-    }));
+    return ops.map(mapOperationRow);
   }
 
   /**
@@ -63,12 +100,17 @@ export class OperationDownloadService {
    * BACKUP_IMPORT, REPAIR), we skip to that operation's sequence instead. This prevents
    * sending operations that will be filtered out by the client anyway, saving bandwidth
    * and processing time.
+   *
+   * includeSnapshotMetadata controls only the expensive vector-clock aggregate; the
+   * full-state fast-forward still applies so piggyback downloads can return the
+   * replacing operation without scanning superseded history.
    */
   async getOpsSinceWithSeq(
     userId: number,
     sinceSeq: number,
     excludeClient?: string,
     limit: number = 500,
+    includeSnapshotMetadata: boolean = true,
   ): Promise<{
     ops: ServerOperation[];
     latestSeq: number;
@@ -83,6 +125,23 @@ export class OperationDownloadService {
           select: { lastSeq: true },
         });
         const latestSeq = seqRow?.lastSeq ?? 0;
+
+        if (latestSeq === 0) {
+          const gapDetected = sinceSeq > 0;
+          if (gapDetected) {
+            Logger.warn(
+              `[user:${userId}] Gap detected: client at sinceSeq=${sinceSeq} but server is empty (latestSeq=0)`,
+            );
+          }
+
+          return {
+            ops: [],
+            latestSeq,
+            gapDetected,
+            latestSnapshotSeq: undefined,
+            snapshotVectorClock: undefined,
+          };
+        }
 
         // Find the latest full-state operation (SYNC_IMPORT, BACKUP_IMPORT, REPAIR)
         // These operations supersede all previous operations
@@ -112,38 +171,42 @@ export class OperationDownloadService {
               `(latest snapshot at seq ${latestSnapshotSeq})`,
           );
 
-          // Compute aggregated vector clock from all ops up to and including the snapshot.
-          // This ensures clients know about all clock entries from skipped ops.
-          // Uses a SQL aggregate to avoid loading all individual ops' clocks into memory —
-          // the aggregation happens in PostgreSQL, returning only the final per-client max.
-          const clockRows = await tx.$queryRaw<
-            Array<{ client_id: string; max_counter: bigint }>
-          >`
-            SELECT kv.key AS client_id, MAX(kv.value::bigint) AS max_counter
-            FROM operations, LATERAL jsonb_each_text(vector_clock) AS kv(key, value)
-            WHERE user_id = ${userId}
-              AND server_seq <= ${latestSnapshotSeq}
-              AND jsonb_typeof(vector_clock) = 'object'
-              AND kv.value ~ '^[0-9]+$'
-            GROUP BY kv.key
-          `;
+          if (includeSnapshotMetadata) {
+            // Compute aggregated vector clock from all ops up to and including the snapshot.
+            // This ensures clients know about all clock entries from skipped ops.
+            // Uses a SQL aggregate to avoid loading all individual ops' clocks into memory —
+            // the aggregation happens in PostgreSQL, returning only the final per-client max.
+            const clockRows = await tx.$queryRaw<
+              Array<{ client_id: string; max_counter: bigint }>
+            >`
+              SELECT kv.key AS client_id, MAX(kv.value::bigint) AS max_counter
+              FROM operations, LATERAL jsonb_each_text(vector_clock) AS kv(key, value)
+              WHERE user_id = ${userId}
+                AND server_seq <= ${latestSnapshotSeq}
+                AND jsonb_typeof(vector_clock) = 'object'
+                AND kv.value ~ '^[0-9]+$'
+              GROUP BY kv.key
+            `;
 
-          snapshotVectorClock = {};
-          for (const row of clockRows) {
-            snapshotVectorClock[row.client_id] = Number(row.max_counter);
+            snapshotVectorClock = {};
+            for (const row of clockRows) {
+              snapshotVectorClock[row.client_id] = Number(row.max_counter);
+            }
+
+            // Limit snapshot clock to MAX_VECTOR_CLOCK_SIZE to prevent oversized
+            // clocks from being sent to clients. Preserve the requesting client's ID
+            // and the snapshot author's ID to avoid false EQUAL in comparison.
+            const preserveIds: string[] = [];
+            if (excludeClient) preserveIds.push(excludeClient);
+            if (latestFullStateOp?.clientId) {
+              preserveIds.push(latestFullStateOp.clientId);
+            }
+            snapshotVectorClock = limitVectorClockSize(snapshotVectorClock, preserveIds);
+
+            Logger.info(
+              `[user:${userId}] Computed snapshotVectorClock with ${Object.keys(snapshotVectorClock).length} entries: ${JSON.stringify(snapshotVectorClock)}`,
+            );
           }
-
-          // Limit snapshot clock to MAX_VECTOR_CLOCK_SIZE to prevent oversized
-          // clocks from being sent to clients. Preserve the requesting client's ID
-          // and the snapshot author's ID to avoid false EQUAL in comparison.
-          const preserveIds: string[] = [];
-          if (excludeClient) preserveIds.push(excludeClient);
-          if (latestFullStateOp?.clientId) preserveIds.push(latestFullStateOp.clientId);
-          snapshotVectorClock = limitVectorClockSize(snapshotVectorClock, preserveIds);
-
-          Logger.info(
-            `[user:${userId}] Computed snapshotVectorClock with ${Object.keys(snapshotVectorClock).length} entries: ${JSON.stringify(snapshotVectorClock)}`,
-          );
         }
 
         const ops = await tx.operation.findMany({
@@ -156,28 +219,24 @@ export class OperationDownloadService {
             serverSeq: 'asc',
           },
           take: limit,
+          select: OPERATION_DOWNLOAD_SELECT,
         });
 
-        // Get min sequence efficiently
-        const minSeqAgg = await tx.operation.aggregate({
-          where: { userId, serverSeq: { lte: latestSeq } },
-          _min: { serverSeq: true },
-        });
+        let minSeq: number | null = null;
 
-        const minSeq = minSeqAgg._min.serverSeq ?? null;
+        if (sinceSeq > 0 && latestSeq > 0) {
+          // Get min sequence efficiently, but only when gap detection can use it.
+          const minSeqAgg = await tx.operation.aggregate({
+            where: { userId, serverSeq: { lte: latestSeq } },
+            _min: { serverSeq: true },
+          });
+          minSeq = minSeqAgg._min.serverSeq ?? null;
+        }
 
         // Gap detection logic
         let gapDetected = false;
 
-        // Case 1: Client has history but server is empty
-        if (sinceSeq > 0 && latestSeq === 0) {
-          gapDetected = true;
-          Logger.warn(
-            `[user:${userId}] Gap detected: client at sinceSeq=${sinceSeq} but server is empty (latestSeq=0)`,
-          );
-        }
-
-        // Case 2: Client is ahead of server
+        // Case 1: Client is ahead of server
         if (sinceSeq > latestSeq && latestSeq > 0) {
           gapDetected = true;
           Logger.warn(
@@ -186,7 +245,7 @@ export class OperationDownloadService {
         }
 
         if (sinceSeq > 0 && latestSeq > 0) {
-          // Case 3: Requested seq is purged
+          // Case 2: Requested seq is purged
           if (minSeq !== null && sinceSeq < minSeq - 1) {
             gapDetected = true;
             Logger.warn(
@@ -194,7 +253,7 @@ export class OperationDownloadService {
             );
           }
 
-          // Case 4: Gap in returned operations (use effectiveSinceSeq which accounts for snapshot skip)
+          // Case 3: Gap in returned operations (use effectiveSinceSeq which accounts for snapshot skip)
           if (
             !excludeClient &&
             ops.length > 0 &&
@@ -207,24 +266,7 @@ export class OperationDownloadService {
           }
         }
 
-        const mappedOps = ops.map((row) => ({
-          serverSeq: row.serverSeq,
-          op: {
-            id: row.id,
-            clientId: row.clientId,
-            actionType: row.actionType,
-            opType: row.opType as Operation['opType'],
-            entityType: row.entityType,
-            entityId: row.entityId ?? undefined,
-            payload: row.payload,
-            vectorClock: row.vectorClock as unknown as VectorClock,
-            schemaVersion: row.schemaVersion,
-            timestamp: Number(row.clientTimestamp),
-            isPayloadEncrypted: row.isPayloadEncrypted,
-            syncImportReason: row.syncImportReason ?? undefined,
-          },
-          receivedAt: Number(row.receivedAt),
-        }));
+        const mappedOps = ops.map(mapOperationRow);
 
         return {
           ops: mappedOps,

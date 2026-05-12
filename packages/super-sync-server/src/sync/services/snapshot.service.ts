@@ -8,7 +8,7 @@
  * generation for the same user. This prevents duplicate expensive computation.
  */
 import { Prisma } from '@prisma/client';
-import { prisma, Operation as PrismaOperation } from '../../db';
+import { prisma } from '../../db';
 import { Logger } from '../../logger';
 import {
   CURRENT_SCHEMA_VERSION,
@@ -69,6 +69,50 @@ export class EncryptedOpsNotSupportedError extends Error {
     this.encryptedOpCount = encryptedOpCount;
   }
 }
+
+const REPLAY_OPERATION_SELECT = {
+  id: true,
+  serverSeq: true,
+  opType: true,
+  entityType: true,
+  entityId: true,
+  payload: true,
+  schemaVersion: true,
+  isPayloadEncrypted: true,
+} as const;
+
+type ReplayOperationRow = {
+  id: string;
+  serverSeq: number;
+  opType: string;
+  entityType: string;
+  entityId: string | null;
+  payload: unknown;
+  schemaVersion: number;
+  isPayloadEncrypted: boolean;
+};
+
+const assertContiguousReplayBatch = (
+  ops: ReplayOperationRow[],
+  expectedFirstSeq: number,
+  targetSeq: number,
+): void => {
+  if (ops.length === 0) {
+    throw new Error(
+      `SNAPSHOT_REPLAY_INCOMPLETE: Missing operations from seq ${expectedFirstSeq} to ${targetSeq}.`,
+    );
+  }
+
+  let expectedSeq = expectedFirstSeq;
+  for (const op of ops) {
+    if (op.serverSeq !== expectedSeq) {
+      throw new Error(
+        `SNAPSHOT_REPLAY_INCOMPLETE: Expected seq ${expectedSeq} but got ${op.serverSeq} while replaying to seq ${targetSeq}.`,
+      );
+    }
+    expectedSeq++;
+  }
+};
 
 export interface SnapshotResult {
   state: unknown;
@@ -351,19 +395,24 @@ export class SnapshotService {
           const batchOps = await tx.operation.findMany({
             where: {
               userId,
+              // Keep the replay aligned with the advertised snapshot sequence.
               serverSeq: { gt: currentSeq, lte: latestSeq },
             },
             orderBy: { serverSeq: 'asc' },
             take: BATCH_SIZE,
+            select: REPLAY_OPERATION_SELECT,
           });
 
+          // _resolveExpectedFirstSeq permits a leading gap when the first
+          // surviving op is a full-state op (e.g. SYNC_IMPORT after a
+          // clean-slate upload), because full-state ops reset state anyway.
           const expectedFirstSeq = this._resolveExpectedFirstSeq(
             batchOps,
             currentSeq,
             startSeq,
             latestSeq,
           );
-          this._assertContiguousReplayBatch(batchOps, expectedFirstSeq, latestSeq);
+          assertContiguousReplayBatch(batchOps, expectedFirstSeq, latestSeq);
 
           // Replay ops
           state = this.replayOpsToState(batchOps, state);
@@ -572,10 +621,12 @@ export class SnapshotService {
           const batchOps = await tx.operation.findMany({
             where: {
               userId,
+              // Historical restore points replay only up to the requested sequence.
               serverSeq: { gt: currentSeq, lte: targetSeq },
             },
             orderBy: { serverSeq: 'asc' },
             take: BATCH_SIZE,
+            select: REPLAY_OPERATION_SELECT,
           });
 
           const expectedFirstSeq = this._resolveExpectedFirstSeq(
@@ -584,7 +635,7 @@ export class SnapshotService {
             startSeq,
             targetSeq,
           );
-          this._assertContiguousReplayBatch(batchOps, expectedFirstSeq, targetSeq);
+          assertContiguousReplayBatch(batchOps, expectedFirstSeq, targetSeq);
 
           state = this.replayOpsToState(batchOps, state);
           currentSeq = batchOps[batchOps.length - 1].serverSeq;
@@ -608,7 +659,7 @@ export class SnapshotService {
    * Used internally by snapshot generation methods.
    */
   replayOpsToState(
-    ops: PrismaOperation[],
+    ops: ReplayOperationRow[],
     initialState: Record<string, unknown> = {},
   ): Record<string, unknown> {
     const state = { ...(initialState as Record<string, Record<string, unknown>>) };
@@ -853,7 +904,7 @@ export class SnapshotService {
    * mid-stream gaps still indicate corruption and must throw.
    */
   private _resolveExpectedFirstSeq(
-    batchOps: PrismaOperation[],
+    batchOps: ReplayOperationRow[],
     currentSeq: number,
     startSeq: number,
     targetSeq: number,
@@ -875,27 +926,5 @@ export class SnapshotService {
       );
     }
     return firstOp.serverSeq;
-  }
-
-  private _assertContiguousReplayBatch(
-    batchOps: PrismaOperation[],
-    expectedFirstSeq: number,
-    targetSeq: number,
-  ): void {
-    if (batchOps.length === 0) {
-      throw new Error(
-        `SNAPSHOT_REPLAY_INCOMPLETE: Missing operation at serverSeq ${expectedFirstSeq} while replaying to ${targetSeq}`,
-      );
-    }
-
-    for (let i = 0; i < batchOps.length; i++) {
-      const expectedSeq = expectedFirstSeq + i;
-      const actualSeq = batchOps[i].serverSeq;
-      if (actualSeq !== expectedSeq) {
-        throw new Error(
-          `SNAPSHOT_REPLAY_INCOMPLETE: Expected operation serverSeq ${expectedSeq} but got ${actualSeq} while replaying to ${targetSeq}`,
-        );
-      }
-    }
   }
 }

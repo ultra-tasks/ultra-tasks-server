@@ -332,6 +332,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
                 lastKnownServerSeq,
                 clientId,
                 PIGGYBACK_LIMIT,
+                false,
               );
               newOps = opsResult.ops;
               latestSeq = opsResult.latestSeq;
@@ -411,6 +412,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
             lastKnownServerSeq,
             clientId,
             PIGGYBACK_LIMIT,
+            false,
           );
           newOps = opsResult.ops;
           latestSeq = opsResult.latestSeq;

@@ -28,6 +28,23 @@ vi.mock('../src/logger', () => ({
 
 import { prisma } from '../src/db';
 
+const EXPECTED_OPERATION_DOWNLOAD_SELECT = {
+  id: true,
+  serverSeq: true,
+  clientId: true,
+  actionType: true,
+  opType: true,
+  entityType: true,
+  entityId: true,
+  payload: true,
+  vectorClock: true,
+  schemaVersion: true,
+  clientTimestamp: true,
+  receivedAt: true,
+  isPayloadEncrypted: true,
+  syncImportReason: true,
+};
+
 // Helper to create a mock operation row (as returned by Prisma)
 const createMockOpRow = (
   serverSeq: number,
@@ -44,6 +61,7 @@ const createMockOpRow = (
     clientTimestamp: bigint;
     receivedAt: bigint;
     isPayloadEncrypted: boolean;
+    syncImportReason: string | null;
   }> = {},
 ) => ({
   id: overrides.id ?? `op-${serverSeq}`,
@@ -60,6 +78,7 @@ const createMockOpRow = (
   clientTimestamp: overrides.clientTimestamp ?? BigInt(Date.now()),
   receivedAt: overrides.receivedAt ?? BigInt(Date.now()),
   isPayloadEncrypted: overrides.isPayloadEncrypted ?? false,
+  syncImportReason: overrides.syncImportReason ?? null,
 });
 
 describe('OperationDownloadService', () => {
@@ -88,6 +107,7 @@ describe('OperationDownloadService', () => {
         },
         orderBy: { serverSeq: 'asc' },
         take: 500,
+        select: EXPECTED_OPERATION_DOWNLOAD_SELECT,
       });
     });
 
@@ -117,6 +137,7 @@ describe('OperationDownloadService', () => {
         },
         orderBy: { serverSeq: 'asc' },
         take: 500,
+        select: EXPECTED_OPERATION_DOWNLOAD_SELECT,
       });
     });
 
@@ -159,6 +180,17 @@ describe('OperationDownloadService', () => {
       const result = await service.getOpsSince(1, 0);
 
       expect(result[0].op.isPayloadEncrypted).toBe(true);
+    });
+
+    it('should map sync import reason when present', async () => {
+      const importOp = createMockOpRow(1, 'client-1', {
+        syncImportReason: 'recovery',
+      });
+      vi.mocked(prisma.operation.findMany).mockResolvedValue([importOp as any]);
+
+      const result = await service.getOpsSince(1, 0);
+
+      expect(result[0].op.syncImportReason).toBe('recovery');
     });
   });
 
@@ -203,6 +235,173 @@ describe('OperationDownloadService', () => {
       expect(result.gapDetected).toBe(false);
     });
 
+    it('should skip min sequence aggregate when gap detection cannot use it', async () => {
+      let capturedTx: any;
+
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+        capturedTx = {
+          operation: {
+            findFirst: vi.fn().mockResolvedValue(null),
+            findMany: vi.fn().mockResolvedValue([]),
+            aggregate: vi.fn(),
+          },
+          userSyncState: {
+            findUnique: vi.fn().mockResolvedValue({ lastSeq: 5 }),
+          },
+        };
+        return fn(capturedTx);
+      });
+
+      const result = await service.getOpsSinceWithSeq(1, 0);
+
+      expect(result.gapDetected).toBe(false);
+      expect(capturedTx.operation.aggregate).not.toHaveBeenCalled();
+    });
+
+    it('should return immediately for an empty server without operation queries', async () => {
+      let capturedTx: any;
+
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+        capturedTx = {
+          operation: {
+            findFirst: vi.fn(),
+            findMany: vi.fn(),
+            aggregate: vi.fn(),
+          },
+          userSyncState: {
+            findUnique: vi.fn().mockResolvedValue({ lastSeq: 0 }),
+          },
+        };
+        return fn(capturedTx);
+      });
+
+      const result = await service.getOpsSinceWithSeq(1, 0);
+
+      expect(result).toEqual({
+        ops: [],
+        latestSeq: 0,
+        gapDetected: false,
+        latestSnapshotSeq: undefined,
+        snapshotVectorClock: undefined,
+      });
+      expect(capturedTx.operation.findFirst).not.toHaveBeenCalled();
+      expect(capturedTx.operation.findMany).not.toHaveBeenCalled();
+      expect(capturedTx.operation.aggregate).not.toHaveBeenCalled();
+    });
+
+    it('should select only download response fields inside atomic reads', async () => {
+      let capturedTx: any;
+
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+        capturedTx = {
+          operation: {
+            findFirst: vi.fn().mockResolvedValue(null),
+            findMany: vi.fn().mockResolvedValue([]),
+            aggregate: vi.fn(),
+          },
+          userSyncState: {
+            findUnique: vi.fn().mockResolvedValue({ lastSeq: 5 }),
+          },
+        };
+        return fn(capturedTx);
+      });
+
+      await service.getOpsSinceWithSeq(1, 0);
+
+      expect(capturedTx.operation.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          select: EXPECTED_OPERATION_DOWNLOAD_SELECT,
+        }),
+      );
+    });
+
+    it('should use latestSeq as a stable upper bound for operation reads', async () => {
+      let capturedTx: any;
+
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+        capturedTx = {
+          operation: {
+            findFirst: vi.fn().mockResolvedValue(null),
+            findMany: vi.fn().mockResolvedValue([]),
+            aggregate: vi.fn().mockResolvedValue({ _min: { serverSeq: 1 } }),
+          },
+          userSyncState: {
+            findUnique: vi.fn().mockResolvedValue({ lastSeq: 20 }),
+          },
+        };
+        return fn(capturedTx);
+      });
+
+      await service.getOpsSinceWithSeq(1, 10);
+
+      expect(capturedTx.operation.findFirst).toHaveBeenCalledWith({
+        where: {
+          userId: 1,
+          serverSeq: { lte: 20 },
+          opType: { in: ['SYNC_IMPORT', 'BACKUP_IMPORT', 'REPAIR'] },
+        },
+        orderBy: { serverSeq: 'desc' },
+        select: { serverSeq: true, clientId: true },
+      });
+      expect(capturedTx.operation.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            userId: 1,
+            serverSeq: { gt: 10, lte: 20 },
+          }),
+        }),
+      );
+      expect(capturedTx.operation.aggregate).toHaveBeenCalledWith({
+        where: { userId: 1, serverSeq: { lte: 20 } },
+        _min: { serverSeq: true },
+      });
+    });
+
+    it('should skip snapshot vector-clock aggregation but still return the full-state op when metadata is not requested', async () => {
+      let capturedTx: any;
+
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+        capturedTx = {
+          operation: {
+            findFirst: vi.fn().mockResolvedValue({
+              serverSeq: 50,
+              clientId: 'snapshot-author',
+            }),
+            findMany: vi.fn().mockResolvedValue([
+              createMockOpRow(50, 'snapshot-author', {
+                opType: 'SYNC_IMPORT',
+                entityType: 'ALL',
+                entityId: null,
+                payload: { state: { task: {} } },
+              }),
+            ]),
+            aggregate: vi.fn().mockResolvedValue({ _min: { serverSeq: 1 } }),
+          },
+          userSyncState: {
+            findUnique: vi.fn().mockResolvedValue({ lastSeq: 60 }),
+          },
+          $queryRaw: vi.fn(),
+        };
+        return fn(capturedTx);
+      });
+
+      const result = await service.getOpsSinceWithSeq(1, 10, undefined, 500, false);
+
+      expect(result.latestSnapshotSeq).toBe(50);
+      expect(result.snapshotVectorClock).toBeUndefined();
+      expect(result.ops).toHaveLength(1);
+      expect(result.ops[0].serverSeq).toBe(50);
+      expect(result.ops[0].op.opType).toBe('SYNC_IMPORT');
+      expect(capturedTx.$queryRaw).not.toHaveBeenCalled();
+      expect(capturedTx.operation.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            serverSeq: { gt: 49, lte: 60 },
+          }),
+        }),
+      );
+    });
+
     it('should detect gap when client is ahead of server', async () => {
       vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
         const mockTx = {
@@ -224,23 +423,27 @@ describe('OperationDownloadService', () => {
     });
 
     it('should detect gap when client has history but server is empty', async () => {
+      let capturedTx: any;
       vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
-        const mockTx = {
+        capturedTx = {
           operation: {
-            findFirst: vi.fn().mockResolvedValue(null),
-            findMany: vi.fn().mockResolvedValue([]),
-            aggregate: vi.fn().mockResolvedValue({ _min: { serverSeq: null } }),
+            findFirst: vi.fn(),
+            findMany: vi.fn(),
+            aggregate: vi.fn(),
           },
           userSyncState: {
             findUnique: vi.fn().mockResolvedValue({ lastSeq: 0 }),
           },
         };
-        return fn(mockTx);
+        return fn(capturedTx);
       });
 
       const result = await service.getOpsSinceWithSeq(1, 5); // Client at seq 5, server empty
 
       expect(result.gapDetected).toBe(true);
+      expect(capturedTx.operation.findFirst).not.toHaveBeenCalled();
+      expect(capturedTx.operation.findMany).not.toHaveBeenCalled();
+      expect(capturedTx.operation.aggregate).not.toHaveBeenCalled();
     });
 
     it('should detect gap when requested seq is purged', async () => {
@@ -316,14 +519,16 @@ describe('OperationDownloadService', () => {
         orderBy: { serverSeq: 'desc' },
         select: { serverSeq: true, clientId: true },
       });
-      expect(capturedTx.operation.findMany).toHaveBeenCalledWith({
-        where: {
-          userId: 1,
-          serverSeq: { gt: 10, lte: 42 },
-        },
-        orderBy: { serverSeq: 'asc' },
-        take: 500,
-      });
+      expect(capturedTx.operation.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            userId: 1,
+            serverSeq: { gt: 10, lte: 42 },
+          },
+          orderBy: { serverSeq: 'asc' },
+          take: 500,
+        }),
+      );
       expect(capturedTx.operation.aggregate).toHaveBeenCalledWith({
         where: { userId: 1, serverSeq: { lte: 42 } },
         _min: { serverSeq: true },
