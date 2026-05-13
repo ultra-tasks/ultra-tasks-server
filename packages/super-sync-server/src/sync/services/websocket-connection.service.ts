@@ -27,6 +27,8 @@ export class WebSocketConnectionService {
   private static readonly NOTIFY_DEBOUNCE_MS = 100;
   /** Max WebSocket connections per user to prevent resource exhaustion */
   private static readonly MAX_CONNECTIONS_PER_USER = 10;
+  /** Close code sent to the stale socket when a new one from the same clientId replaces it */
+  private static readonly REPLACED_CLOSE_CODE = 4009;
 
   private pendingNotifications = new Map<
     number,
@@ -38,10 +40,35 @@ export class WebSocketConnectionService {
   >();
 
   addConnection(userId: number, clientId: string, ws: WebSocket): void {
+    // A new socket from the same clientId means the device is reconnecting — the
+    // server's old entry is by definition stale (network blip, proxy idle close,
+    // OS sleep). Evict it eagerly instead of waiting up to ~40s for the heartbeat
+    // cycle; otherwise stale entries pile up to MAX_CONNECTIONS_PER_USER and
+    // legitimate reconnects get rejected with 4008.
+    const existingSet = this.connections.get(userId);
+    if (existingSet) {
+      for (const existing of existingSet) {
+        if (existing.clientId === clientId) {
+          Logger.info(
+            `[ws:user:${userId}:${clientId}] Replacing stale connection from same client`,
+          );
+          // `removeConnection` may drop the userId entry from `this.connections`
+          // entirely if the set becomes empty; the `!this.connections.has(userId)`
+          // check below re-creates it before we add the new client.
+          this.removeConnection(userId, existing, {
+            code: WebSocketConnectionService.REPLACED_CLOSE_CODE,
+            reason: 'Replaced by newer connection',
+          });
+          break;
+        }
+      }
+    }
+
     if (!this.connections.has(userId)) {
       this.connections.set(userId, new Set());
     }
     const userSet = this.connections.get(userId)!;
+
     if (userSet.size >= WebSocketConnectionService.MAX_CONNECTIONS_PER_USER) {
       Logger.warn(
         `[ws:user:${userId}] Connection rejected: max connections per user reached`,
@@ -94,7 +121,11 @@ export class WebSocketConnectionService {
     );
   }
 
-  removeConnection(userId: number, client: ConnectedClient): void {
+  removeConnection(
+    userId: number,
+    client: ConnectedClient,
+    closeFrame?: { code: number; reason: string },
+  ): void {
     const userSet = this.connections.get(userId);
     if (userSet) {
       userSet.delete(client);
@@ -108,7 +139,11 @@ export class WebSocketConnectionService {
       client.ws.readyState === WebSocket.CONNECTING
     ) {
       try {
-        client.ws.close();
+        if (closeFrame) {
+          client.ws.close(closeFrame.code, closeFrame.reason);
+        } else {
+          client.ws.close();
+        }
       } catch (err) {
         Logger.debug(
           `[ws:user:${userId}:${client.clientId}] Error closing connection`,
