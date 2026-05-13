@@ -13,6 +13,7 @@ import {
 } from './sync.types';
 import { APPROX_BYTES_PER_OP, computeOpStorageBytes } from './sync.const';
 import { Logger } from '../logger';
+import { parsePositiveIntegerEnv } from '../util/env';
 import { Prisma } from '@prisma/client';
 import {
   ValidationService,
@@ -51,6 +52,27 @@ interface LatestEntityOperationRow {
 // Conservative enough to avoid planner-heavy BitmapOr + Sort plans on large
 // histories while still replacing up to 100 per-entity round trips with one query.
 const CONFLICT_DETECTION_ENTITY_BATCH_SIZE = 100;
+const OLD_OPS_CLEANUP_DELETE_BATCH_SIZE = 5_000;
+const OLD_OPS_CLEANUP_MAX_DELETED_PER_RUN = 25_000;
+// Operator-DoS guardrail: a 1M `take:` materializes 1M ids in Node memory and
+// then sends a 1M-element array param to Postgres — exactly the pressure the
+// throttle is meant to avoid. Cap so misconfiguration can't unwind the bound.
+const OLD_OPS_CLEANUP_DELETE_BATCH_SIZE_MAX = 50_000;
+const OLD_OPS_CLEANUP_MAX_DELETED_PER_RUN_MAX = 1_000_000;
+
+const getOldOpsCleanupDeleteBatchSize = (): number =>
+  parsePositiveIntegerEnv(
+    'OLD_OPS_CLEANUP_DELETE_BATCH_SIZE',
+    OLD_OPS_CLEANUP_DELETE_BATCH_SIZE,
+    OLD_OPS_CLEANUP_DELETE_BATCH_SIZE_MAX,
+  );
+
+const getOldOpsCleanupMaxDeletedPerRun = (): number =>
+  parsePositiveIntegerEnv(
+    'OLD_OPS_CLEANUP_MAX_DELETED_PER_RUN',
+    OLD_OPS_CLEANUP_MAX_DELETED_PER_RUN,
+    OLD_OPS_CLEANUP_MAX_DELETED_PER_RUN_MAX,
+  );
 
 /**
  * Main sync orchestration service.
@@ -1083,42 +1105,98 @@ export class SyncService {
 
     let totalDeleted = 0;
     const affectedUserIds: number[] = [];
+    const deleteBatchSize = getOldOpsCleanupDeleteBatchSize();
+    let remainingDeleteBudget = getOldOpsCleanupMaxDeletedPerRun();
 
     for (const state of states) {
+      if (remainingDeleteBudget <= 0) break;
+
       const snapshotAt = Number(state.snapshotAt);
       const lastSnapshotSeq = state.lastSnapshotSeq ?? 0;
 
       // Only prune ops that are both older than the retention window and covered by a snapshot
-      if (snapshotAt >= cutoffTime && lastSnapshotSeq > 0) {
-        const result = await prisma.operation.deleteMany({
-          where: {
-            userId: state.userId,
-            serverSeq: { lte: lastSnapshotSeq },
-            receivedAt: { lt: BigInt(cutoffTime) },
-          },
-        });
-        if (result.count > 0) {
-          totalDeleted += result.count;
-          affectedUserIds.push(state.userId);
-          // Deliberately leave storageUsedBytes stale-high here. A count-based
-          // approximate decrement can undercount users with many tiny ops and
-          // let them bypass quota indefinitely. Mark the user as needing an
-          // exact reconcile so their next request self-heals the drift instead
-          // of waiting for the daily pass — and, crucially, so that a crash
-          // mid-loop still lets surviving deletes self-reconcile rather than
-          // leaving the counter stale-high indefinitely.
-          // NOTE: the marker is in-memory (process-local). A persistent
-          // `users.storage_needs_reconcile` column would survive restarts; see
-          // TODO below.
-          // TODO: persist the reconcile marker in a DB column so it survives
-          // restarts of a single-instance deployment and works correctly across
-          // a multi-instance deployment behind a load balancer.
-          this.storageQuotaService.markNeedsReconcile(state.userId);
-        }
+      if (!(snapshotAt >= cutoffTime && lastSnapshotSeq > 0)) continue;
+
+      // Drain this user across multiple batches until either they're empty or
+      // the global per-run budget is exhausted. Without this, a single user
+      // with a large backlog would only lose `deleteBatchSize` ops per day
+      // even when budget remains — leaving small-backlog users behind it
+      // unserviced when their snapshotAt is fresher.
+      let userDeleted = 0;
+      while (remainingDeleteBudget > 0) {
+        const batchLimit = Math.min(deleteBatchSize, remainingDeleteBudget);
+        const deletedCount = await this.deleteOldSyncedOpsBatch(
+          state.userId,
+          lastSnapshotSeq,
+          cutoffTime,
+          batchLimit,
+        );
+        if (deletedCount === 0) break;
+        userDeleted += deletedCount;
+        totalDeleted += deletedCount;
+        remainingDeleteBudget -= deletedCount;
+        // Short-circuit when the batch returned fewer rows than asked for: the
+        // user is empty and another findMany would only confirm zero rows.
+        if (deletedCount < batchLimit) break;
+      }
+
+      if (userDeleted > 0) {
+        affectedUserIds.push(state.userId);
+        // Deliberately leave storageUsedBytes stale-high here. A count-based
+        // approximate decrement can undercount users with many tiny ops and
+        // let them bypass quota indefinitely. Mark the user as needing an
+        // exact reconcile so their next request self-heals the drift instead
+        // of waiting for the daily pass — and, crucially, so that a crash
+        // mid-loop still lets surviving deletes self-reconcile rather than
+        // leaving the counter stale-high indefinitely.
+        // NOTE: the marker is in-memory (process-local). A persistent
+        // `users.storage_needs_reconcile` column would survive restarts; see
+        // TODO below.
+        // TODO: persist the reconcile marker in a DB column so it survives
+        // restarts of a single-instance deployment and works correctly across
+        // a multi-instance deployment behind a load balancer.
+        this.storageQuotaService.markNeedsReconcile(state.userId);
       }
     }
 
+    if (remainingDeleteBudget <= 0) {
+      Logger.warn(
+        `Cleanup [old-ops]: per-run budget exhausted after ${totalDeleted} ops; ` +
+          `some users may still have retained old ops. ` +
+          `Raise OLD_OPS_CLEANUP_MAX_DELETED_PER_RUN if this happens repeatedly.`,
+      );
+    }
+
     return { totalDeleted, affectedUserIds };
+  }
+
+  private async deleteOldSyncedOpsBatch(
+    userId: number,
+    lastSnapshotSeq: number,
+    cutoffTime: number,
+    limit: number,
+  ): Promise<number> {
+    const doomedOps = await prisma.operation.findMany({
+      where: {
+        userId,
+        serverSeq: { lte: lastSnapshotSeq },
+        receivedAt: { lt: BigInt(cutoffTime) },
+      },
+      orderBy: { serverSeq: 'asc' },
+      take: limit,
+      select: { id: true },
+    });
+
+    if (doomedOps.length === 0) return 0;
+
+    const result = await prisma.operation.deleteMany({
+      where: {
+        userId,
+        id: { in: doomedOps.map((op) => op.id) },
+      },
+    });
+
+    return result.count;
   }
 
   /**

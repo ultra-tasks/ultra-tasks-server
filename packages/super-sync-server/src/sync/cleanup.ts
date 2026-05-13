@@ -1,8 +1,10 @@
 import { getSyncService } from './sync.service';
 import { Logger } from '../logger';
+import { parsePositiveIntegerEnv } from '../util/env';
 import { DEFAULT_SYNC_CONFIG, MS_PER_DAY } from './sync.types';
 
 let cleanupTimer: NodeJS.Timeout | null = null;
+let initialCleanupTimer: NodeJS.Timeout | null = null;
 const reconcileTimers: Set<NodeJS.Timeout> = new Set();
 
 // Spread post-cleanup reconciles so we never run more than one
@@ -10,6 +12,10 @@ const reconcileTimers: Set<NodeJS.Timeout> = new Set();
 // Bounded by 1h total budget — beyond that, drift is left for the next day.
 const RECONCILE_INTERVAL_MS = 5_000;
 const RECONCILE_BUDGET_MS = 60 * 60 * 1000;
+const DEFAULT_INITIAL_CLEANUP_DELAY_MS =
+  process.env.NODE_ENV === 'production' ? 30 * 60 * 1000 : 10_000;
+// Node's setTimeout silently fires immediately when delay > 2^31 - 1.
+const MAX_INITIAL_CLEANUP_DELAY_MS = 2_147_483_647;
 
 /**
  * Runs all cleanup tasks in a single daily job.
@@ -71,22 +77,38 @@ const runDailyCleanup = async (): Promise<void> => {
 };
 
 export const startCleanupJobs = (): void => {
-  Logger.info('Starting daily cleanup job...');
+  const initialCleanupDelayMs = parsePositiveIntegerEnv(
+    'CLEANUP_INITIAL_DELAY_MS',
+    DEFAULT_INITIAL_CLEANUP_DELAY_MS,
+    MAX_INITIAL_CLEANUP_DELAY_MS,
+  );
 
-  // Run initial cleanup after a short delay
-  setTimeout(() => {
+  Logger.info(
+    `Starting daily cleanup job (initial run in ${initialCleanupDelayMs}ms)...`,
+  );
+
+  // Run initial cleanup after a delay. In production this intentionally avoids
+  // starting DB-heavy retention work immediately after a deploy/restart.
+  initialCleanupTimer = setTimeout(() => {
+    initialCleanupTimer = null;
     void runDailyCleanup();
-  }, 10_000);
+  }, initialCleanupDelayMs);
+  initialCleanupTimer.unref();
 
   // Schedule recurring daily cleanup
   cleanupTimer = setInterval(() => {
     void runDailyCleanup();
   }, MS_PER_DAY);
+  cleanupTimer.unref();
 
   Logger.info('Daily cleanup job scheduled');
 };
 
 export const stopCleanupJobs = (): void => {
+  if (initialCleanupTimer) {
+    clearTimeout(initialCleanupTimer);
+    initialCleanupTimer = null;
+  }
   if (cleanupTimer) {
     clearInterval(cleanupTimer);
     cleanupTimer = null;
@@ -126,7 +148,7 @@ const scheduleDeferredReconciles = (userIds: number[]): void => {
         );
       });
     }, i * RECONCILE_INTERVAL_MS);
-    if (typeof timer.unref === 'function') timer.unref();
+    timer.unref();
     reconcileTimers.add(timer);
   }
 };
