@@ -109,6 +109,73 @@ describe('WebSocketConnectionService', () => {
 
       expect(service.getConnectionCount()).toBe(0);
     });
+
+    it('should replace a stale connection from the same clientId', () => {
+      const stale = createMockWs();
+      service.addConnection(1, 'client-a', stale as any);
+      expect(service.getConnectionCount()).toBe(1);
+
+      const fresh = createMockWs();
+      service.addConnection(1, 'client-a', fresh as any);
+
+      // Stale socket was evicted with the "replaced" close code.
+      expect(stale.close).toHaveBeenCalledWith(4009, 'Replaced by newer connection');
+      // Only the fresh entry remains.
+      expect(service.getConnectionCount()).toBe(1);
+      // The new connection was accepted, not rejected with 4008.
+      expect(fresh.close).not.toHaveBeenCalled();
+
+      // Real `ws` fires the 'close' event asynchronously after `ws.close()`.
+      // The stale socket's late close event must not disturb the fresh entry.
+      stale._emitClose();
+      expect(service.getConnectionCount()).toBe(1);
+      expect(fresh.close).not.toHaveBeenCalled();
+    });
+
+    it('should not call close() on the evicted socket when it is already CLOSED', () => {
+      const stale = createMockWs();
+      service.addConnection(1, 'client-a', stale as any);
+
+      // Simulate the stale socket already being closed at the OS level
+      // (e.g. removeConnection's gate must skip ws.close to avoid double-close).
+      stale.readyState = WS_CLOSED;
+      const closeCallsBefore = stale.close.mock.calls.length;
+
+      const fresh = createMockWs();
+      service.addConnection(1, 'client-a', fresh as any);
+
+      // Dedup took effect (only the fresh entry remains) but ws.close was not
+      // re-invoked on the already-closed stale socket.
+      expect(service.getConnectionCount()).toBe(1);
+      expect(stale.close.mock.calls.length).toBe(closeCallsBefore);
+    });
+
+    it('should not exceed the per-user cap when same clientId reconnects repeatedly', () => {
+      // 9 unique clientIds use 9 slots; clientId 'A' reconnects 5 times in the
+      // remaining slot. Without dedup, attempts 2-5 would be rejected with 4008.
+      for (let i = 0; i < 9; i++) {
+        service.addConnection(1, `unique-${i}`, createMockWs() as any);
+      }
+      for (let i = 0; i < 5; i++) {
+        const ws = createMockWs();
+        service.addConnection(1, 'A', ws as any);
+        // The latest 'A' socket is the survivor — it was not rejected/closed.
+        expect(ws.close).not.toHaveBeenCalled();
+      }
+      expect(service.getConnectionCount()).toBe(10);
+    });
+
+    it('should still enforce the cap across distinct clientIds', () => {
+      for (let i = 0; i < 10; i++) {
+        service.addConnection(1, `client-${i}`, createMockWs() as any);
+      }
+
+      const eleventh = createMockWs();
+      service.addConnection(1, 'client-10', eleventh as any);
+
+      expect(eleventh.close).toHaveBeenCalledWith(4008, 'Too many connections');
+      expect(service.getConnectionCount()).toBe(10);
+    });
   });
 
   describe('removeConnection', () => {
