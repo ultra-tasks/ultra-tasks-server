@@ -1,6 +1,5 @@
 import { getSyncService } from './sync.service';
 import { Logger } from '../logger';
-import { parsePositiveIntegerEnv } from '../util/env';
 import { DEFAULT_SYNC_CONFIG, MS_PER_DAY } from './sync.types';
 
 let cleanupTimer: NodeJS.Timeout | null = null;
@@ -12,10 +11,7 @@ const reconcileTimers: Set<NodeJS.Timeout> = new Set();
 // Bounded by 1h total budget — beyond that, drift is left for the next day.
 const RECONCILE_INTERVAL_MS = 5_000;
 const RECONCILE_BUDGET_MS = 60 * 60 * 1000;
-const DEFAULT_INITIAL_CLEANUP_DELAY_MS =
-  process.env.NODE_ENV === 'production' ? 30 * 60 * 1000 : 10_000;
-// Node's setTimeout silently fires immediately when delay > 2^31 - 1.
-const MAX_INITIAL_CLEANUP_DELAY_MS = 2_147_483_647;
+const INITIAL_CLEANUP_DELAY_MS = 10_000;
 
 /**
  * Runs all cleanup tasks in a single daily job.
@@ -77,22 +73,15 @@ const runDailyCleanup = async (): Promise<void> => {
 };
 
 export const startCleanupJobs = (): void => {
-  const initialCleanupDelayMs = parsePositiveIntegerEnv(
-    'CLEANUP_INITIAL_DELAY_MS',
-    DEFAULT_INITIAL_CLEANUP_DELAY_MS,
-    MAX_INITIAL_CLEANUP_DELAY_MS,
-  );
+  Logger.info('Starting daily cleanup job...');
 
-  Logger.info(
-    `Starting daily cleanup job (initial run in ${initialCleanupDelayMs}ms)...`,
-  );
-
-  // Run initial cleanup after a delay. In production this intentionally avoids
-  // starting DB-heavy retention work immediately after a deploy/restart.
+  // Brief warmup before the first pass; the per-batch/per-run throttles in
+  // deleteOldSyncedOpsForAllUsers keep the work bounded so this delay only
+  // needs to cover startup tasks, not the cleanup itself.
   initialCleanupTimer = setTimeout(() => {
     initialCleanupTimer = null;
     void runDailyCleanup();
-  }, initialCleanupDelayMs);
+  }, INITIAL_CLEANUP_DELAY_MS);
   initialCleanupTimer.unref();
 
   // Schedule recurring daily cleanup

@@ -39,8 +39,6 @@ supersync:
     # -- Comma-separated list of allowed CORS origins
     origins: "https://app.super-productivity.com"
   cleanup:
-    # -- Delay before startup cleanup runs. Keeps retention work away from deploy/restart warmup.
-    initialDelayMs: 1800000
     # -- Max old operation ids selected/deleted for one user in a cleanup pass.
     oldOpsDeleteBatchSize: 5000
     # -- Max old operations deleted across all users in one cleanup pass.
