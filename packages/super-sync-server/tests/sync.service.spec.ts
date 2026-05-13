@@ -1650,6 +1650,66 @@ describe('SyncService', () => {
       expect(testState.operations.size).toBe(5);
     });
 
+    it('marks user for reconcile when a later batch throws mid-loop', async () => {
+      const service = getSyncService();
+      const totalOps = 12_000;
+      const cutoffTime = Date.now() - 50 * 24 * 60 * 60 * 1000;
+
+      for (let i = 1; i <= totalOps; i++) {
+        testState.operations.set(`old-op-${i}`, {
+          id: `old-op-${i}`,
+          userId,
+          clientId,
+          serverSeq: i,
+          actionType: 'ADD',
+          opType: 'CRT',
+          entityType: 'TASK',
+          entityId: `t${i}`,
+          payload: {},
+          vectorClock: {},
+          schemaVersion: 1,
+          clientTimestamp: BigInt(Date.now()),
+          receivedAt: BigInt(cutoffTime - 1),
+          isPayloadEncrypted: false,
+          syncImportReason: null,
+        });
+      }
+
+      testState.userSyncStates.set(userId, {
+        userId,
+        lastSeq: totalOps,
+        lastSnapshotSeq: totalOps,
+        snapshotAt: BigInt(Date.now()),
+      });
+
+      // Let the first batch run normally, then simulate a transient DB error
+      // on the second batch. Pre-fix this would leave the storage counter
+      // stale-high with no reconcile signal until the next daily pass.
+      const serviceWithPrivates = service as unknown as {
+        deleteOldSyncedOpsBatch: (...args: unknown[]) => Promise<number>;
+        storageQuotaService: { needsReconcile: (userId: number) => boolean };
+      };
+      const originalBatch =
+        serviceWithPrivates.deleteOldSyncedOpsBatch.bind(serviceWithPrivates);
+      let callCount = 0;
+      vi.spyOn(serviceWithPrivates, 'deleteOldSyncedOpsBatch').mockImplementation(
+        async (...args: unknown[]) => {
+          callCount += 1;
+          if (callCount === 1) return originalBatch(...args);
+          throw new Error('simulated transient DB failure');
+        },
+      );
+
+      await expect(service.deleteOldSyncedOpsForAllUsers(cutoffTime)).rejects.toThrow(
+        'simulated transient DB failure',
+      );
+
+      // First batch committed 5k deletes; the user must still be marked so
+      // the next request reconciles the now-stale-high counter.
+      expect(serviceWithPrivates.storageQuotaService.needsReconcile(userId)).toBe(true);
+      expect(testState.operations.size).toBe(totalOps - 5_000);
+    });
+
     it('shares the per-run budget across users; tail users wait for next pass', async () => {
       const service = getSyncService();
       const user2Id = 2;

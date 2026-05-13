@@ -1132,30 +1132,34 @@ export class SyncService {
           batchLimit,
         );
         if (deletedCount === 0) break;
-        userDeleted += deletedCount;
-        totalDeleted += deletedCount;
-        remainingDeleteBudget -= deletedCount;
-        // Short-circuit when the batch returned fewer rows than asked for: the
-        // user is empty and another findMany would only confirm zero rows.
-        if (deletedCount < batchLimit) break;
-      }
 
-      if (userDeleted > 0) {
-        affectedUserIds.push(state.userId);
+        // Mark on the *first* successful batch (not after the loop) so that
+        // if a later batch throws, the counter still self-heals. Without
+        // this, batch-1 commits would leave the counter stale-high until the
+        // next daily pass or process restart.
+        //
         // Deliberately leave storageUsedBytes stale-high here. A count-based
         // approximate decrement can undercount users with many tiny ops and
-        // let them bypass quota indefinitely. Mark the user as needing an
-        // exact reconcile so their next request self-heals the drift instead
-        // of waiting for the daily pass — and, crucially, so that a crash
-        // mid-loop still lets surviving deletes self-reconcile rather than
-        // leaving the counter stale-high indefinitely.
+        // let them bypass quota indefinitely. The marker tells the next
+        // request to run an exact reconcile so drift self-heals.
+        //
         // NOTE: the marker is in-memory (process-local). A persistent
         // `users.storage_needs_reconcile` column would survive restarts; see
         // TODO below.
         // TODO: persist the reconcile marker in a DB column so it survives
         // restarts of a single-instance deployment and works correctly across
         // a multi-instance deployment behind a load balancer.
-        this.storageQuotaService.markNeedsReconcile(state.userId);
+        if (userDeleted === 0) {
+          affectedUserIds.push(state.userId);
+          this.storageQuotaService.markNeedsReconcile(state.userId);
+        }
+
+        userDeleted += deletedCount;
+        totalDeleted += deletedCount;
+        remainingDeleteBudget -= deletedCount;
+        // Short-circuit when the batch returned fewer rows than asked for: the
+        // user is empty and another findMany would only confirm zero rows.
+        if (deletedCount < batchLimit) break;
       }
     }
 
