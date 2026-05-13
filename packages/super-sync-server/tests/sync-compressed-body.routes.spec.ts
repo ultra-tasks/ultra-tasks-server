@@ -681,11 +681,16 @@ describe('Sync compressed body routes', () => {
 
   it('should return idempotent success for a retried SYNC_IMPORT whose opId matches the existing import', async () => {
     mocks.syncService.checkSnapshotRequestDedup.mockReturnValue(null);
-    // Existing SYNC_IMPORT for this user, same opId as the retry.
-    mocks.prisma.operation.findFirst.mockResolvedValue({
-      id: '018f2f0b-1c2d-7a1b-8c3d-123456789abc',
+    const retryOpId = '018f2f0b-1c2d-7a1b-8c3d-123456789abc';
+    // Existing SYNC_IMPORT for this user, same opId as the retry. The route
+    // looks the opId up directly via findUnique to keep the idempotency check
+    // deterministic when multiple full-state ops exist for the user.
+    mocks.prisma.operation.findUnique.mockResolvedValue({
+      id: retryOpId,
+      userId: 1,
       clientId: 'dup-client',
       serverSeq: 99,
+      opType: 'SYNC_IMPORT',
     });
 
     const response = await app.inject({
@@ -697,7 +702,7 @@ describe('Sync compressed body routes', () => {
         clientId: 'dup-client',
         reason: 'initial',
         vectorClock: { 'dup-client': 1 },
-        opId: '018f2f0b-1c2d-7a1b-8c3d-123456789abc',
+        opId: retryOpId,
       },
     });
 
@@ -706,6 +711,87 @@ describe('Sync compressed body routes', () => {
     // The pre-lock fast path should short-circuit before any work.
     expect(mocks.syncService.prepareSnapshotCache).not.toHaveBeenCalled();
     expect(mocks.syncService.uploadOps).not.toHaveBeenCalled();
+  });
+
+  it('should treat a retried SYNC_IMPORT idempotently even when other full-state ops exist for the user', async () => {
+    mocks.syncService.checkSnapshotRequestDedup.mockReturnValue(null);
+    const retryOpId = '018f2f0b-1c2d-7a1b-8c3d-fedcba987654';
+    // The opId-based lookup finds the exact retried op.
+    mocks.prisma.operation.findUnique.mockResolvedValue({
+      id: retryOpId,
+      userId: 1,
+      clientId: 'dup-client',
+      serverSeq: 42,
+      opType: 'SYNC_IMPORT',
+    });
+    // A later BACKUP_IMPORT also exists — without exact-match lookup,
+    // findFirst could return this instead and the idempotency check would
+    // incorrectly fail.
+    mocks.prisma.operation.findFirst.mockResolvedValue({
+      id: '018f2f0b-9999-7a1b-8c3d-aaaaaaaaaaaa',
+      clientId: 'other-client',
+      serverSeq: 142,
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sync/snapshot',
+      headers: { authorization: `Bearer ${authToken}` },
+      payload: {
+        state: { TASK: {} },
+        clientId: 'dup-client',
+        reason: 'initial',
+        vectorClock: { 'dup-client': 1 },
+        opId: retryOpId,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ accepted: true, serverSeq: 42 });
+    expect(mocks.prisma.operation.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: retryOpId } }),
+    );
+    expect(mocks.syncService.uploadOps).not.toHaveBeenCalled();
+  });
+
+  it('should reject a SYNC_IMPORT whose opId belongs to a different user', async () => {
+    mocks.syncService.checkSnapshotRequestDedup.mockReturnValue(null);
+    const retryOpId = '018f2f0b-1c2d-7a1b-8c3d-cccccccccccc';
+    // Same opId exists but for a different user — must not be treated as an
+    // idempotent retry; the userId guard in findExistingSyncImport prevents
+    // cross-tenant leakage. Fall through to the (most-recent) full-state op
+    // for *this* user.
+    mocks.prisma.operation.findUnique.mockResolvedValue({
+      id: retryOpId,
+      userId: 999,
+      clientId: 'other-user-client',
+      serverSeq: 7,
+      opType: 'SYNC_IMPORT',
+    });
+    mocks.prisma.operation.findFirst.mockResolvedValue({
+      id: '018f2f0b-8888-7a1b-8c3d-bbbbbbbbbbbb',
+      clientId: 'this-user-client',
+      serverSeq: 17,
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sync/snapshot',
+      headers: { authorization: `Bearer ${authToken}` },
+      payload: {
+        state: { TASK: {} },
+        clientId: 'dup-client',
+        reason: 'initial',
+        vectorClock: { 'dup-client': 1 },
+        opId: retryOpId,
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({
+      errorCode: 'SYNC_IMPORT_EXISTS',
+      existingImportId: '018f2f0b-8888-7a1b-8c3d-bbbbbbbbbbbb',
+    });
   });
 
   it('should reconcile the counter before rejecting on the cheap snapshot pre-gate', async () => {

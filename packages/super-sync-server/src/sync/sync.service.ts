@@ -582,6 +582,34 @@ export class SyncService {
   }
 
   /**
+   * Aggregate the per-client max vector_clock counter over all operations for
+   * `userId` with `server_seq < beforeServerSeq`. Used at full-state op upload
+   * time so the persisted `latest_full_state_vector_clock` reflects every
+   * client whose ops may still live in conflict detection — not just the
+   * clients named on the snapshot op itself.
+   */
+  private async _aggregatePriorVectorClock(
+    tx: Prisma.TransactionClient,
+    userId: number,
+    beforeServerSeq: number,
+  ): Promise<VectorClock> {
+    const rows = await tx.$queryRaw<Array<{ client_id: string; max_counter: bigint }>>`
+      SELECT kv.key AS client_id, MAX(kv.value::bigint) AS max_counter
+      FROM operations, LATERAL jsonb_each_text(vector_clock) AS kv(key, value)
+      WHERE user_id = ${userId}
+        AND server_seq < ${beforeServerSeq}
+        AND jsonb_typeof(vector_clock) = 'object'
+        AND kv.value ~ '^[0-9]+$'
+      GROUP BY kv.key
+    `;
+    const out: VectorClock = {};
+    for (const row of rows) {
+      out[row.client_id] = Number(row.max_counter);
+    }
+    return out;
+  }
+
+  /**
    * Process a single operation within a transaction.
    * Handles validation, conflict detection, and persistence.
    */
@@ -887,11 +915,26 @@ export class SyncService {
     }
 
     if (fullStateVectorClock) {
+      // Persist the aggregate of (prior history ∪ this op's clock), not just the
+      // op's own clock. BACKUP_IMPORT uses a fresh `{ clientId: 1 }` by design
+      // (backup.service.ts) and a compaction-built SYNC_IMPORT clock can be
+      // pruned. Either case leaves out client_ids that still have pre-snapshot
+      // ops alive in the conflict-detection set, so a downloader that reset to
+      // the bare op clock would have its first edit go CONCURRENT against those
+      // surviving rows. Doing the aggregate here moves the cost from per-download
+      // to per-snapshot — full-state ops are rare so the upload-time scan is
+      // strictly cheaper overall. Stored unpruned; the download path applies
+      // `limitVectorClockSize` with `preserveClientIds` known to that read.
+      const priorAggregate = await this._aggregatePriorVectorClock(tx, userId, serverSeq);
+      const mergedClock: VectorClock = { ...priorAggregate };
+      for (const [clientId, counter] of Object.entries(fullStateVectorClock)) {
+        mergedClock[clientId] = Math.max(mergedClock[clientId] ?? 0, counter);
+      }
       await tx.userSyncState.update({
         where: { userId },
         data: {
           latestFullStateSeq: serverSeq,
-          latestFullStateVectorClock: fullStateVectorClock as Prisma.InputJsonValue,
+          latestFullStateVectorClock: mergedClock as Prisma.InputJsonValue,
         },
       });
     }

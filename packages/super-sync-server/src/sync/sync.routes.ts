@@ -265,16 +265,50 @@ type ExistingSyncImport = {
   serverSeq: number;
 };
 
+/**
+ * Look up an existing full-state op for the user.
+ *
+ * When `incomingOpId` is provided, try an exact id match first so an
+ * idempotent retry (`existing.id === incomingOpId`) is detected deterministically
+ * even when multiple full-state ops exist for the user (e.g. an old SYNC_IMPORT
+ * plus a later BACKUP_IMPORT). The fallback orders by `serverSeq DESC` so the
+ * 409 path consistently reports the most recent restore point instead of
+ * whatever Postgres happens to return.
+ */
 const findExistingSyncImport = async (
   userId: number,
-): Promise<ExistingSyncImport | null> =>
-  prisma.operation.findFirst({
+  incomingOpId?: string,
+): Promise<ExistingSyncImport | null> => {
+  if (incomingOpId) {
+    const exact = await prisma.operation.findUnique({
+      where: { id: incomingOpId },
+      select: {
+        id: true,
+        userId: true,
+        clientId: true,
+        serverSeq: true,
+        opType: true,
+      },
+    });
+    if (
+      exact &&
+      exact.userId === userId &&
+      (exact.opType === 'SYNC_IMPORT' ||
+        exact.opType === 'BACKUP_IMPORT' ||
+        exact.opType === 'REPAIR')
+    ) {
+      return { id: exact.id, clientId: exact.clientId, serverSeq: exact.serverSeq };
+    }
+  }
+  return prisma.operation.findFirst({
     where: {
       userId,
       opType: { in: ['SYNC_IMPORT', 'BACKUP_IMPORT', 'REPAIR'] },
     },
+    orderBy: { serverSeq: 'desc' },
     select: { id: true, clientId: true, serverSeq: true },
   });
+};
 
 /**
  * True when an incoming snapshot upload is a retry of the existing import —
@@ -1023,7 +1057,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         // - 'isCleanSlate': Password change or explicit clean slate request
         // Only 'initial' (first-time server migration) should be rejected if one exists.
         if (reason === 'initial' && !isCleanSlate) {
-          const existingImport = await findExistingSyncImport(userId);
+          const existingImport = await findExistingSyncImport(userId, opId);
 
           if (existingImport) {
             if (isIdempotentSyncImportRetry(existingImport, opId)) {
@@ -1069,7 +1103,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
           userId,
           async () => {
             if (reason === 'initial' && !isCleanSlate) {
-              const existingImport = await findExistingSyncImport(userId);
+              const existingImport = await findExistingSyncImport(userId, opId);
 
               if (existingImport) {
                 if (isIdempotentSyncImportRetry(existingImport, opId)) {
@@ -1199,11 +1233,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
 
         // Notify other connected clients about snapshot upload (fire-and-forget)
         if (finalResult.accepted && finalResult.serverSeq !== undefined) {
-          getWsConnectionService().notifyNewOps(
-            userId,
-            clientId,
-            finalResult.serverSeq,
-          );
+          getWsConnectionService().notifyNewOps(userId, clientId, finalResult.serverSeq);
         }
 
         const responseBody: SnapshotDedupResponse = {
@@ -1214,10 +1244,7 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
         // Skip caching when the result is a residual DUPLICATE_OPERATION (the
         // existing-op lookup just above failed) so a concurrent retry that
         // lost the insert race cannot overwrite the winner's success entry.
-        if (
-          requestId &&
-          finalResult.errorCode !== SYNC_ERROR_CODES.DUPLICATE_OPERATION
-        ) {
+        if (requestId && finalResult.errorCode !== SYNC_ERROR_CODES.DUPLICATE_OPERATION) {
           syncService.cacheSnapshotRequestResult(userId, requestId, responseBody);
         }
 

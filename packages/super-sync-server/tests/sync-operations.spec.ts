@@ -308,6 +308,34 @@ vi.mock('../src/db', async () => {
     },
     // Upload transaction writes the storage counter atomically via $executeRaw.
     $executeRaw: vi.fn().mockResolvedValue(0),
+    // Full-state op uploads aggregate prior vector clocks via $queryRaw inside
+    // the same transaction. Dispatch based on the SQL text so other $queryRaw
+    // callers (storage counter, etc.) keep working.
+    $queryRaw: vi.fn().mockImplementation(async (strings: any, ...params: any[]) => {
+      const sql = Array.isArray(strings) ? strings.join('') : String(strings);
+      if (sql.includes('jsonb_each_text(vector_clock)')) {
+        const [userId, beforeServerSeq] = params;
+        const aggregate = new Map<string, number>();
+        for (const op of state.operations.values()) {
+          if (op.userId !== userId) continue;
+          if (op.serverSeq >= beforeServerSeq) continue;
+          const vc = op.vectorClock;
+          if (!vc || typeof vc !== 'object') continue;
+          for (const [clientKey, rawVal] of Object.entries(
+            vc as Record<string, unknown>,
+          )) {
+            if (typeof rawVal !== 'number' || !Number.isFinite(rawVal)) continue;
+            const cur = aggregate.get(clientKey) ?? 0;
+            if (rawVal > cur) aggregate.set(clientKey, rawVal);
+          }
+        }
+        return Array.from(aggregate, ([client_id, max_counter]) => ({
+          client_id,
+          max_counter: BigInt(max_counter),
+        }));
+      }
+      return [{ total: BigInt(0) }];
+    }),
   });
 
   return {
@@ -548,6 +576,111 @@ describe('Sync Operations', () => {
       createdAt: new Date(),
     });
     initSyncService();
+  });
+
+  describe('Full-state op upload', () => {
+    const createFullStateOp = (
+      opType: 'SYNC_IMPORT' | 'BACKUP_IMPORT' | 'REPAIR',
+      authorClientId: string,
+      vectorClock: Record<string, number>,
+    ): Operation => ({
+      id: uuidv7(),
+      clientId: authorClientId,
+      actionType:
+        opType === 'BACKUP_IMPORT'
+          ? '[SP_ALL] Load(import) all data'
+          : opType === 'REPAIR'
+            ? '[Repair] Auto Repair'
+            : '[SP_ALL] Load(import) all data',
+      opType,
+      entityType: 'ALL',
+      payload: {},
+      vectorClock,
+      timestamp: Date.now(),
+      schemaVersion: 1,
+    });
+
+    it('persists the prior-history aggregate merged with the snapshot op clock', async () => {
+      // Regression guard: a BACKUP_IMPORT uploads with a fresh `{ newClient: 1 }`
+      // clock by design (see backup.service.ts). If the server persisted that
+      // clock as-is, downloading clients would reset to a baseline that does
+      // NOT cover pre-import ops still living in the conflict-detection set,
+      // and their first post-restore edit could be rejected as CONCURRENT
+      // against those rows. The fix aggregates prior ops at upload time.
+      const service = getSyncService();
+      // Seed prior history from two existing clients.
+      await service.uploadOps(userId, 'old-client-a', [
+        {
+          id: uuidv7(),
+          clientId: 'old-client-a',
+          actionType: 'ADD_TASK',
+          opType: 'CRT',
+          entityType: 'TASK',
+          entityId: 'task-a',
+          payload: { title: 'Task A' },
+          vectorClock: { 'old-client-a': 5 },
+          timestamp: Date.now(),
+          schemaVersion: 1,
+        },
+      ]);
+      await service.uploadOps(userId, 'old-client-b', [
+        {
+          id: uuidv7(),
+          clientId: 'old-client-b',
+          actionType: 'ADD_TASK',
+          opType: 'CRT',
+          entityType: 'TASK',
+          entityId: 'task-b',
+          payload: { title: 'Task B' },
+          vectorClock: { 'old-client-a': 5, 'old-client-b': 3 },
+          timestamp: Date.now(),
+          schemaVersion: 1,
+        },
+      ]);
+
+      // Restore from backup: new client uses a fresh clock.
+      await service.uploadOps(userId, 'restoring-client', [
+        createFullStateOp('BACKUP_IMPORT', 'restoring-client', {
+          'restoring-client': 1,
+        }),
+      ]);
+
+      const syncState = testState.userSyncStates.get(userId);
+      expect(syncState?.latestFullStateSeq).toBe(3);
+      expect(syncState?.latestFullStateVectorClock).toEqual({
+        'old-client-a': 5,
+        'old-client-b': 3,
+        'restoring-client': 1,
+      });
+    });
+
+    it('keeps the snapshot op counter when both prior and incoming list the same client', async () => {
+      const service = getSyncService();
+      // Prior op from the same client at a lower counter.
+      await service.uploadOps(userId, 'shared-client', [
+        {
+          id: uuidv7(),
+          clientId: 'shared-client',
+          actionType: 'ADD_TASK',
+          opType: 'CRT',
+          entityType: 'TASK',
+          entityId: 'task-a',
+          payload: { title: 'A' },
+          vectorClock: { 'shared-client': 2 },
+          timestamp: Date.now(),
+          schemaVersion: 1,
+        },
+      ]);
+
+      // SYNC_IMPORT from same client with a higher counter (compaction
+      // typically bumps it). Merge must take the max, not the prior aggregate.
+      await service.uploadOps(userId, 'shared-client', [
+        createFullStateOp('SYNC_IMPORT', 'shared-client', { 'shared-client': 9 }),
+      ]);
+
+      const syncState = testState.userSyncStates.get(userId);
+      expect(syncState?.latestFullStateVectorClock).toEqual({ 'shared-client': 9 });
+    });
   });
 
   describe('Snapshot Generation', () => {
