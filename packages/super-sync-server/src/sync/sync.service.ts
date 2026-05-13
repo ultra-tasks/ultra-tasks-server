@@ -10,6 +10,7 @@ import {
   VectorClock,
   SYNC_ERROR_CODES,
   ConflictResult,
+  isFullStateOpType,
 } from './sync.types';
 import { APPROX_BYTES_PER_OP, computeOpStorageBytes } from './sync.const';
 import { Logger } from '../logger';
@@ -25,6 +26,7 @@ import {
   SnapshotService,
   type PreparedSnapshotCache,
   type CacheSnapshotResult,
+  type SnapshotDedupResponse,
 } from './services';
 
 interface DuplicateOperationCandidate {
@@ -417,6 +419,8 @@ export class SyncService {
                 lastSnapshotSeq: null,
                 snapshotData: null,
                 snapshotAt: null,
+                latestFullStateSeq: null,
+                latestFullStateVectorClock: Prisma.DbNull,
               },
             });
 
@@ -626,6 +630,14 @@ export class SyncService {
         errorCode: validation.errorCode,
       };
     }
+    // Capture the *unpruned* vector clock for full-state ops. The op row stores
+    // the pruned clock (see `limitVectorClockSize` call below); persisting the
+    // unpruned copy on `user_sync_state` lets the download path re-prune at
+    // read time with knowledge of `preserveClientIds` (excludeClient, snapshot
+    // author), keeping more relevant entries than a pre-pruned snapshot would.
+    const fullStateVectorClock = isFullStateOpType(op.opType)
+      ? { ...op.vectorClock }
+      : undefined;
 
     // Check for duplicate operation before conflict checks and sequence allocation.
     // This avoids expensive conflict work on retries and prevents rejected duplicates
@@ -874,6 +886,16 @@ export class SyncService {
       };
     }
 
+    if (fullStateVectorClock) {
+      await tx.userSyncState.update({
+        where: { userId },
+        data: {
+          latestFullStateSeq: serverSeq,
+          latestFullStateVectorClock: fullStateVectorClock as Prisma.InputJsonValue,
+        },
+      });
+    }
+
     return {
       opId: op.id,
       accepted: true,
@@ -1023,12 +1045,40 @@ export class SyncService {
     return this.rateLimitService.cleanupExpiredCounters();
   }
 
-  checkRequestDeduplication(userId: number, requestId: string): UploadResult[] | null {
-    return this.requestDeduplicationService.checkDeduplication(userId, requestId);
+  checkOpsRequestDedup(userId: number, requestId: string): UploadResult[] | null {
+    return this.requestDeduplicationService.checkDeduplication(userId, 'ops', requestId);
   }
 
-  cacheRequestResults(userId: number, requestId: string, results: UploadResult[]): void {
-    this.requestDeduplicationService.cacheResults(userId, requestId, results);
+  cacheOpsRequestResults(
+    userId: number,
+    requestId: string,
+    results: UploadResult[],
+  ): void {
+    this.requestDeduplicationService.cacheResults(userId, 'ops', requestId, results);
+  }
+
+  checkSnapshotRequestDedup(
+    userId: number,
+    requestId: string,
+  ): SnapshotDedupResponse | null {
+    return this.requestDeduplicationService.checkDeduplication(
+      userId,
+      'snapshot',
+      requestId,
+    );
+  }
+
+  cacheSnapshotRequestResult(
+    userId: number,
+    requestId: string,
+    response: SnapshotDedupResponse,
+  ): void {
+    this.requestDeduplicationService.cacheResults(
+      userId,
+      'snapshot',
+      requestId,
+      response,
+    );
   }
 
   cleanupExpiredRequestDedupEntries(): number {

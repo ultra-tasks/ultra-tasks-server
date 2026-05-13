@@ -892,7 +892,7 @@ describe('Sync Operations', () => {
     it('should return null for new request IDs', () => {
       const service = getSyncService();
 
-      const cached = service.checkRequestDeduplication(userId, 'new-request-123');
+      const cached = service.checkOpsRequestDedup(userId, 'new-request-123');
       expect(cached).toBeNull();
     });
 
@@ -903,10 +903,10 @@ describe('Sync Operations', () => {
       const results = [{ opId: 'op-1', accepted: true, serverSeq: 1 }];
 
       // Cache results
-      service.cacheRequestResults(userId, requestId, results as any);
+      service.cacheOpsRequestResults(userId, requestId, results as any);
 
       // Should return cached results
-      const cached = service.checkRequestDeduplication(userId, requestId);
+      const cached = service.checkOpsRequestDedup(userId, requestId);
       expect(cached).toEqual(results);
     });
 
@@ -915,19 +915,40 @@ describe('Sync Operations', () => {
       const requestId = 'shared-request';
 
       const results = [{ opId: 'op-1', accepted: true, serverSeq: 1 }];
-      service.cacheRequestResults(userId, requestId, results as any);
+      service.cacheOpsRequestResults(userId, requestId, results as any);
 
       // Same request ID for different user should not be cached
-      const cachedOtherUser = service.checkRequestDeduplication(2, requestId);
+      const cachedOtherUser = service.checkOpsRequestDedup(2, requestId);
       expect(cachedOtherUser).toBeNull();
+    });
+
+    it('should isolate ops vs snapshot caches with the same requestId', () => {
+      const service = getSyncService();
+      const requestId = 'collision-id';
+
+      service.cacheOpsRequestResults(userId, requestId, [
+        { opId: 'op-1', accepted: true, serverSeq: 1 },
+      ] as any);
+      service.cacheSnapshotRequestResult(userId, requestId, {
+        accepted: true,
+        serverSeq: 99,
+      });
+
+      expect(service.checkOpsRequestDedup(userId, requestId)).toEqual([
+        { opId: 'op-1', accepted: true, serverSeq: 1 },
+      ]);
+      expect(service.checkSnapshotRequestDedup(userId, requestId)).toEqual({
+        accepted: true,
+        serverSeq: 99,
+      });
     });
 
     it('should cleanup expired dedup entries', () => {
       const service = getSyncService();
 
       // Cache some results
-      service.cacheRequestResults(userId, 'request-1', []);
-      service.cacheRequestResults(userId, 'request-2', []);
+      service.cacheOpsRequestResults(userId, 'request-1', []);
+      service.cacheOpsRequestResults(userId, 'request-2', []);
 
       // Since we can't easily manipulate time, verify cleanup runs without error
       const cleaned = service.cleanupExpiredRequestDedupEntries();
