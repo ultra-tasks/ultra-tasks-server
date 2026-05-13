@@ -42,6 +42,16 @@ interface DuplicateOperationCandidate {
   syncImportReason: string | null;
 }
 
+interface LatestEntityOperationRow {
+  entityId: string;
+  clientId: string;
+  vectorClock: unknown;
+}
+
+// Conservative enough to avoid planner-heavy BitmapOr + Sort plans on large
+// histories while still replacing up to 100 per-entity round trips with one query.
+const CONFLICT_DETECTION_ENTITY_BATCH_SIZE = 100;
+
 /**
  * Main sync orchestration service.
  *
@@ -98,60 +108,82 @@ export class SyncService {
 
     // Build list of entity IDs to check for conflicts.
     // Operations may have either entityId (singular) or entityIds (batch operations).
-    const entityIdsToCheck: string[] = op.entityIds?.length
+    const rawEntityIdsToCheck = op.entityIds?.length
       ? op.entityIds
       : op.entityId
         ? [op.entityId]
         : [];
 
     // Skip if no entity IDs (can't have entity-level conflicts)
-    if (entityIdsToCheck.length === 0) {
+    if (rawEntityIdsToCheck.length === 0) {
       return { hasConflict: false };
     }
 
-    // Check each entity for conflicts
-    for (const entityId of entityIdsToCheck) {
-      const conflictResult = await this.detectConflictForEntity(userId, op, entityId, tx);
-      if (conflictResult.hasConflict) {
-        return conflictResult;
+    if (rawEntityIdsToCheck.length === 1) {
+      return this.detectConflictForEntity(userId, op, rawEntityIdsToCheck[0], tx);
+    }
+
+    const entityIdsToCheck = Array.from(new Set(rawEntityIdsToCheck));
+    return this.detectConflictForEntities(userId, op, entityIdsToCheck, tx);
+  }
+
+  private async detectConflictForEntities(
+    userId: number,
+    op: Operation,
+    entityIdsToCheck: string[],
+    tx: Prisma.TransactionClient,
+  ): Promise<ConflictResult> {
+    for (
+      let start = 0;
+      start < entityIdsToCheck.length;
+      start += CONFLICT_DETECTION_ENTITY_BATCH_SIZE
+    ) {
+      const batchEntityIds = entityIdsToCheck.slice(
+        start,
+        start + CONFLICT_DETECTION_ENTITY_BATCH_SIZE,
+      );
+      const latestOps = await tx.$queryRaw<LatestEntityOperationRow[]>`
+        SELECT DISTINCT ON (entity_id)
+          entity_id AS "entityId",
+          client_id AS "clientId",
+          vector_clock AS "vectorClock"
+        FROM operations
+        WHERE user_id = ${userId}
+          AND entity_type = ${op.entityType}
+          AND entity_id IN (${Prisma.join(batchEntityIds)})
+        ORDER BY entity_id, server_seq DESC
+      `;
+
+      const latestOpByEntityId = new Map<string, LatestEntityOperationRow>();
+      for (const latestOp of latestOps) {
+        latestOpByEntityId.set(latestOp.entityId, latestOp);
+      }
+
+      for (const entityId of batchEntityIds) {
+        const existingOp = latestOpByEntityId.get(entityId);
+        if (!existingOp) continue;
+
+        const conflictResult = this.resolveConflictForExistingOp(
+          op,
+          entityId,
+          existingOp,
+        );
+        if (conflictResult.hasConflict) {
+          return conflictResult;
+        }
       }
     }
 
     return { hasConflict: false };
   }
 
-  /**
-   * Checks for conflicts on a single entity.
-   * Extracted from detectConflict to support multi-entity operations.
-   */
-  private async detectConflictForEntity(
-    userId: number,
+  private resolveConflictForExistingOp(
     op: Operation,
     entityId: string,
-    tx: Prisma.TransactionClient,
-  ): Promise<ConflictResult> {
-    // Get the latest operation for this entity
-    const existingOp = await tx.operation.findFirst({
-      where: {
-        userId,
-        entityType: op.entityType,
-        entityId,
-      },
-      select: {
-        clientId: true,
-        vectorClock: true,
-      },
-      orderBy: {
-        serverSeq: 'desc',
-      },
-    });
-
-    // No existing operation = no conflict
-    if (!existingOp) {
-      return { hasConflict: false };
-    }
-
-    // Parse the existing operation's vector clock (Prisma returns Json, cast to VectorClock)
+    existingOp: { clientId: string; vectorClock: unknown },
+  ): ConflictResult {
+    // Stored JSON/vector_clock values arrive as unknown from both Prisma model
+    // reads and raw SQL rows; cast only at the vector-clock comparison boundary.
     const existingClock = existingOp.vectorClock as unknown as VectorClock;
 
     // Compare vector clocks
@@ -206,6 +238,41 @@ export class SyncService {
       reason: `Unknown vector clock comparison result for ${op.entityType}:${entityId}`,
       existingClock,
     };
+  }
+
+  /**
+   * Checks conflicts for the common single-entity upload path using Prisma's
+   * typed model API. Multi-entity operations use the batched raw-SQL path above
+   * to avoid one round trip per entity.
+   */
+  private async detectConflictForEntity(
+    userId: number,
+    op: Operation,
+    entityId: string,
+    tx: Prisma.TransactionClient,
+  ): Promise<ConflictResult> {
+    // Get the latest operation for this entity
+    const existingOp = await tx.operation.findFirst({
+      where: {
+        userId,
+        entityType: op.entityType,
+        entityId,
+      },
+      select: {
+        clientId: true,
+        vectorClock: true,
+      },
+      orderBy: {
+        serverSeq: 'desc',
+      },
+    });
+
+    // No existing operation = no conflict
+    if (!existingOp) {
+      return { hasConflict: false };
+    }
+
+    return this.resolveConflictForExistingOp(op, entityId, existingOp);
   }
 
   private isSameDuplicateOperation(
@@ -853,6 +920,10 @@ export class SyncService {
 
   async getCachedSnapshotBytes(userId: number): Promise<number> {
     return this.snapshotService.getCachedSnapshotBytes(userId);
+  }
+
+  async getCachedSnapshotGeneratedAt(userId: number): Promise<number | null> {
+    return this.snapshotService.getCachedSnapshotGeneratedAt(userId);
   }
 
   async cacheSnapshot(
