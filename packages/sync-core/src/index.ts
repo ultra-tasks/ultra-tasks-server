@@ -56,26 +56,25 @@ export {
 export type { GzipCompressionLogMessages, GzipCompressionOptions } from './compression';
 
 // Encryption primitives — Argon2id KDF + AES-GCM, Web Crypto with @noble fallback.
+// See packages/sync-core/src/encryption.ts for the wire-format contract and
+// the structural-vs-side-channel legacy-diagnostics discussion.
 export {
   encrypt,
   decrypt,
   encryptBatch,
   decryptBatch,
-  generateKey,
-  deriveKeyFromPassword,
   encryptWithDerivedKey,
   decryptWithDerivedKey,
   decryptWithMigration,
-  getCryptoStrategy,
-  isCryptoSubtleAvailable,
+  deriveKeyFromPassword,
   clearSessionKeyCache,
   getSessionKeyCacheStats,
   getArgon2Params,
+  isCryptoSubtleAvailable,
   setArgon2ParamsForTesting,
-  base642ab,
-  ab2base64,
+  setLegacyKdfWarningHandler,
 } from './encryption';
-export type { CryptoStrategy, DerivedKeyInfo, DecryptResult } from './encryption';
+export type { DerivedKey, DecryptResult } from './encryption';
 
 // Generic error helpers.
 export { extractErrorMessage } from './error.util';
