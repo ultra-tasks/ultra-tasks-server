@@ -648,11 +648,19 @@ describe('Sync compressed body routes', () => {
         errorCode: 'DUPLICATE_OPERATION',
       },
     ]);
-    // The first attempt actually persisted; the route looks it up directly.
-    mocks.prisma.operation.findUnique.mockResolvedValue({ serverSeq: 77 });
-    // Mock findFirst (SYNC_IMPORT_EXISTS pre-check) to return nothing so the
-    // request reaches uploadOps. (reason='recovery' also skips this check.)
-    mocks.prisma.operation.findFirst.mockResolvedValue(null);
+    // The first attempt actually persisted; the route looks it up via findFirst
+    // with a userId guard, so the mock must match the (id, userId) shape and
+    // return the original serverSeq for the conversion to succeed.
+    mocks.prisma.operation.findFirst.mockImplementation(
+      async ({ where }: { where: { id?: string; userId?: number } }) => {
+        if (where.id === '018f2f0b-1c2d-7a1b-8c3d-123456789abc' && where.userId === 1) {
+          return { serverSeq: 77 };
+        }
+        // SYNC_IMPORT_EXISTS pre-check (not exercised for reason='recovery',
+        // but kept defensively so an accidental call returns "no existing op").
+        return null;
+      },
+    );
 
     const response = await app.inject({
       method: 'POST',
