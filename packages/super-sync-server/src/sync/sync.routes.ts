@@ -1212,8 +1212,13 @@ export const syncRoutes = async (fastify: FastifyInstance): Promise<void> => {
           result.errorCode === SYNC_ERROR_CODES.DUPLICATE_OPERATION &&
           opId
         ) {
-          const existingOp = await prisma.operation.findUnique({
-            where: { id: opId },
+          // Defensive userId filter: `isSameDuplicateOperation` already enforces
+          // ownership before processOperation returns DUPLICATE_OPERATION, so a
+          // cross-tenant id collision can't reach this branch today. The guard
+          // keeps the route's idempotency conversion correct even if that
+          // upstream invariant ever changes.
+          const existingOp = await prisma.operation.findFirst({
+            where: { id: opId, userId },
             select: { serverSeq: true },
           });
           if (existingOp) {
