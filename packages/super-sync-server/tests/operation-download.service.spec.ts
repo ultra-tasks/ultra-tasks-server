@@ -291,8 +291,10 @@ describe('OperationDownloadService', () => {
 
     it('should select only download response fields inside atomic reads', async () => {
       let capturedTx: any;
+      let capturedOptions: any;
 
-      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any) => {
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn: any, options: any) => {
+        capturedOptions = options;
         capturedTx = {
           operation: {
             findFirst: vi.fn().mockResolvedValue(null),
@@ -308,6 +310,7 @@ describe('OperationDownloadService', () => {
 
       await service.getOpsSinceWithSeq(1, 0);
 
+      expect(capturedOptions).toEqual({ timeout: 60000 });
       expect(capturedTx.operation.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           select: EXPECTED_OPERATION_DOWNLOAD_SELECT,

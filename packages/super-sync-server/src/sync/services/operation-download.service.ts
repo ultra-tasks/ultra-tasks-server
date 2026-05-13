@@ -30,6 +30,8 @@ const OPERATION_DOWNLOAD_SELECT = {
   syncImportReason: true,
 } as const;
 
+const DOWNLOAD_TRANSACTION_TIMEOUT_MS = 60000;
+
 type OperationDownloadRow = {
   id: string;
   serverSeq: number;
@@ -281,8 +283,8 @@ export class OperationDownloadService {
           snapshotVectorClock,
         };
       },
-      { timeout: 30000 },
-    ); // 30s - consistent with other sync transactions
+      { timeout: DOWNLOAD_TRANSACTION_TIMEOUT_MS },
+    ); // Matches other sync transactions; stays below Fastify's 80s request timeout.
   }
 
   /**
