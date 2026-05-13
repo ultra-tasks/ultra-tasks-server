@@ -263,9 +263,12 @@ export const encryptBatch = async (
  * Operations with the same salt (e.g., encrypted in the same batch) share
  * the cached key, avoiding redundant Argon2id derivations.
  *
- * SECURITY: Unlike single-item decrypt(), uses explicit format detection so
- * Argon2 decryption errors are not silently masked as legacy fallbacks.
- * Only ciphertexts too short for Argon2 attempt legacy decryption.
+ * Format handling mirrors single-item `decrypt()`: ciphertexts in the
+ * legacy-length range (28..43 bytes) take the PBKDF2 path; >= 44 bytes are
+ * attempted as Argon2id first, with a legacy fallback on auth failure (a
+ * long legacy ciphertext can be misclassified as Argon2 by the length
+ * heuristic); < 28 bytes throws as invalid. The fallback is part of the
+ * public wire-format contract; see the module-level JSDoc.
  */
 export const decryptBatch = async (
   dataItems: string[],
