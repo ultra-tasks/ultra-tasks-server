@@ -136,13 +136,17 @@ export const detectFormat = (
 };
 
 /**
- * Simple hash of password for cache key comparison (djb2).
- * NOT for security — just for cache invalidation when password changes.
+ * Returns an injective string identifier for a password, used as a cache-map
+ * key (and as a prefix in decrypt-cache keys like `${id}:${saltBase64}`).
+ *
+ * Length-prefixed so concatenation stays unambiguous even if the password
+ * contains the `:` separator used downstream. Holding the password verbatim
+ * is safe: these caches live in-memory in the same process that already holds
+ * the plaintext password.
+ *
+ * Earlier versions used a 32-bit djb2 hash; collisions would silently return
+ * a key derived from a different password, producing undecryptable ciphertext.
  */
 export const hashPasswordForCache = (password: string): string => {
-  let hash = 5381;
-  for (let i = 0; i < password.length; i++) {
-    hash = (hash * 33) ^ password.charCodeAt(i);
-  }
-  return (hash >>> 0).toString(16);
+  return `${password.length}:${password}`;
 };

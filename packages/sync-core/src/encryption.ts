@@ -17,6 +17,21 @@
  * by length: < 28 bytes is invalid, < 44 bytes is unambiguously legacy,
  * >= 44 bytes is treated as Argon2id with a legacy fallback on auth failure.
  *
+ * ## Salt and IV semantics
+ *
+ *   - **IV** is freshly random per call (12 bytes from CSPRNG). AES-GCM
+ *     confidentiality and integrity depend on IV uniqueness under a given key,
+ *     which this guarantees.
+ *   - **Salt** is derived once per (process session, password) and reused
+ *     across every `encrypt()` / `encryptWithDerivedKey()` / `encryptBatch()`
+ *     call in that session. This is intentional: it lets us amortize the
+ *     ~500ms-2s Argon2id derivation across many calls via the session cache.
+ *     A session-stable salt is safe because the derived key never changes for
+ *     the same (salt, password) pair, and AES-GCM security under a fixed key
+ *     reduces to IV uniqueness. Two encryptions of the same plaintext within
+ *     a session therefore share the salt prefix and differ only in IV +
+ *     ciphertext — do not assert otherwise in tests.
+ *
  * ## Legacy-decrypt diagnostics
  *
  * Two complementary mechanisms surface legacy ciphertext to callers; both are
@@ -49,7 +64,6 @@ import { type DerivedKey, deriveKeyFromPassword } from './encryption/argon2';
 import {
   getDecryptCache,
   getOrDeriveEncryptKey,
-  hasDecryptCache,
   setDecryptCache,
 } from './encryption/session-cache';
 import { decryptLegacy } from './encryption/legacy';
@@ -266,8 +280,7 @@ export const decryptBatch = async (
   interface ArgonItem {
     index: number;
     format: 'argon2';
-    cacheKey: string;
-    salt: Uint8Array;
+    saltBase64: string;
     buffer: ArrayBuffer;
   }
   interface LegacyItem {
@@ -276,9 +289,9 @@ export const decryptBatch = async (
     data: string;
   }
 
-  // Phase 1: analyze items, decode once, collect unique salts needing derivation.
+  // Phase 1: analyze items, decode once, collect every unique salt.
   const itemAnalysis: Array<ArgonItem | LegacyItem> = [];
-  const saltsNeedingDerivation = new Map<string, Uint8Array>();
+  const uniqueSalts = new Map<string, Uint8Array>();
 
   for (let i = 0; i < dataItems.length; i++) {
     const data = dataItems[i];
@@ -296,36 +309,40 @@ export const decryptBatch = async (
 
     const salt = new Uint8Array(buffer, 0, SALT_LENGTH);
     const saltBase64 = encodeBase64(salt);
-    const cacheKey = `${passwordHash}:${saltBase64}`;
 
-    itemAnalysis.push({ index: i, format: 'argon2', cacheKey, salt, buffer });
+    itemAnalysis.push({ index: i, format: 'argon2', saltBase64, buffer });
 
-    if (!hasDecryptCache(cacheKey) && !saltsNeedingDerivation.has(saltBase64)) {
-      saltsNeedingDerivation.set(saltBase64, salt);
+    if (!uniqueSalts.has(saltBase64)) {
+      uniqueSalts.set(saltBase64, salt);
     }
   }
 
-  // Phase 2: derive keys for unique salts SERIALLY.
-  // Argon2id is single-threaded and allocates 64MB per derivation; parallel
-  // derivations via Promise.all only interleave microtasks (no real parallelism)
-  // and risk OOM on mobile.
-  for (const [saltBase64, salt] of saltsNeedingDerivation) {
+  // Phase 2: derive keys for unique salts SERIALLY and keep them in a
+  // batch-local map. Argon2id is single-threaded and allocates 64MB per
+  // derivation; parallel derivations via Promise.all only interleave microtasks
+  // (no real parallelism) and risk OOM on mobile. Holding keys locally also
+  // ensures Phase 3 cannot see an entry evicted by the LRU session cache
+  // (capped at SESSION_DECRYPT_CACHE_MAX_SIZE) when a batch contains more
+  // unique salts than the cache can hold.
+  const batchKeys = new Map<string, DerivedKey>();
+  for (const [saltBase64, salt] of uniqueSalts) {
     const cacheKey = `${passwordHash}:${saltBase64}`;
-    if (hasDecryptCache(cacheKey)) {
-      continue;
+    let key = getDecryptCache(cacheKey);
+    if (!key) {
+      key = await deriveKeyFromPassword(password, salt);
+      setDecryptCache(cacheKey, key);
     }
-    const key = await deriveKeyFromPassword(password, salt);
-    setDecryptCache(cacheKey, key);
+    batchKeys.set(saltBase64, key);
   }
 
-  // Phase 3: decrypt all items in parallel using cached keys, reusing the
-  // buffer decoded in phase 1 to avoid a second base64 decode.
+  // Phase 3: decrypt all items in parallel using batch-local keys, reusing
+  // the buffer decoded in phase 1 to avoid a second base64 decode.
   const decryptionPromises = itemAnalysis.map(async (item) => {
     if (item.format === 'legacy') {
       return { index: item.index, result: await decryptLegacy(item.data, password) };
     }
 
-    const key = getDecryptCache(item.cacheKey)!;
+    const key = batchKeys.get(item.saltBase64)!;
     try {
       return {
         index: item.index,

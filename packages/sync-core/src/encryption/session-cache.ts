@@ -63,9 +63,6 @@ export const getOrDeriveEncryptKey = async (password: string): Promise<DerivedKe
 export const getDecryptCache = (cacheKey: string): DerivedKey | undefined =>
   sessionDecryptKeyCache.get(cacheKey);
 
-export const hasDecryptCache = (cacheKey: string): boolean =>
-  sessionDecryptKeyCache.has(cacheKey);
-
 export const setDecryptCache = (cacheKey: string, key: DerivedKey): void => {
   if (sessionDecryptKeyCache.size >= SESSION_DECRYPT_CACHE_MAX_SIZE) {
     const firstKey = sessionDecryptKeyCache.keys().next().value;

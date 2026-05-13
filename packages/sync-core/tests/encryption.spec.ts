@@ -284,6 +284,24 @@ describe('encryption', () => {
       expect(decrypted[0]).toBe('item-0');
       expect(decrypted[49]).toBe('item-49');
     });
+
+    // SESSION_DECRYPT_CACHE_MAX_SIZE is 100; if a batch contains more unique
+    // salts than the LRU cache can hold, early derivations get evicted before
+    // Phase 3 reads them. The implementation keeps derived keys in a
+    // batch-local map to keep this safe.
+    it('decrypts batches with more unique salts than the LRU cache holds', async () => {
+      clearSessionKeyCache();
+      const COUNT = 120;
+      const items = Array.from({ length: COUNT }, (_, i) => `item-${i}`);
+      const encrypted: string[] = [];
+      for (let i = 0; i < COUNT; i++) {
+        // Fresh derivation per item → unique salt per ciphertext
+        const key = await deriveKeyFromPassword(PASSWORD);
+        encrypted.push(await encryptWithDerivedKey(items[i], key));
+      }
+      const decrypted = await decryptBatch(encrypted, PASSWORD);
+      expect(decrypted).toEqual(items);
+    });
   });
 
   describe('Session key caching', () => {

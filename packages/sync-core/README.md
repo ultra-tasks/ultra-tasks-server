@@ -29,6 +29,11 @@ const plain = await decrypt(cipher, password);
 
 All ciphertexts are base64-encoded for transport. The format is discriminated by length: `< 28` bytes is invalid, `< 44` bytes is unambiguously legacy, `>= 44` bytes is treated as Argon2id with a legacy fallback on auth failure. Do not change this without a versioning migration.
 
+### Salt and IV semantics
+
+- The **IV** (12 bytes) is freshly random per call. AES-GCM security under a fixed key reduces to IV uniqueness, which this guarantees.
+- The **salt** (16 bytes) is derived once per `(process session, password)` pair and reused across every `encrypt`/`encryptWithDerivedKey`/`encryptBatch` call in that session. This is intentional — it lets the session cache amortize the ~500 ms–2 s Argon2id derivation. Two encryptions of the same plaintext within a session therefore share the salt prefix and differ only in IV and ciphertext. Do not assert per-call salt uniqueness in tests.
+
 ### Session key caching
 
 `encrypt`/`decrypt`/`encryptBatch`/`decryptBatch` all share three in-memory caches (encrypt key, decrypt key by salt, legacy PBKDF2 key) that survive across sync cycles. Argon2id derivation is expensive (~500–2000 ms on mobile with the default 64 MiB / 3 iterations); the cache turns repeated syncs from minutes into seconds.
