@@ -745,7 +745,12 @@ describe('Storage Quota Cleanup', () => {
       createOp(clientId, userId, { opType: 'SYNC_IMPORT', payload: restorePayload }); // seq 5 - must keep
 
       let reconcileCalls = 0;
-      service.updateStorageUsage = async () => {
+      const storageQuotaService = (
+        service as unknown as {
+          storageQuotaService: { updateStorageUsage: (userId: number) => Promise<void> };
+        }
+      ).storageQuotaService;
+      storageQuotaService.updateStorageUsage = async () => {
         reconcileCalls++;
         const current = testUsers.get(userId);
         testUsers.set(userId, {

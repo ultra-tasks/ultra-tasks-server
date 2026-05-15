@@ -3,6 +3,7 @@ import {
   SnapshotService,
   EncryptedOpsNotSupportedError,
 } from '../src/sync/services/snapshot.service';
+import { replayOpsToState } from '../src/sync/op-replay';
 import * as zlib from 'zlib';
 
 // Mock prisma
@@ -1456,7 +1457,7 @@ describe('SnapshotService', () => {
         },
       ];
 
-      const result = service.replayOpsToState(ops as any);
+      const result = replayOpsToState(ops as any);
 
       expect(result).toEqual({
         TASK: {
@@ -1482,7 +1483,7 @@ describe('SnapshotService', () => {
         },
       ];
 
-      const result = service.replayOpsToState(ops as any, initialState);
+      const result = replayOpsToState(ops as any, initialState);
 
       expect(result).toEqual({
         TASK: {
@@ -1511,7 +1512,7 @@ describe('SnapshotService', () => {
         },
       ];
 
-      const result = service.replayOpsToState(ops as any, initialState);
+      const result = replayOpsToState(ops as any, initialState);
 
       expect(result).toEqual({
         TASK: {
@@ -1539,7 +1540,7 @@ describe('SnapshotService', () => {
         },
       ];
 
-      const result = service.replayOpsToState(ops as any);
+      const result = replayOpsToState(ops as any);
 
       expect(result).toEqual({
         TASK: {
@@ -1568,7 +1569,7 @@ describe('SnapshotService', () => {
         },
       ];
 
-      const result = service.replayOpsToState(ops as any);
+      const result = replayOpsToState(ops as any);
 
       expect(result.TASK).toEqual({ 'task-1': { id: 'task-1' } });
       expect(result.PROJECT).toEqual({ 'proj-1': { id: 'proj-1' } });
@@ -1594,7 +1595,7 @@ describe('SnapshotService', () => {
       }));
 
       try {
-        service.replayOpsToState(ops as any);
+        replayOpsToState(ops as any);
 
         const fullStateStringifications = stringifySpy.mock.calls.filter(([value]) => {
           return (
@@ -1630,7 +1631,7 @@ describe('SnapshotService', () => {
       ];
 
       try {
-        service.replayOpsToState(ops as any);
+        replayOpsToState(ops as any);
 
         const fullStateStringifications = stringifySpy.mock.calls.filter(([value]) => {
           return (
@@ -1673,7 +1674,7 @@ describe('SnapshotService', () => {
         },
       ];
 
-      const result = service.replayOpsToState(ops as any, stalePriorState);
+      const result = replayOpsToState(ops as any, stalePriorState);
 
       expect(result).toEqual({ TASK: { 'new-task': { id: 'new-task' } } });
       // Stale keys gone
@@ -1727,7 +1728,7 @@ describe('SnapshotService', () => {
       ];
 
       try {
-        const result = service.replayOpsToState(ops as any) as Record<string, unknown> & {
+        const result = replayOpsToState(ops as any) as Record<string, unknown> & {
           polluted?: unknown;
         };
 
@@ -1780,12 +1781,8 @@ describe('SnapshotService', () => {
         },
       ];
 
-      expect(() => service.replayOpsToState(ops as any)).toThrow(
-        EncryptedOpsNotSupportedError,
-      );
-      expect(() => service.replayOpsToState(ops as any)).toThrow(
-        'ENCRYPTED_OPS_NOT_SUPPORTED',
-      );
+      expect(() => replayOpsToState(ops as any)).toThrow(EncryptedOpsNotSupportedError);
+      expect(() => replayOpsToState(ops as any)).toThrow('ENCRYPTED_OPS_NOT_SUPPORTED');
     });
 
     it('should skip unknown entity types', () => {
@@ -1802,7 +1799,7 @@ describe('SnapshotService', () => {
         },
       ];
 
-      const result = service.replayOpsToState(ops as any);
+      const result = replayOpsToState(ops as any);
 
       expect(result).toEqual({});
     });
@@ -1834,7 +1831,7 @@ describe('SnapshotService', () => {
         },
       ];
 
-      const result = service.replayOpsToState(ops as any) as Record<string, unknown>;
+      const result = replayOpsToState(ops as any) as Record<string, unknown>;
       const taskMap = result.TASK as Record<string, unknown> & { polluted?: boolean };
 
       // Unsafe id was skipped; the legitimate task still applied.
@@ -1864,7 +1861,7 @@ describe('SnapshotService', () => {
         },
       ];
 
-      const result = service.replayOpsToState(ops as any) as Record<string, unknown>;
+      const result = replayOpsToState(ops as any) as Record<string, unknown>;
       const taskMap = result.TASK as Record<string, unknown> & { polluted?: boolean };
       expect(taskMap['real-id']).toEqual({ id: 'real-id' });
       expect(Object.getPrototypeOf(taskMap)).toBe(Object.prototype);
@@ -1886,7 +1883,7 @@ describe('SnapshotService', () => {
               schemaVersion: 1,
             },
           ];
-          const result = service.replayOpsToState(ops as any) as Record<string, unknown>;
+          const result = replayOpsToState(ops as any) as Record<string, unknown>;
           const taskMap = result.TASK as Record<string, unknown> | undefined;
           if (taskMap) {
             expect(Object.getPrototypeOf(taskMap)).toBe(Object.prototype);

@@ -1,4 +1,5 @@
 import { Logger } from '../logger';
+import { Prisma } from '@prisma/client';
 import {
   SUPER_SYNC_MAX_OPS_PER_UPLOAD,
   SUPER_SYNC_OP_TYPES,
@@ -175,6 +176,72 @@ export interface Operation {
   syncImportReason?: string;
 }
 
+export interface DuplicateOperationCandidate {
+  id: string;
+  userId: number;
+  clientId: string;
+  actionType: string;
+  opType: string;
+  entityType: string;
+  entityId: string | null;
+  payload: unknown;
+  vectorClock: unknown;
+  schemaVersion: number;
+  clientTimestamp: bigint | number | string;
+  receivedAt: bigint | number | string;
+  isPayloadEncrypted: boolean;
+  syncImportReason: string | null;
+}
+
+/**
+ * The exact column set `isSameDuplicateOperation` needs to compare an incoming
+ * op against a stored one. Shared by every duplicate-detection query (batch
+ * prefetch + both legacy per-op checks) so a field added here can never be
+ * silently missed at one of the call sites.
+ */
+export const DUPLICATE_OP_SELECT = {
+  id: true,
+  userId: true,
+  clientId: true,
+  actionType: true,
+  opType: true,
+  entityType: true,
+  entityId: true,
+  payload: true,
+  vectorClock: true,
+  schemaVersion: true,
+  clientTimestamp: true,
+  receivedAt: true,
+  isPayloadEncrypted: true,
+  syncImportReason: true,
+} satisfies Prisma.OperationSelect;
+
+export interface LatestEntityOperationRow {
+  entityId: string;
+  clientId: string;
+  vectorClock: unknown;
+}
+
+export interface LatestBatchEntityOperationRow extends LatestEntityOperationRow {
+  entityType: string;
+}
+
+export interface BatchUploadCandidate {
+  op: Operation;
+  resultIndex: number;
+  originalTimestamp: number;
+  fullStateVectorClock?: VectorClock;
+}
+
+export interface AcceptedBatchOperation extends BatchUploadCandidate {
+  serverSeq: number;
+  storageBytes: number;
+}
+
+// Conservative enough to avoid planner-heavy BitmapOr + Sort plans on large
+// histories while still replacing up to 100 per-entity round trips with one query.
+export const CONFLICT_DETECTION_ENTITY_BATCH_SIZE = 100;
+
 export interface ServerOperation {
   serverSeq: number;
   op: Operation;
@@ -272,6 +339,14 @@ export interface SyncStatusResponse {
   snapshotAge?: number;
   storageUsedBytes: number;
   storageQuotaBytes: number;
+}
+
+// Snapshot generation result (shared by SnapshotService + SnapshotGenerationService)
+export interface SnapshotResult {
+  state: unknown;
+  serverSeq: number;
+  generatedAt: number;
+  schemaVersion: number;
 }
 
 // Restore point types

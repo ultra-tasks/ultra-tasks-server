@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { uuidv7 } from 'uuidv7';
 import { Prisma } from '@prisma/client';
+import { prefetchLatestEntityOpsForBatch } from '../src/sync/conflict';
 import { testState, resetTestState } from './sync.service.test-state';
 
 // Mock the database module with Prisma mocks
@@ -836,7 +837,6 @@ describe('SyncService', () => {
     });
 
     it('should chunk large batch entity prefetch queries', async () => {
-      const service = new SyncService({ batchUpload: true });
       const entityPairs = Array.from({ length: 250 }, (_, index) => ({
         entityType: 'TASK',
         entityId: `task-${index}`,
@@ -845,15 +845,11 @@ describe('SyncService', () => {
         $queryRaw: vi.fn().mockResolvedValue([]),
       };
 
-      await (
-        service as unknown as {
-          prefetchLatestEntityOpsForBatch: (
-            userId: number,
-            entityPairs: { entityType: string; entityId: string }[],
-            tx: { $queryRaw: (...args: unknown[]) => Promise<unknown[]> },
-          ) => Promise<Map<string, unknown>>;
-        }
-      ).prefetchLatestEntityOpsForBatch(userId, entityPairs, tx);
+      await prefetchLatestEntityOpsForBatch(
+        userId,
+        entityPairs,
+        tx as unknown as Prisma.TransactionClient,
+      );
 
       expect(tx.$queryRaw).toHaveBeenCalledTimes(3);
     });
@@ -921,12 +917,14 @@ describe('SyncService', () => {
       // that reverts to per-op aggregation (the exact perf footgun the batch
       // path optimizes away), and assert last-write-wins over N full-state ops.
       const service = new SyncService({ batchUpload: true });
-      const aggregateSpy = vi.spyOn(
+      const operationUploadService = (
         service as unknown as {
-          _aggregatePriorVectorClock: (...args: unknown[]) => Promise<unknown>;
-        },
-        '_aggregatePriorVectorClock',
-      );
+          operationUploadService: {
+            _aggregatePriorVectorClock: (...args: unknown[]) => Promise<unknown>;
+          };
+        }
+      ).operationUploadService;
+      const aggregateSpy = vi.spyOn(operationUploadService, '_aggregatePriorVectorClock');
 
       const results = await service.uploadOps(userId, clientId, [
         {
@@ -2115,13 +2113,16 @@ describe('SyncService', () => {
       // on the second batch. Pre-fix this would leave the storage counter
       // stale-high with no reconcile signal until the next daily pass.
       const serviceWithPrivates = service as unknown as {
-        deleteOldSyncedOpsBatch: (...args: unknown[]) => Promise<number>;
-        storageQuotaService: { needsReconcile: (userId: number) => boolean };
+        storageQuotaService: {
+          deleteOldSyncedOpsBatch: (...args: unknown[]) => Promise<number>;
+          needsReconcile: (userId: number) => boolean;
+        };
       };
+      const storageQuotaService = serviceWithPrivates.storageQuotaService;
       const originalBatch =
-        serviceWithPrivates.deleteOldSyncedOpsBatch.bind(serviceWithPrivates);
+        storageQuotaService.deleteOldSyncedOpsBatch.bind(storageQuotaService);
       let callCount = 0;
-      vi.spyOn(serviceWithPrivates, 'deleteOldSyncedOpsBatch').mockImplementation(
+      vi.spyOn(storageQuotaService, 'deleteOldSyncedOpsBatch').mockImplementation(
         async (...args: unknown[]) => {
           callCount += 1;
           if (callCount === 1) return originalBatch(...args);
@@ -2137,7 +2138,7 @@ describe('SyncService', () => {
 
       // First batch committed deletes; the user must still be marked so
       // the next request reconciles the now-stale-high counter.
-      expect(serviceWithPrivates.storageQuotaService.needsReconcile(userId)).toBe(true);
+      expect(storageQuotaService.needsReconcile(userId)).toBe(true);
       expect(testState.operations.size).toBe(totalOps - 50);
     });
 
