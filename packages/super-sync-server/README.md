@@ -34,6 +34,9 @@ The server uses an **Append-Only Log** architecture backed by **PostgreSQL** (vi
 ### Docker (Recommended)
 
 The easiest way to run the server is using the provided Docker Compose configuration.
+Deploy hosts need Docker with the Compose plugin, `curl`, `git`, and `jq`.
+The image revision check requires Docker Compose support for
+`docker compose config --format json`.
 
 ```bash
 # 1. Copy environment example
@@ -61,19 +64,27 @@ connection uses `postgres:5432`; existing installs that already set
 > against unapplied migrations. Use `./scripts/deploy.sh` for production
 > updates, or `./scripts/deploy.sh --build` for local image builds.
 
+`deploy.sh` verifies that the pulled/built `supersync` image has an
+`org.opencontainers.image.revision` label matching the latest commit that
+affects the SuperSync image inputs. This prevents host deploy scripts from
+running migrations against a stale image, without requiring a new image for
+unrelated repo commits. If you publish custom images, pass the same source
+revision as `VCS_REF` during the Docker build or set
+`SUPERSYNC_SKIP_IMAGE_REVISION_CHECK=true` only for a deliberate manual
+override.
+
 Some migrations use `CREATE INDEX CONCURRENTLY`, which can block on long-running
 transactions on a busy database. Run deploys off-hours when applying schema
 changes, and raise `MIGRATION_TIMEOUT` (seconds, default `900`) if a large
 table requires more time. Exit code `124` from `deploy.sh` means the migration
 timed out — re-run after the blocking transaction clears.
 
-If a deploy was interrupted after Prisma recorded the
-`20260512000000_add_full_state_sequence_index_drop_redundant_indexes` migration
-as failed, later deploys can stop with `P3009`. Prisma can also stop this
-specific migration with `P3018` because it contains several `CREATE/DROP INDEX
-CONCURRENTLY` statements, which cannot run in one transaction block. `deploy.sh`
-handles both cases: it resolves the failed row when needed, applies the
-concurrent index statements one at a time outside Prisma migrate, marks the
+If a deploy was interrupted after Prisma recorded a migration as failed, later
+deploys can stop with `P3009`. Prisma can also stop migrations with `P3018`
+when they contain `CREATE/DROP INDEX CONCURRENTLY` statements, which cannot run
+in one transaction block. `scripts/migrate-deploy.sh` handles the safe
+drop-then-create concurrent-index case generically: it resolves the failed row
+when needed, applies the migration SQL outside Prisma migrate, marks the
 migration applied, and retries `migrate deploy`.
 
 For local `prisma migrate dev` shadow databases, apply migrations containing

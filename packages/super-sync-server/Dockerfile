@@ -37,6 +37,9 @@ RUN rm -rf dist && npm run build
 
 # ---- Runtime stage ----
 FROM node:24-alpine AS production
+ARG VCS_REF=unknown
+
+LABEL org.opencontainers.image.revision=$VCS_REF
 
 # System deps for Prisma & healthcheck + create user BEFORE copying files
 RUN apk add --no-cache openssl libc6-compat wget && \

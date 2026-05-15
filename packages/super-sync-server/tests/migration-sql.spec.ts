@@ -129,10 +129,22 @@ describe('performance migrations', () => {
       join(currentDir, '../scripts/migrate-deploy.sh'),
       'utf8',
     );
+    const buildAndPushScript = readFileSync(
+      join(currentDir, '../scripts/build-and-push.sh'),
+      'utf8',
+    );
     const dockerfile = readFileSync(join(currentDir, '../Dockerfile'), 'utf8');
     const composeFile = readFileSync(join(currentDir, '../docker-compose.yml'), 'utf8');
+    const composeBuildFile = readFileSync(
+      join(currentDir, '../docker-compose.build.yml'),
+      'utf8',
+    );
     const helmDeployment = readFileSync(
       join(currentDir, '../helm/supersync/templates/deployment.yaml'),
+      'utf8',
+    );
+    const dockerWorkflow = readFileSync(
+      join(currentDir, '../../../.github/workflows/supersync-docker.yml'),
       'utf8',
     );
     const migrationCommand = 'sh scripts/migrate-deploy.sh';
@@ -145,6 +157,24 @@ describe('performance migrations', () => {
     expect(deployScript).toContain('POSTGRES_SERVICE="${POSTGRES_SERVICE-postgres}"');
     expect(deployScript).toContain('@db:5432');
     expect(deployScript).toContain('@postgres:5432');
+    expect(deployScript).toContain('SUPER_SYNC_DEPLOY_REEXECED');
+    expect(deployScript).toMatch(/git hash-object/);
+    expect(deployScript).toMatch(/exec\s+"\$DEPLOY_SCRIPT_FILE"/);
+    expect(deployScript).toContain('verify_supersync_image_revision()');
+    expect(deployScript).toContain('supersync_image_source_revision()');
+    expect(deployScript).toContain('assert_clean_supersync_image_inputs()');
+    expect(deployScript).toContain('git log -1 --format=%H');
+    expect(deployScript).toContain('../../.dockerignore');
+    expect(deployScript).toContain('git ls-files --others --exclude-standard');
+    expect(deployScript).toContain('packages/shared-schema');
+    expect(deployScript).toContain('Refusing to build a labeled supersync image');
+    expect(deployScript).toContain('SUPERSYNC_SKIP_IMAGE_REVISION_CHECK');
+    expect(deployScript).toContain('org.opencontainers.image.revision');
+    expect(deployScript).toContain('config --format json');
+    expect(deployScript).toContain('.services.supersync.image // empty');
+    expect(deployScript).toContain('jq is required');
+    expect(deployScript).toContain('docker compose config --format json failed');
+    expect(deployScript).toContain('docker image inspect');
     expect(deployScript).toContain('run --rm --no-deps --interactive=false -T supersync');
     expect(deployScript).toContain('prisma db execute');
     expect(deployScript).toContain(migrationCommand);
@@ -165,9 +195,29 @@ describe('performance migrations', () => {
     expect(deployScript.indexOf(migrationCommand)).toBeLessThan(
       deployScript.indexOf(startCommand),
     );
+    expect(dockerfile).toContain('ARG VCS_REF=unknown');
+    expect(dockerfile).toContain('LABEL org.opencontainers.image.revision=$VCS_REF');
     expect(dockerfile).toContain('RUN_MIGRATIONS_ON_STARTUP');
     expect(dockerfile).toContain('sh scripts/migrate-deploy.sh');
     expect(dockerfile).toContain('NODE_OPTIONS=--max-old-space-size=896');
+    expect(composeBuildFile).toContain('VCS_REF: ${SUPERSYNC_BUILD_SHA:-local}');
+    expect(buildAndPushScript).toContain('supersync_image_source_revision()');
+    expect(buildAndPushScript).toContain('assert_clean_supersync_image_inputs');
+    expect(buildAndPushScript).toContain('git -C "$REPO_ROOT" log -1 --format=%H');
+    expect(buildAndPushScript).toContain('.dockerignore');
+    expect(buildAndPushScript).toContain('git -C "$REPO_ROOT" ls-files --others');
+    expect(buildAndPushScript).toContain('--build-arg "VCS_REF=$VCS_REF"');
+    expect(dockerWorkflow).toContain('push:');
+    expect(dockerWorkflow).toContain('branches:');
+    expect(dockerWorkflow).toContain('- master');
+    expect(dockerWorkflow).toContain('fetch-depth: 0');
+    expect(dockerWorkflow).toContain('.dockerignore');
+    expect(dockerWorkflow).toContain('packages/super-sync-server/**');
+    expect(dockerWorkflow).toContain('Resolve image source revision');
+    expect(dockerWorkflow).toContain('Could not resolve SuperSync image source revision');
+    expect(dockerWorkflow).toContain('revision=$revision');
+    expect(dockerWorkflow).toContain('VCS_REF=${{ steps.source-ref.outputs.revision }}');
+    expect(dockerWorkflow).not.toContain('labels: ${{ steps.meta.outputs.labels }}');
     expect(helmDeployment).toContain('sh scripts/migrate-deploy.sh');
     // Architectural invariant (the actual bug class): the generic runtime
     // script must NOT hardcode any migration name or index DDL — that lockstep
