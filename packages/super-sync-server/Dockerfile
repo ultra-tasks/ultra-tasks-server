@@ -74,8 +74,10 @@ ENV NODE_ENV=production
 ENV PORT=1900
 ENV DATA_DIR=/app/data
 ENV RUN_MIGRATIONS_ON_STARTUP=false
+# Keep V8 below the recommended 1Gi container limit so GC starts before cgroup OOM.
+ENV NODE_OPTIONS=--max-old-space-size=896
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT}/health || exit 1
 
-CMD ["sh", "-c", "if [ \"${RUN_MIGRATIONS_ON_STARTUP:-false}\" = \"true\" ]; then npx prisma migrate deploy || exit 1; fi; exec node dist/src/index.js"]
+CMD ["sh", "-c", "if [ \"${RUN_MIGRATIONS_ON_STARTUP:-false}\" = \"true\" ]; then sh scripts/migrate-deploy.sh || exit 1; fi; exec node dist/src/index.js"]

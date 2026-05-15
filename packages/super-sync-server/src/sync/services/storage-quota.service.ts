@@ -9,6 +9,7 @@
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { prisma } from '../../db';
+import { Logger } from '../../logger';
 
 /**
  * Default storage quota per user in bytes (100MB).
@@ -30,9 +31,8 @@ export class StorageQuotaService {
   /**
    * Per-user in-flight reconcile promises. When multiple concurrent requests
    * for the same user hit the quota cache-miss path, only the first triggers
-   * the slow SUM(pg_column_size) scan; the rest await the same promise. Cap
-   * the number of duplicate full-table scans under a retry storm. Sequential
-   * calls are unaffected (entry is deleted in `finally` before resolve).
+   * the exact SUM(payload_bytes) reconcile; the rest await the same promise.
+   * Sequential calls are unaffected (entry is deleted in `finally` before resolve).
    */
   private inflightReconciles: Map<number, Promise<void>> = new Map();
 
@@ -74,56 +74,83 @@ export class StorageQuotaService {
   }
 
   /**
-   * Calculate actual storage usage for a user by summing on-disk payload sizes.
+   * Calculate actual storage usage for a user by summing the write-time byte
+   * counters on operation rows plus the cached snapshot blob length.
    *
-   * SLOW PATH — DO NOT CALL PER REQUEST. SUM(pg_column_size(payload)) forces
-   * PostgreSQL to detoast every payload for the user (TOAST table reads),
-   * which on active users takes minutes and saturates disk I/O. Reserved for:
+   * SLOW PATH — DO NOT CALL PER REQUEST. Even without detoasting JSONB payloads,
+   * this still scans one user's operation rows and is reserved for:
    *   1. Quota-cache reconciliation, run at most once per quota-cleanup event
    *      (rare per user) — see SyncService.freeStorageForUpload.
    *   2. Offline / admin reconciliation scripts.
    * Hot-path tracking uses incrementStorageUsage / decrementStorageUsage with
    * deltas computed locally on the Node side.
    *
-   * KNOWN BYTE-COUNTING MISMATCH (tracked for follow-up):
-   * `pg_column_size` returns the TOAST-compressed on-disk size, while the
-   * hot-path delta (sync.routes.ts `computeOpsStorageBytes`) uses
-   * `Buffer.byteLength(JSON.stringify(...))` — the uncompressed UTF-8 length.
-   * For large compressible JSONB payloads (~2KB+) the compressed size can be
-   * substantially smaller, so a reconcile can shrink a counter that was
-   * incremented with the larger uncompressed numbers, making the quota
-   * artificially generous after each reconcile.
+   * Rows with payload_bytes=0 are pre-backfill rows. They must not be counted
+   * as zero bytes: that would let a reconcile lower the cached counter below
+   * actual usage. The CASE WHEN fallback only touches unbackfilled rows, so
+   * once the one-time backfill completes this remains a cheap SUM.
    *
-   * A no-DoS fix is to add a `payload_bytes` column populated at insert time
-   * with the uncompressed length and SUM that column here. That is a schema
-   * migration and is outside the scope of this service-only file; switching
-   * to `octet_length(payload::text)` in-place would re-detoast every row and
-   * resurrect the original disk-I/O DoS that pg_column_size also caused (see
-   * sync.const.ts `APPROX_BYTES_PER_OP`).
+   * `hasUnbackfilledRows` is computed in the same single scan via BOOL_OR.
+   * Callers (notably `updateStorageUsage`) treat the SUM as approximate when
+   * this flag is true, because the fallback's UTF-8 length differs by single
+   * bytes from the JS-side `computeOpStorageBytes` value used by the hot-path
+   * counter. Skipping the `users.storage_used_bytes` write while unbackfilled
+   * rows exist preserves the exact incremental counter.
    */
   async calculateStorageUsage(userId: number): Promise<{
     operationsBytes: number;
     snapshotBytes: number;
     totalBytes: number;
+    hasUnbackfilledRows: boolean;
   }> {
-    const opsResult = await prisma.$queryRaw<[{ total: bigint | null }]>`
-      SELECT COALESCE(SUM(pg_column_size(payload) + pg_column_size(vector_clock)), 0) as total
-      FROM operations WHERE user_id = ${userId}
+    const usageResult = await prisma.$queryRaw<
+      [
+        {
+          operations_bytes: bigint | null;
+          snapshot_bytes: number | bigint | null;
+          has_unbackfilled?: boolean | null;
+        },
+      ]
+    >`
+      SELECT
+        ops.operations_bytes,
+        ops.has_unbackfilled,
+        COALESCE(
+          (
+            SELECT octet_length(snapshot_data)
+            FROM user_sync_state
+            WHERE user_id = ${userId}
+          ),
+          0
+        )::bigint AS snapshot_bytes
+      FROM (
+        SELECT
+          COALESCE(
+            SUM(
+              CASE
+                WHEN payload_bytes > 0 THEN payload_bytes
+                ELSE octet_length(payload::text)::bigint +
+                     octet_length(vector_clock::text)::bigint
+              END
+            ),
+            0
+          )::bigint AS operations_bytes,
+          COALESCE(BOOL_OR(payload_bytes = 0), false) AS has_unbackfilled
+        FROM operations
+        WHERE user_id = ${userId}
+      ) AS ops
     `;
 
-    const snapshotResult = await prisma.userSyncState.findUnique({
-      where: { userId },
-      select: { snapshotData: true },
-    });
-
-    const operationsBytes = Number(opsResult[0]?.total ?? 0);
-    const snapshotBytes = snapshotResult?.snapshotData?.length ?? 0;
+    const operationsBytes = Number(usageResult[0]?.operations_bytes ?? 0);
+    const snapshotBytes = Number(usageResult[0]?.snapshot_bytes ?? 0);
     const totalBytes = operationsBytes + snapshotBytes;
+    const hasUnbackfilledRows = Boolean(usageResult[0]?.has_unbackfilled ?? false);
 
     return {
       operationsBytes,
       snapshotBytes,
       totalBytes,
+      hasUnbackfilledRows,
     };
   }
 
@@ -225,7 +252,19 @@ export class StorageQuotaService {
     // that is itself queued behind our own lock → deadlock.
     const inLock = this.storageUsageLockContext.getStore()?.has(userId);
     if (inLock) {
-      const { totalBytes } = await this.calculateStorageUsage(userId);
+      const { totalBytes, hasUnbackfilledRows } =
+        await this.calculateStorageUsage(userId);
+      if (hasUnbackfilledRows) {
+        // Pre-backfill rows make the SUM approximate (CASE-WHEN fallback uses
+        // postgres-side text length, not JS-side computeOpStorageBytes). Writing
+        // an approximate value here would replace the exact incrementally
+        // maintained counter — drift in either direction. Leave the forced
+        // reconcile marker so a post-backfill call self-heals.
+        Logger.warn(
+          `[user:${userId}] Skipping storage usage reconcile: payload_bytes backfill incomplete for this user.`,
+        );
+        return;
+      }
       await prisma.user.update({
         where: { id: userId },
         data: { storageUsedBytes: BigInt(totalBytes) },
@@ -238,7 +277,14 @@ export class StorageQuotaService {
     if (existing) return existing;
 
     const promise = this.runWithStorageUsageLock(userId, async () => {
-      const { totalBytes } = await this.calculateStorageUsage(userId);
+      const { totalBytes, hasUnbackfilledRows } =
+        await this.calculateStorageUsage(userId);
+      if (hasUnbackfilledRows) {
+        Logger.warn(
+          `[user:${userId}] Skipping storage usage reconcile: payload_bytes backfill incomplete for this user.`,
+        );
+        return;
+      }
       await prisma.user.update({
         where: { id: userId },
         data: { storageUsedBytes: BigInt(totalBytes) },
@@ -289,6 +335,37 @@ export class StorageQuotaService {
   clearForUser(userId: number): void {
     this.inflightReconciles.delete(userId);
     this.forcedReconciles.delete(userId);
+  }
+
+  /**
+   * Backfill self-check. When SUPERSYNC_BATCH_UPLOAD=true the operator is
+   * trusted to have set SUPERSYNC_PAYLOAD_BYTES_BACKFILL_COMPLETE=true only
+   * after `npm run migrate-payload-bytes` finished. If the flag was flipped
+   * too early, batch uploads still write `payload_bytes` correctly but the
+   * SUM-based reconcile in `calculateStorageUsage` would mix exact bytes with
+   * the CASE-WHEN fallback for legacy rows — small drift, but unnecessary
+   * given the env-flag's whole purpose.
+   *
+   * One indexed-probe at startup closes the trust hole. The query relies on a
+   * full table scan-with-LIMIT-1; for a fully backfilled table that is one
+   * row visit on the first encountered row (cheap), and for a partially
+   * backfilled table it returns immediately. Worst case (zero rows in
+   * `operations`, e.g. fresh deployment) is also one round-trip.
+   */
+  async assertPayloadBytesBackfillComplete(): Promise<void> {
+    const result = await prisma.$queryRaw<[{ exists: boolean }]>`
+      SELECT EXISTS (
+        SELECT 1 FROM operations WHERE payload_bytes = 0 LIMIT 1
+      ) AS "exists"
+    `;
+    if (result[0]?.exists) {
+      throw new Error(
+        'SUPERSYNC_BATCH_UPLOAD is enabled but the operations table still ' +
+          'contains rows with payload_bytes = 0. Run ' +
+          '`npm run migrate-payload-bytes` to complete the backfill before ' +
+          'setting SUPERSYNC_PAYLOAD_BYTES_BACKFILL_COMPLETE=true.',
+      );
+    }
   }
 
   /**

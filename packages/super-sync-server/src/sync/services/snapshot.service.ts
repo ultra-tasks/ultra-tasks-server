@@ -46,10 +46,7 @@ const MAX_SNAPSHOT_DECOMPRESSED_BYTES = 100 * 1024 * 1024;
  */
 const MAX_REPLAY_STATE_SIZE_BYTES = 100 * 1024 * 1024;
 
-/**
- * How often to check state size during replay (every N operations).
- */
-const REPLAY_SIZE_CHECK_INTERVAL = 1000;
+const REPLAY_SIZE_CHECK_THRESHOLD_BYTES = MAX_REPLAY_STATE_SIZE_BYTES * 0.8;
 
 /**
  * Reject these as property keys when applying user-supplied ids to the
@@ -59,6 +56,50 @@ const REPLAY_SIZE_CHECK_INTERVAL = 1000;
  */
 const isUnsafeEntityKey = (key: string): boolean =>
   key === '__proto__' || key === 'constructor' || key === 'prototype';
+
+const isReplayFullStateOpType = (opType: string): boolean =>
+  opType === 'SYNC_IMPORT' || opType === 'BACKUP_IMPORT' || opType === 'REPAIR';
+
+/**
+ * Generous upper bound on the JSON structural overhead of inserting one new
+ * `state[entityType][entityId] = {...}` slot: the id key's quotes + colon +
+ * comma (~4 bytes) plus, when the entity-type map is new, a `"type":{}` wrapper
+ * (~6 bytes). Padded to 32 so the running delta accounting can NEVER
+ * under-count — the replay size guard's correctness (and the decision to skip
+ * the final exact measurement when the upper bound proves safety) depends on
+ * this being an over-estimate.
+ */
+const REPLAY_ENTITY_KEY_JSON_OVERHEAD_BYTES = 32;
+
+const getReplayPayloadDeltaBytes = (opType: string, payload: unknown): number => {
+  if (opType === 'DEL') return 0;
+  return Buffer.byteLength(JSON.stringify(payload ?? ''), 'utf8');
+};
+
+const getReplayEntityKeyDeltaBytes = (
+  entityType: string,
+  entityId: string | null,
+): number =>
+  Buffer.byteLength(entityType, 'utf8') +
+  (entityId ? Buffer.byteLength(entityId, 'utf8') : 0) +
+  REPLAY_ENTITY_KEY_JSON_OVERHEAD_BYTES;
+
+/**
+ * Throws if the serialized state exceeds the replay cap. The return value is
+ * load-bearing, NOT incidental: callers assign it back to `estimatedBytes` to
+ * reset the running delta-accounting baseline. Do not "simplify" this to
+ * `void`.
+ */
+const assertReplayStateSize = (state: Record<string, unknown>): number => {
+  const stateBytes = Buffer.byteLength(JSON.stringify(state), 'utf8');
+  if (stateBytes > MAX_REPLAY_STATE_SIZE_BYTES) {
+    throw new Error(
+      `State too large during replay: ${Math.round(stateBytes / 1024 / 1024)}MB ` +
+        `(max: ${Math.round(MAX_REPLAY_STATE_SIZE_BYTES / 1024 / 1024)}MB)`,
+    );
+  }
+  return stateBytes;
+};
 
 const encryptedOpsNotSupportedMessage = (encryptedOpCount: number): string =>
   `ENCRYPTED_OPS_NOT_SUPPORTED: Cannot generate snapshot - ${encryptedOpCount} operations have encrypted payloads. ` +
@@ -875,6 +916,9 @@ export class SnapshotService {
     initialState: Record<string, unknown> = {},
   ): Record<string, unknown> {
     const state = { ...(initialState as Record<string, Record<string, unknown>>) };
+    let estimatedBytes =
+      Object.keys(state).length === 0 ? 2 : assertReplayStateSize(state);
+    let accumulatedDeltaBytes = 0;
 
     for (let i = 0; i < ops.length; i++) {
       const row = ops[i];
@@ -885,24 +929,14 @@ export class SnapshotService {
         throw new EncryptedOpsNotSupportedError(1);
       }
 
-      // Periodically check state size to prevent memory exhaustion.
-      // Measure in UTF-8 bytes (Buffer.byteLength) so the limit matches the
-      // constant's documented unit — JSON.stringify(state).length counts
-      // UTF-16 code units, which under-counts up to 4x for non-ASCII content.
-      if (i > 0 && i % REPLAY_SIZE_CHECK_INTERVAL === 0) {
-        const estimatedSize = Buffer.byteLength(JSON.stringify(state), 'utf8');
-        if (estimatedSize > MAX_REPLAY_STATE_SIZE_BYTES) {
-          throw new Error(
-            `State too large during replay: ${Math.round(estimatedSize / 1024 / 1024)}MB ` +
-              `(max: ${Math.round(MAX_REPLAY_STATE_SIZE_BYTES / 1024 / 1024)}MB)`,
-          );
-        }
-      }
-
       let opType = row.opType as Operation['opType'];
       let entityType = row.entityType;
       let entityId = row.entityId;
       let payload = row.payload;
+      accumulatedDeltaBytes +=
+        getReplayPayloadDeltaBytes(opType, payload) +
+        getReplayEntityKeyDeltaBytes(entityType, entityId);
+      let forceStateSizeMeasurement = false;
 
       const opSchemaVersion = row.schemaVersion ?? 1;
 
@@ -966,11 +1000,7 @@ export class SnapshotService {
         // otherwise stale entity types from a prior state survive a "reset"
         // and `_resolveExpectedFirstSeq`'s leading-gap acceptance becomes
         // incorrect (the gap is only safe if the full-state op truly resets).
-        if (
-          processOpType === 'SYNC_IMPORT' ||
-          processOpType === 'BACKUP_IMPORT' ||
-          processOpType === 'REPAIR'
-        ) {
+        if (isReplayFullStateOpType(processOpType)) {
           const fullState =
             processPayload &&
             typeof processPayload === 'object' &&
@@ -999,6 +1029,7 @@ export class SnapshotService {
             if (isUnsafeEntityKey(key)) continue;
             state[key] = fullStateRecord[key] as Record<string, unknown>;
           }
+          forceStateSizeMeasurement = true;
           continue;
         }
 
@@ -1068,6 +1099,25 @@ export class SnapshotService {
             break;
         }
       }
+
+      if (
+        forceStateSizeMeasurement ||
+        estimatedBytes + accumulatedDeltaBytes > REPLAY_SIZE_CHECK_THRESHOLD_BYTES
+      ) {
+        estimatedBytes = assertReplayStateSize(state);
+        accumulatedDeltaBytes = 0;
+      }
+    }
+    // `estimatedBytes + accumulatedDeltaBytes` is a proven over-estimate of the
+    // true serialized size (payload byteLength upper-bounds merged growth, DEL
+    // contributes 0, entity-key overhead is padded). When it is within the cap
+    // the true size is too, so the exact final measurement is provably
+    // redundant — skipping it keeps the common small/incremental replay at zero
+    // expensive full stringifications. The exact check still runs (and throws)
+    // whenever the bound does not prove safety; any state that truly exceeds
+    // the cap pushes the over-estimate past it and trips this.
+    if (estimatedBytes + accumulatedDeltaBytes > MAX_REPLAY_STATE_SIZE_BYTES) {
+      assertReplayStateSize(state);
     }
     return state;
   }
