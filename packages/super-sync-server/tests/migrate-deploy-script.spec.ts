@@ -73,6 +73,7 @@ case "$sub" in
                 echo "Error: P3009"
                 echo "migrate found failed migrations in the target database, new migrations will not be applied."
                 echo "The \\\`$m\\\` migration started at 2026-05-15 failed"
+                [ -n "\${FAKE_DECOY:-}" ] && echo "Applying migration \\\`\$FAKE_DECOY\\\`"
                 ;;
               *)
                 echo "Error: P1001"
@@ -202,7 +203,21 @@ describe('migrate-deploy.sh generic CONCURRENTLY recovery', () => {
     const r = run({ FAKE_FAIL: PLAIN_MIGRATION, FAKE_CODE: 'P3018' });
 
     expect(r.status).not.toBe(0);
-    expect(r.stdout).toContain('is not a CONCURRENTLY index migration');
+    expect(r.stdout).toContain('refusing to auto-resolve');
+    expect(r.resolveApplied).toEqual([]);
+  });
+
+  it('refuses a bare CREATE INDEX CONCURRENTLY (intentionally fail-loud, no DROP)', () => {
+    const bare = '20260701000000_add_bare_concurrent_index';
+    // Same shape as the committed 20260511000000: deliberately no DROP, so a
+    // half-built INVALID index fails loudly instead of being marked applied.
+    const bareSql = `CREATE INDEX CONCURRENTLY "operations_bare_idx"
+  ON "operations"("user_id", "server_seq");`;
+    writeMigration(bare, bareSql);
+    const r = run({ FAKE_FAIL: bare, FAKE_CODE: 'P3018' });
+
+    expect(r.status).not.toBe(0);
+    expect(r.stdout).toContain('not a recoverable drop-then-create');
     expect(r.resolveApplied).toEqual([]);
   });
 
@@ -236,8 +251,23 @@ describe('migrate-deploy.sh generic CONCURRENTLY recovery', () => {
     const r = run({ FAKE_FAIL: ENCRYPTED_OPS, FAKE_CODE: 'OTHER' });
 
     expect(r.status).not.toBe(0);
-    expect(r.stdout).toContain('not the CONCURRENTLY-in-transaction failure this script');
+    expect(r.stdout).toContain('Not auto-recovered');
     expect(r.resolveApplied).toEqual([]);
+  });
+
+  it('targets the failed migration in a P3009 log that also backticks others', () => {
+    // A decoy backticked migration name appears AFTER the failed-migration
+    // sentence; the sentence-anchored parse must still pick ENCRYPTED_OPS,
+    // not the last backticked token.
+    writeMigration(ENCRYPTED_OPS, ENCRYPTED_OPS_SQL);
+    const r = run({
+      FAKE_FAIL: ENCRYPTED_OPS,
+      FAKE_CODE: 'P3009',
+      FAKE_DECOY: '20991231000000_decoy_later_token',
+    });
+
+    expect(r.status).toBe(0);
+    expect(r.resolveApplied).toContain(ENCRYPTED_OPS);
   });
 
   it('recovers several sequential CONCURRENTLY migrations in one deploy', () => {

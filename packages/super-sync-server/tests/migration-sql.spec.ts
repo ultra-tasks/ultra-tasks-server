@@ -169,23 +169,20 @@ describe('performance migrations', () => {
     expect(dockerfile).toContain('sh scripts/migrate-deploy.sh');
     expect(dockerfile).toContain('NODE_OPTIONS=--max-old-space-size=896');
     expect(helmDeployment).toContain('sh scripts/migrate-deploy.sh');
-    // The runtime migrate script is generic: it derives the failing migration
-    // from Prisma's own output and runs that migration's own SQL out-of-band.
-    // It must NOT hardcode any migration name or index DDL.
+    // Architectural invariant (the actual bug class): the generic runtime
+    // script must NOT hardcode any migration name or index DDL — that lockstep
+    // coupling is what went stale and broke the production deploy. Behavioral
+    // coverage of the recovery logic lives in migrate-deploy-script.spec.ts.
     expect(runtimeMigrateScript).toContain('npx prisma migrate deploy');
-    expect(runtimeMigrateScript).toContain('npx prisma db execute');
-    expect(runtimeMigrateScript).toContain('parse_failing_migration');
-    expect(runtimeMigrateScript).toContain('migrate resolve --rolled-back');
-    expect(runtimeMigrateScript).toContain('migrate resolve --applied');
-    expect(runtimeMigrateScript).toContain('P3018');
-    expect(runtimeMigrateScript).toContain('P3009');
-    expect(runtimeMigrateScript).toContain('cannot run inside a transaction block');
-    expect(runtimeMigrateScript).toMatch(/INDEX\[\[:space:\]\]\+CONCURRENTLY/);
+    expect(runtimeMigrateScript).not.toMatch(/_INDEX_MIGRATION=/);
     expect(runtimeMigrateScript).not.toContain(
       'operations_user_id_server_seq_encrypted_idx',
     );
     expect(runtimeMigrateScript).not.toContain(
       'operations_payload_bytes_unbackfilled_idx',
+    );
+    expect(runtimeMigrateScript).not.toContain(
+      'operations_user_id_full_state_server_seq_idx',
     );
     expect(composeFile).toContain(
       'RUN_MIGRATIONS_ON_STARTUP=${RUN_MIGRATIONS_ON_STARTUP:-false}',

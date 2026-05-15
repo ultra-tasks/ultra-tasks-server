@@ -16,22 +16,42 @@ set -eu
 # read from prisma/migrations/<name>/migration.sql.
 #
 # This script is COPYed into the image next to prisma/migrations in the same
-# build, so it is always version-locked to the migrations it must handle. Both
-# the host deploy.sh and the image startup CMD invoke it.
+# build, so it is always version-locked to the migrations it must handle. All
+# three call sites (host deploy.sh, image startup CMD, helm initContainer)
+# invoke it, so it carries its own step timeout as defense-in-depth (deploy.sh
+# also wraps it; the CMD/initContainer paths have no outer timeout).
 #
-# Authoring rule for a CONCURRENTLY migration (so out-of-band re-runs are
-# idempotent and a half-built INVALID index is cleared first):
+# RECOVERABLE shape (only this is auto-recovered): a migration whose SQL
+# contains BOTH a DROP INDEX CONCURRENTLY and a CREATE INDEX CONCURRENTLY, so
+# re-running it out-of-band is idempotent and clears a half-built INVALID index
+# first:
 #
 #     DROP INDEX CONCURRENTLY IF EXISTS "x";
 #     CREATE INDEX CONCURRENTLY "x" ON ...;
 #
-# Recovery supports CONCURRENTLY *index* migrations only. Statements must end
-# with `;` at end of line, comments must be full-line `--`, and `;` must not
-# appear inside string literals (true for all index DDL).
+# A bare `CREATE INDEX CONCURRENTLY` (no DROP) is INTENTIONALLY not recovered:
+# such migrations (e.g. 20260511000000) are written to fail loudly rather than
+# be marked applied with a possibly-INVALID index. They fall through to a loud
+# failure here by gate, deterministically.
+#
+# Statements must end with `;` at end of line, comments must be full-line `--`,
+# and `;` must not appear inside string literals (true for all index DDL).
 
 SCHEMA="prisma/schema.prisma"
 MIGRATIONS_DIR="prisma/migrations"
-MAX_ATTEMPTS="${MIGRATE_MAX_ATTEMPTS:-8}"
+# 3 recoverable CONCURRENTLY migrations today + a final clean pass + slack.
+# The real infinite-loop backstop is the LAST_RECOVERED guard below; this is
+# just a tight upper bound. Overridable for emergencies.
+MAX_ATTEMPTS="${MIGRATE_MAX_ATTEMPTS:-6}"
+# Per-step timeout. A CONCURRENTLY build blocked by a long-running transaction
+# can hang forever; without this the CMD/initContainer paths never fail.
+STEP_TIMEOUT="${MIGRATE_STEP_TIMEOUT:-1800}"
+
+if command -v timeout >/dev/null 2>&1; then
+  with_timeout() { timeout "$STEP_TIMEOUT" "$@"; }
+else
+  with_timeout() { "$@"; }
+fi
 
 MIGRATE_LOG=""
 MIGRATE_STATUS=0
@@ -44,23 +64,41 @@ cleanup() {
 trap cleanup EXIT
 
 run_migrate_deploy() {
+  # Drop the previous attempt's log so retries don't leak temp files (the
+  # trap only ever sees the last value).
+  [ -n "$MIGRATE_LOG" ] && rm -f "$MIGRATE_LOG"
   MIGRATE_LOG="$(mktemp "${TMPDIR:-/tmp}/supersync-migrate.XXXXXX")"
   set +e
-  npx prisma migrate deploy >"$MIGRATE_LOG" 2>&1
+  with_timeout npx prisma migrate deploy >"$MIGRATE_LOG" 2>&1
   MIGRATE_STATUS=$?
   set -e
   cat "$MIGRATE_LOG"
 }
 
-# Failing migration name, from Prisma's own output. Prefer the precise P3018
-# "Migration name:" line; fall back to a backticked 14-digit-prefixed token
-# (the "Applying migration `x`" line and the P3009 failed-migration sentence).
-# Always exits 0 (used in `name=$(...)` under `set -e`); empty output = unknown.
+# Failing migration name, from Prisma's own output, validated to the migration
+# directory charset (rejects path traversal / metacharacters). Empty = unknown.
+# Always exits 0 (used in `name=$(...)` under `set -e`).
 parse_failing_migration() {
+  # P3018: precise "Migration name:" line.
   name=$(sed -n 's/^Migration name: *\([^ ].*[^ ]\) *$/\1/p' "$MIGRATE_LOG" | tail -n1)
   if [ -z "$name" ]; then
+    # P3009: the specific failed-migration sentence.
+    name=$(sed -n 's/.*`\([0-9]\{14\}_[A-Za-z0-9_]*\)` migration started at.*failed.*/\1/p' \
+      "$MIGRATE_LOG" | tail -n1)
+  fi
+  if [ -z "$name" ]; then
+    # Last resort: a backticked migration-shaped token ("Applying migration").
     name=$(grep -oE '`[0-9]{14}_[A-Za-z0-9_]+`' "$MIGRATE_LOG" | tr -d '`' | tail -n1 || true)
   fi
+  case "$name" in
+    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_*)
+      # Reject anything outside the migration-name charset (defence in depth).
+      case "$name" in
+        *[!A-Za-z0-9_]*) name="" ;;
+      esac
+      ;;
+    *) name="" ;;
+  esac
   printf '%s' "$name"
 }
 
@@ -69,7 +107,8 @@ log_has() {
 }
 
 is_transaction_block_failure() {
-  log_has 'P3018' && log_has 'cannot run inside a transaction block'
+  log_has 'P3018' &&
+    { log_has 'cannot run inside a transaction block' || log_has '25001'; }
 }
 
 is_stuck_failed_migration() {
@@ -80,11 +119,14 @@ migration_sql_path() {
   printf '%s/%s/migration.sql' "$MIGRATIONS_DIR" "$1"
 }
 
-# Guard: only ever touch a migration whose own SQL is a CONCURRENTLY index
-# migration. A genuinely broken migration fails this and is never auto-resolved.
-is_concurrently_index_migration() {
+# Guard: only auto-recover the idempotent drop-then-create CONCURRENTLY shape.
+# A bare CREATE (no DROP) or any non-CONCURRENTLY migration fails this and is
+# never auto-resolved.
+is_recoverable_concurrently_migration() {
   sql="$1"
-  [ -f "$sql" ] && grep -Eqi 'INDEX[[:space:]]+CONCURRENTLY' "$sql"
+  [ -f "$sql" ] &&
+    grep -Eqi 'DROP[[:space:]]+INDEX[[:space:]]+CONCURRENTLY' "$sql" &&
+    grep -Eqi 'CREATE[[:space:]]+INDEX[[:space:]]+CONCURRENTLY' "$sql"
 }
 
 # One statement per line; multi-line statements collapsed to a single line
@@ -102,26 +144,30 @@ split_statements() {
   ' "$1"
 }
 
+# Single-quote a value for safe shell paste (a'b -> 'a'\''b').
+shell_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
 print_manual_recovery() {
   name="$1"
   sql="$2"
   echo ""
-  echo "Manual recovery for $name:"
-  echo "  npx prisma migrate resolve --rolled-back $name"
+  echo "Manual recovery for $name (copy-paste):"
+  echo "  npx prisma migrate resolve --rolled-back $(shell_quote "$name")"
   split_statements "$sql" > "$STMT_FILE"
   while IFS= read -r stmt; do
     [ -n "$stmt" ] || continue
-    echo "  printf '%s\\n' '$stmt' | npx prisma db execute --schema $SCHEMA --stdin"
+    echo "  printf '%s\\n' $(shell_quote "$stmt") | npx prisma db execute --schema $SCHEMA --stdin"
   done < "$STMT_FILE"
-  echo "  npx prisma migrate resolve --applied $name   # only after every statement above succeeds"
+  echo "  npx prisma migrate resolve --applied $(shell_quote "$name")   # only after every statement above succeeds"
 }
 
 fail_loudly() {
   echo ""
   echo "ERROR: $1"
-  echo "       This is not the CONCURRENTLY-in-transaction failure this script"
-  echo "       recovers from. Investigate the migration; do not blindly mark it"
-  echo "       applied. See https://pris.ly/d/migrate-resolve"
+  echo "       Not auto-recovered. Investigate the migration; do not blindly"
+  echo "       mark it applied. See https://pris.ly/d/migrate-resolve"
   exit "${2:-$MIGRATE_STATUS}"
 }
 
@@ -133,7 +179,7 @@ recover_migration() {
   echo "==> Recovering $name outside Prisma migrate (CONCURRENTLY cannot run in a transaction)..."
 
   set +e
-  npx prisma migrate resolve --rolled-back "$name"
+  with_timeout npx prisma migrate resolve --rolled-back "$name"
   resolve_status=$?
   set -e
   if [ "$resolve_status" -ne 0 ]; then
@@ -145,7 +191,7 @@ recover_migration() {
   while IFS= read -r stmt; do
     [ -n "$stmt" ] || continue
     echo "    -> $stmt"
-    if ! printf '%s\n' "$stmt" | npx prisma db execute --schema "$SCHEMA" --stdin; then
+    if ! printf '%s\n' "$stmt" | with_timeout npx prisma db execute --schema "$SCHEMA" --stdin; then
       exec_rc=1
       break
     fi
@@ -158,7 +204,7 @@ recover_migration() {
     exit 1
   fi
 
-  npx prisma migrate resolve --applied "$name"
+  with_timeout npx prisma migrate resolve --applied "$name"
   echo "    $name applied out-of-band and marked applied."
 }
 
@@ -167,6 +213,9 @@ while :; do
   run_migrate_deploy
   if [ "$MIGRATE_STATUS" -eq 0 ]; then
     exit 0
+  fi
+  if [ "$MIGRATE_STATUS" -eq 124 ]; then
+    fail_loudly "prisma migrate deploy timed out after ${STEP_TIMEOUT}s (a long-running transaction may be blocking CREATE/DROP INDEX CONCURRENTLY)." 1
   fi
 
   attempt=$((attempt + 1))
@@ -184,8 +233,8 @@ while :; do
   fi
 
   sql="$(migration_sql_path "$name")"
-  if ! is_concurrently_index_migration "$sql"; then
-    fail_loudly "$name is not a CONCURRENTLY index migration; refusing to auto-resolve."
+  if ! is_recoverable_concurrently_migration "$sql"; then
+    fail_loudly "$name is not a recoverable drop-then-create CONCURRENTLY index migration (a bare CREATE is intentionally fail-loud); refusing to auto-resolve."
   fi
 
   if [ "$name" = "$LAST_RECOVERED" ]; then
