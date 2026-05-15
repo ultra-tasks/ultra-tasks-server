@@ -135,7 +135,7 @@ describe('performance migrations', () => {
       join(currentDir, '../helm/supersync/templates/deployment.yaml'),
       'utf8',
     );
-    const migrationCommand = 'npx prisma migrate deploy';
+    const migrationCommand = 'sh scripts/migrate-deploy.sh';
     const startCommand = 'up -d --wait --wait-timeout "$WAIT_TIMEOUT"';
     const externalDbStartCommand =
       'up -d --wait --wait-timeout "$WAIT_TIMEOUT" --no-deps supersync caddy';
@@ -149,60 +149,17 @@ describe('performance migrations', () => {
     expect(deployScript).toContain('prisma db execute');
     expect(deployScript).toContain(migrationCommand);
     expect(deployScript).toContain('Migrator container started');
-    expect(deployScript).toContain(
-      'FULL_STATE_INDEX_MIGRATION="20260512000000_add_full_state_sequence_index_drop_redundant_indexes"',
-    );
-    expect(deployScript).toContain(
-      'ENCRYPTED_OPS_INDEX_MIGRATION="20260514000000_add_encrypted_ops_partial_index"',
-    );
-    expect(deployScript).toContain(
-      'PAYLOAD_BYTES_INDEX_MIGRATION="20260514000002_add_payload_bytes_unbackfilled_index"',
-    );
-    expect(deployScript).toContain('is_recoverable_full_state_index_migration_failure');
-    expect(deployScript).toContain(
-      'is_recoverable_encrypted_ops_index_migration_failure',
-    );
-    expect(deployScript).toContain("grep -q 'P3009'");
-    expect(deployScript).toContain('is_full_state_index_transaction_block_failure');
-    expect(deployScript).toContain("grep -q 'P3018'");
-    expect(deployScript).toContain("grep -q 'cannot run inside a transaction block'");
-    expect(deployScript).toContain('run_concurrent_index_sql');
-    expect(deployScript).toContain(
-      'Use the same supersync container and DATABASE_URL as `migrate deploy`',
-    );
-    expect(deployScript).not.toContain('psql -v ON_ERROR_STOP=1');
     expect(deployScript).toContain('prisma db execute --schema prisma/schema.prisma');
-    expect(deployScript).toContain(
-      'CREATE INDEX CONCURRENTLY \\"operations_user_id_full_state_server_seq_idx\\"',
-    );
-    expect(deployScript).toContain(
-      'CREATE INDEX CONCURRENTLY "operations_user_id_server_seq_encrypted_idx"',
-    );
-    expect(deployScript).toContain(
-      'migrate resolve --rolled-back "$FULL_STATE_INDEX_MIGRATION"',
-    );
-    expect(deployScript).toContain(
-      'migrate resolve --applied "$FULL_STATE_INDEX_MIGRATION"',
-    );
-    expect(deployScript).toContain(
-      'Retrying database migrations after resolving $FULL_STATE_INDEX_MIGRATION',
-    );
-    expect(deployScript).toContain(
-      'Retrying database migrations after applying $FULL_STATE_INDEX_MIGRATION',
-    );
-    expect(deployScript).toContain(
-      'Retrying database migrations after applying $ENCRYPTED_OPS_INDEX_MIGRATION',
-    );
-    expect(deployScript).toContain(
-      'is_recoverable_payload_bytes_index_migration_failure',
-    );
-    expect(deployScript).toContain('is_payload_bytes_index_transaction_block_failure');
-    expect(deployScript).toContain(
-      'CREATE INDEX CONCURRENTLY "operations_payload_bytes_unbackfilled_idx"',
-    );
-    expect(deployScript).toContain(
-      'Retrying database migrations after applying $PAYLOAD_BYTES_INDEX_MIGRATION',
-    );
+    // Recovery now lives in the in-image scripts/migrate-deploy.sh. The host
+    // must NOT re-hardcode migration names or index DDL: that lockstep
+    // host/image coupling is exactly what caused the production skew bug.
+    expect(deployScript).not.toMatch(/_INDEX_MIGRATION=/);
+    expect(deployScript).not.toContain('run_concurrent_index_sql');
+    expect(deployScript).not.toContain('CREATE INDEX CONCURRENTLY "operations');
+    // Host still owns the timeout + exit-code policy around the migrator.
+    expect(deployScript).toContain('timeout "$MIGRATION_TIMEOUT"');
+    expect(deployScript).toContain('prisma migrate deploy timed out');
+    expect(deployScript).toContain('database migrations failed (exit $MIGRATE_STATUS)');
     expect(deployScript).toContain(externalDbStartCommand);
     expect(deployScript).toContain('RUN_MIGRATIONS_ON_STARTUP');
     expect(deployScript.indexOf(migrationCommand)).toBeLessThan(
@@ -212,19 +169,23 @@ describe('performance migrations', () => {
     expect(dockerfile).toContain('sh scripts/migrate-deploy.sh');
     expect(dockerfile).toContain('NODE_OPTIONS=--max-old-space-size=896');
     expect(helmDeployment).toContain('sh scripts/migrate-deploy.sh');
+    // The runtime migrate script is generic: it derives the failing migration
+    // from Prisma's own output and runs that migration's own SQL out-of-band.
+    // It must NOT hardcode any migration name or index DDL.
     expect(runtimeMigrateScript).toContain('npx prisma migrate deploy');
     expect(runtimeMigrateScript).toContain('npx prisma db execute');
-    expect(runtimeMigrateScript).toContain(
-      'DROP INDEX CONCURRENTLY IF EXISTS "operations_user_id_server_seq_encrypted_idx"',
+    expect(runtimeMigrateScript).toContain('parse_failing_migration');
+    expect(runtimeMigrateScript).toContain('migrate resolve --rolled-back');
+    expect(runtimeMigrateScript).toContain('migrate resolve --applied');
+    expect(runtimeMigrateScript).toContain('P3018');
+    expect(runtimeMigrateScript).toContain('P3009');
+    expect(runtimeMigrateScript).toContain('cannot run inside a transaction block');
+    expect(runtimeMigrateScript).toMatch(/INDEX\[\[:space:\]\]\+CONCURRENTLY/);
+    expect(runtimeMigrateScript).not.toContain(
+      'operations_user_id_server_seq_encrypted_idx',
     );
-    expect(runtimeMigrateScript).toContain(
-      'CREATE INDEX CONCURRENTLY "operations_user_id_server_seq_encrypted_idx"',
-    );
-    expect(runtimeMigrateScript).toContain(
-      'DROP INDEX CONCURRENTLY IF EXISTS "operations_payload_bytes_unbackfilled_idx"',
-    );
-    expect(runtimeMigrateScript).toContain(
-      'CREATE INDEX CONCURRENTLY "operations_payload_bytes_unbackfilled_idx"',
+    expect(runtimeMigrateScript).not.toContain(
+      'operations_payload_bytes_unbackfilled_idx',
     );
     expect(composeFile).toContain(
       'RUN_MIGRATIONS_ON_STARTUP=${RUN_MIGRATIONS_ON_STARTUP:-false}',

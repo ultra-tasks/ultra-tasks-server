@@ -1,12 +1,47 @@
 #!/bin/sh
 set -eu
 
-FULL_STATE_INDEX_MIGRATION="20260512000000_add_full_state_sequence_index_drop_redundant_indexes"
-ENCRYPTED_OPS_INDEX_MIGRATION="20260514000000_add_encrypted_ops_partial_index"
-PAYLOAD_BYTES_INDEX_MIGRATION="20260514000002_add_payload_bytes_unbackfilled_index"
+# Generic, name-agnostic Prisma migration deploy + recovery.
+#
+# Prisma 5.x wraps every migration in a transaction. PostgreSQL forbids
+# CREATE/DROP INDEX CONCURRENTLY inside a transaction block, so such a
+# migration fails with P3018 / SQLSTATE 25001 ("cannot run inside a
+# transaction block"), and a later deploy then refuses with P3009 (the
+# migration is stuck in a failed state).
+#
+# This script applies migrations and, ONLY for that specific failure mode,
+# recovers by running the failing migration's own SQL out-of-band (no
+# transaction), then marks it applied and retries. It hardcodes no migration
+# names: the failing migration is read from Prisma's own output and its SQL is
+# read from prisma/migrations/<name>/migration.sql.
+#
+# This script is COPYed into the image next to prisma/migrations in the same
+# build, so it is always version-locked to the migrations it must handle. Both
+# the host deploy.sh and the image startup CMD invoke it.
+#
+# Authoring rule for a CONCURRENTLY migration (so out-of-band re-runs are
+# idempotent and a half-built INVALID index is cleared first):
+#
+#     DROP INDEX CONCURRENTLY IF EXISTS "x";
+#     CREATE INDEX CONCURRENTLY "x" ON ...;
+#
+# Recovery supports CONCURRENTLY *index* migrations only. Statements must end
+# with `;` at end of line, comments must be full-line `--`, and `;` must not
+# appear inside string literals (true for all index DDL).
+
+SCHEMA="prisma/schema.prisma"
+MIGRATIONS_DIR="prisma/migrations"
+MAX_ATTEMPTS="${MIGRATE_MAX_ATTEMPTS:-8}"
 
 MIGRATE_LOG=""
 MIGRATE_STATUS=0
+LAST_RECOVERED=""
+
+STMT_FILE="$(mktemp "${TMPDIR:-/tmp}/supersync-stmts.XXXXXX")"
+cleanup() {
+  rm -f "$STMT_FILE" "$MIGRATE_LOG"
+}
+trap cleanup EXIT
 
 run_migrate_deploy() {
   MIGRATE_LOG="$(mktemp "${TMPDIR:-/tmp}/supersync-migrate.XXXXXX")"
@@ -17,100 +52,151 @@ run_migrate_deploy() {
   cat "$MIGRATE_LOG"
 }
 
-log_mentions() {
+# Failing migration name, from Prisma's own output. Prefer the precise P3018
+# "Migration name:" line; fall back to a backticked 14-digit-prefixed token
+# (the "Applying migration `x`" line and the P3009 failed-migration sentence).
+# Always exits 0 (used in `name=$(...)` under `set -e`); empty output = unknown.
+parse_failing_migration() {
+  name=$(sed -n 's/^Migration name: *\([^ ].*[^ ]\) *$/\1/p' "$MIGRATE_LOG" | tail -n1)
+  if [ -z "$name" ]; then
+    name=$(grep -oE '`[0-9]{14}_[A-Za-z0-9_]+`' "$MIGRATE_LOG" | tr -d '`' | tail -n1 || true)
+  fi
+  printf '%s' "$name"
+}
+
+log_has() {
   grep -q "$1" "$MIGRATE_LOG"
 }
 
-is_recoverable_migration_failure() {
-  [ -n "$MIGRATE_LOG" ] &&
-    grep -Eq 'P3009|P3018' "$MIGRATE_LOG" &&
-    log_mentions "$1"
+is_transaction_block_failure() {
+  log_has 'P3018' && log_has 'cannot run inside a transaction block'
 }
 
-run_sql() {
-  printf '%s\n' "$1" | npx prisma db execute --schema prisma/schema.prisma --stdin
+is_stuck_failed_migration() {
+  log_has 'P3009'
 }
 
-resolve_rolled_back() {
-  npx prisma migrate resolve --rolled-back "$1"
+migration_sql_path() {
+  printf '%s/%s/migration.sql' "$MIGRATIONS_DIR" "$1"
 }
 
-resolve_applied() {
-  npx prisma migrate resolve --applied "$1"
+# Guard: only ever touch a migration whose own SQL is a CONCURRENTLY index
+# migration. A genuinely broken migration fails this and is never auto-resolved.
+is_concurrently_index_migration() {
+  sql="$1"
+  [ -f "$sql" ] && grep -Eqi 'INDEX[[:space:]]+CONCURRENTLY' "$sql"
 }
 
-apply_full_state_index_migration() {
-  echo "Applying $FULL_STATE_INDEX_MIGRATION outside Prisma migrate..."
-  run_sql 'DROP INDEX CONCURRENTLY IF EXISTS "operations_user_id_full_state_server_seq_idx";'
-  run_sql 'CREATE INDEX CONCURRENTLY "operations_user_id_full_state_server_seq_idx" ON "operations"("user_id", "server_seq") WHERE "op_type" IN ('\''SYNC_IMPORT'\'', '\''BACKUP_IMPORT'\'', '\''REPAIR'\'');'
-  run_sql 'DROP INDEX CONCURRENTLY IF EXISTS "operations_user_id_op_type_idx";'
-  run_sql 'DROP INDEX CONCURRENTLY IF EXISTS "operations_user_id_entity_type_entity_id_idx";'
-  run_sql 'DROP INDEX CONCURRENTLY IF EXISTS "operations_user_id_server_seq_idx";'
+# One statement per line; multi-line statements collapsed to a single line
+# (index DDL is whitespace-insensitive and has no line-spanning literals).
+split_statements() {
+  awk '
+    /^[[:space:]]*--/ { next }
+    {
+      sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, "")
+      if ($0 == "") next
+      stmt = (stmt == "" ? $0 : stmt " " $0)
+      if ($0 ~ /;$/) { print stmt; stmt = "" }
+    }
+    END { if (stmt != "") print stmt }
+  ' "$1"
 }
 
-apply_encrypted_ops_index_migration() {
-  echo "Applying $ENCRYPTED_OPS_INDEX_MIGRATION outside Prisma migrate..."
-  run_sql 'DROP INDEX CONCURRENTLY IF EXISTS "operations_user_id_server_seq_encrypted_idx";'
-  run_sql 'CREATE INDEX CONCURRENTLY "operations_user_id_server_seq_encrypted_idx" ON "operations"("user_id", "server_seq") WHERE "is_payload_encrypted" = true;'
+print_manual_recovery() {
+  name="$1"
+  sql="$2"
+  echo ""
+  echo "Manual recovery for $name:"
+  echo "  npx prisma migrate resolve --rolled-back $name"
+  split_statements "$sql" > "$STMT_FILE"
+  while IFS= read -r stmt; do
+    [ -n "$stmt" ] || continue
+    echo "  printf '%s\\n' '$stmt' | npx prisma db execute --schema $SCHEMA --stdin"
+  done < "$STMT_FILE"
+  echo "  npx prisma migrate resolve --applied $name   # only after every statement above succeeds"
 }
 
-apply_payload_bytes_index_migration() {
-  echo "Applying $PAYLOAD_BYTES_INDEX_MIGRATION outside Prisma migrate..."
-  run_sql 'DROP INDEX CONCURRENTLY IF EXISTS "operations_payload_bytes_unbackfilled_idx";'
-  run_sql 'CREATE INDEX CONCURRENTLY "operations_payload_bytes_unbackfilled_idx" ON "operations"("user_id", "id") WHERE "payload_bytes" = 0;'
+fail_loudly() {
+  echo ""
+  echo "ERROR: $1"
+  echo "       This is not the CONCURRENTLY-in-transaction failure this script"
+  echo "       recovers from. Investigate the migration; do not blindly mark it"
+  echo "       applied. See https://pris.ly/d/migrate-resolve"
+  exit "${2:-$MIGRATE_STATUS}"
 }
 
-recover_index_migration() {
-  migration="$1"
+recover_migration() {
+  name="$1"
+  sql="$2"
+
+  echo ""
+  echo "==> Recovering $name outside Prisma migrate (CONCURRENTLY cannot run in a transaction)..."
 
   set +e
-  resolve_rolled_back "$migration"
+  npx prisma migrate resolve --rolled-back "$name"
   resolve_status=$?
   set -e
   if [ "$resolve_status" -ne 0 ]; then
-    echo "Migration $migration was not in a failed state; continuing with out-of-band SQL."
+    echo "    Migration $name was not in a failed state; continuing with out-of-band SQL."
   fi
 
-  case "$migration" in
-    "$FULL_STATE_INDEX_MIGRATION")
-      apply_full_state_index_migration
-      ;;
-    "$ENCRYPTED_OPS_INDEX_MIGRATION")
-      apply_encrypted_ops_index_migration
-      ;;
-    "$PAYLOAD_BYTES_INDEX_MIGRATION")
-      apply_payload_bytes_index_migration
-      ;;
-    *)
-      echo "Unknown migration: $migration"
-      exit 1
-      ;;
-  esac
+  split_statements "$sql" > "$STMT_FILE"
+  exec_rc=0
+  while IFS= read -r stmt; do
+    [ -n "$stmt" ] || continue
+    echo "    -> $stmt"
+    if ! printf '%s\n' "$stmt" | npx prisma db execute --schema "$SCHEMA" --stdin; then
+      exec_rc=1
+      break
+    fi
+  done < "$STMT_FILE"
+  if [ "$exec_rc" -ne 0 ]; then
+    echo ""
+    echo "ERROR: an out-of-band statement for $name failed."
+    echo "       $name was NOT marked applied (schema may be incomplete)."
+    print_manual_recovery "$name" "$sql"
+    exit 1
+  fi
 
-  resolve_applied "$migration"
+  npx prisma migrate resolve --applied "$name"
+  echo "    $name applied out-of-band and marked applied."
 }
 
-run_migrate_deploy
-
-if [ "$MIGRATE_STATUS" -ne 0 ] &&
-  is_recoverable_migration_failure "$FULL_STATE_INDEX_MIGRATION"; then
-  recover_index_migration "$FULL_STATE_INDEX_MIGRATION"
+attempt=0
+while :; do
   run_migrate_deploy
-fi
+  if [ "$MIGRATE_STATUS" -eq 0 ]; then
+    exit 0
+  fi
 
-if [ "$MIGRATE_STATUS" -ne 0 ] &&
-  is_recoverable_migration_failure "$ENCRYPTED_OPS_INDEX_MIGRATION"; then
-  recover_index_migration "$ENCRYPTED_OPS_INDEX_MIGRATION"
-  run_migrate_deploy
-fi
+  attempt=$((attempt + 1))
+  if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
+    fail_loudly "prisma migrate deploy still failing after $attempt attempts."
+  fi
 
-if [ "$MIGRATE_STATUS" -ne 0 ] &&
-  is_recoverable_migration_failure "$PAYLOAD_BYTES_INDEX_MIGRATION"; then
-  recover_index_migration "$PAYLOAD_BYTES_INDEX_MIGRATION"
-  run_migrate_deploy
-fi
+  if ! is_transaction_block_failure && ! is_stuck_failed_migration; then
+    fail_loudly "prisma migrate deploy failed (exit $MIGRATE_STATUS)."
+  fi
 
-if [ "$MIGRATE_STATUS" -ne 0 ]; then
-  echo "prisma migrate deploy failed (exit $MIGRATE_STATUS)."
-  exit "$MIGRATE_STATUS"
-fi
+  name="$(parse_failing_migration)"
+  if [ -z "$name" ]; then
+    fail_loudly "could not determine the failing migration from Prisma output."
+  fi
+
+  sql="$(migration_sql_path "$name")"
+  if ! is_concurrently_index_migration "$sql"; then
+    fail_loudly "$name is not a CONCURRENTLY index migration; refusing to auto-resolve."
+  fi
+
+  if [ "$name" = "$LAST_RECOVERED" ]; then
+    echo ""
+    echo "ERROR: $name failed again after out-of-band recovery."
+    print_manual_recovery "$name" "$sql"
+    exit 1
+  fi
+
+  recover_migration "$name" "$sql"
+  LAST_RECOVERED="$name"
+  echo ""
+  echo "==> Retrying prisma migrate deploy after recovering $name..."
+done
