@@ -77,8 +77,10 @@ ENV NODE_ENV=production
 ENV PORT=1900
 ENV DATA_DIR=/app/data
 ENV RUN_MIGRATIONS_ON_STARTUP=false
-# Keep V8 below the recommended 1Gi container limit so GC starts before cgroup OOM.
-ENV NODE_OPTIONS=--max-old-space-size=896
+# Keep V8 old-space below the cgroup mem_limit (768m in production compose) so
+# GC starts before cgroup OOM-kill. RSS = old-space + new-space + code cache +
+# native heap + ArrayBuffers, so headroom matters. 576 ≈ 75% of 768m.
+ENV NODE_OPTIONS=--max-old-space-size=576
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT}/health || exit 1
