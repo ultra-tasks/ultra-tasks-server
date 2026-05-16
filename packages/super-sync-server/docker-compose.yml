@@ -18,7 +18,7 @@ services:
   supersync:
     image: ${SUPERSYNC_IMAGE:-ghcr.io/super-productivity/supersync:latest}
     container_name: supersync-server
-    restart: always
+    restart: unless-stopped
     environment:
       - NODE_ENV=${NODE_ENV:-production}
       - PORT=1900
@@ -65,7 +65,13 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    mem_limit: 1g
+    # 200+ WSS clients each consume an fd; Alpine default soft limit (1024)
+    # would be tight under reconnect bursts.
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    mem_limit: 768m
     cpus: '1.0'
     networks:
       - internal
@@ -74,11 +80,38 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: supersync-postgres
-    restart: always
+    restart: unless-stopped
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-supersync}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=${POSTGRES_DB:-supersync}
+    # Tuned for the 1.5g mem_limit. shared_buffers needs shm_size > default 64m.
+    # max_connections=40 keeps the worst-case sort budget (max_conn × work_mem)
+    # well inside the 1.5g cap; Prisma's per-instance pool is single-digit so
+    # 40 is generous headroom for migrations + psql + a future second replica.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=384MB
+      - -c
+      - effective_cache_size=1GB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=128MB
+      - -c
+      - max_connections=40
+      - -c
+      - random_page_cost=1.1
+      - -c
+      # 5 min — kill leaked Prisma idle-in-tx, but well above the
+      # migrate-deploy.sh 30-min STEP_TIMEOUT for CONCURRENTLY index builds.
+      - idle_in_transaction_session_timeout=300000
+      - -c
+      - wal_compression=on
+      - -c
+      - huge_pages=off
+    shm_size: 256m
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -93,7 +126,7 @@ services:
       start_period: 10s
     security_opt:
       - no-new-privileges:true
-    mem_limit: 1g
+    mem_limit: 1536m
     networks:
       internal:
         aliases:
@@ -104,7 +137,7 @@ services:
   caddy:
     image: caddy:2.11-alpine
     container_name: supersync-caddy
-    restart: always
+    restart: unless-stopped
     ports:
       - '80:80'
       - '443:443'
@@ -114,6 +147,12 @@ services:
       - caddy-config:/config
     environment:
       - DOMAIN=${DOMAIN}
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '--spider', 'http://localhost:2019/config/']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     networks:
       - internal
     cap_drop:
@@ -133,4 +172,7 @@ volumes:
 
 networks:
   internal:
+    # Pinned name so docker-compose.monitoring.yml can attach via
+    # `external: true` regardless of the COMPOSE_PROJECT_NAME used.
+    name: super-sync-server_internal
     driver: bridge

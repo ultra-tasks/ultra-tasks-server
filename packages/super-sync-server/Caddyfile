@@ -1,3 +1,8 @@
+# NOTE: docker-compose.yml healthcheck probes the Caddy admin API at
+# localhost:2019 (enabled by default in Caddy 2.x). Do NOT add a global
+# `{ admin off }` block or rebind admin without also updating the healthcheck,
+# or Caddy will restart-loop.
+
 {$DOMAIN} {
     reverse_proxy supersync:1900 {
         # Allow up to 85 seconds for long-running operations
