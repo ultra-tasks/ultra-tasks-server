@@ -52,6 +52,27 @@ const SENSITIVE_QUERY_PARAM_PATTERN = new RegExp(
   'gi',
 );
 
+/**
+ * Picks the log level for a Fastify-handled error. 5xx → error (with stack);
+ * WS-upgrade 429s → debug (storm tail from pre-18.6.0 clients that reconnect
+ * on any close; the cooldown WARN+summary in WebSocketConnectionService is
+ * the actionable signal, the rate-limit 429s only add flood). Everything
+ * else → warn. Exact-matches /api/sync/ws (strips ?query + trailing slashes)
+ * so future siblings like /api/sync/ws-status do not silently inherit
+ * debug-only behavior. statusCode gate short-circuits the path-normalize on
+ * the ~99% of error responses that aren't 429.
+ */
+export const pickErrorLogLevel = (
+  url: string,
+  statusCode: number,
+): 'error' | 'warn' | 'debug' => {
+  if (statusCode >= 500) return 'error';
+  if (statusCode === 429 && url.split('?', 1)[0].replace(/\/+$/, '') === '/api/sync/ws') {
+    return 'debug';
+  }
+  return 'warn';
+};
+
 export const sanitizeRequestUrlForLog = (rawUrl: string): string => {
   try {
     const url = new URL(rawUrl, 'http://localhost');
@@ -153,20 +174,10 @@ export const createServer = (
         const statusCode = error.statusCode ?? 500;
         const sanitizedUrl = sanitizeRequestUrlForLog(req.url);
         const logMessage = `Request failed ${statusCode} ${req.method} ${sanitizedUrl}: ${error.name}: ${error.message}`;
-        // WS-upgrade 429s come in storms (pre-18.6.0 clients reconnect on any
-        // close). The cooldown WARN+summary in WebSocketConnectionService is
-        // the actionable signal; the rate-limit 429s are the storm tail and
-        // would flood the log without adding info. Downgrade those to debug.
-        // Exact-match the WS route (allowing trailing slash + querystring) so
-        // future sibling routes like /api/sync/ws-status do not silently
-        // inherit the debug-only behavior. statusCode gate short-circuits the
-        // path-normalize on the ~99% of error responses that aren't 429.
-        const isWsRateLimit =
-          statusCode === 429 &&
-          req.url.split('?', 1)[0].replace(/\/+$/, '') === '/api/sync/ws';
-        if (statusCode >= 500) {
+        const level = pickErrorLogLevel(req.url, statusCode);
+        if (level === 'error') {
           Logger.error(logMessage, error.stack);
-        } else if (isWsRateLimit) {
+        } else if (level === 'debug') {
           Logger.debug(logMessage);
         } else {
           Logger.warn(logMessage);
