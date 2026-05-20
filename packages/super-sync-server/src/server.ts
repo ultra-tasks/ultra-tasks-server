@@ -153,8 +153,19 @@ export const createServer = (
         const statusCode = error.statusCode ?? 500;
         const sanitizedUrl = sanitizeRequestUrlForLog(req.url);
         const logMessage = `Request failed ${statusCode} ${req.method} ${sanitizedUrl}: ${error.name}: ${error.message}`;
+        // WS-upgrade 429s come in storms (pre-18.6.0 clients reconnect on any
+        // close). The cooldown WARN+summary in WebSocketConnectionService is
+        // the actionable signal; the rate-limit 429s are the storm tail and
+        // would flood the log without adding info. Downgrade those to debug.
+        // Exact-match the WS route (allowing trailing slash + querystring) so
+        // future sibling routes like /api/sync/ws-status do not silently
+        // inherit the debug-only behavior.
+        const path = req.url.split('?', 1)[0].replace(/\/+$/, '');
+        const isWsRateLimit = statusCode === 429 && path === '/api/sync/ws';
         if (statusCode >= 500) {
           Logger.error(logMessage, error.stack);
+        } else if (isWsRateLimit) {
+          Logger.debug(logMessage);
         } else {
           Logger.warn(logMessage);
         }
