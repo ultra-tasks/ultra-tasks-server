@@ -323,6 +323,35 @@ describe('WebSocketConnectionService', () => {
       expect(summaryCalls).toHaveLength(1);
     });
 
+    it('should emit the storm summary exactly once when an incumbent with refusals is reaped by the heartbeat', () => {
+      // Regression: heartbeat-dead-connection removal also calls
+      // removeConnection -> ws.close -> 'close' event -> removeConnection
+      // re-entry. summaryLogged must dedupe that path too.
+      const incumbent = createMockWs();
+      service.addConnection(1, 'client-a', incumbent as any);
+
+      for (let i = 0; i < 4; i++) {
+        const challenger = createMockWs();
+        service.addConnection(1, 'client-a', challenger as any);
+      }
+      vi.mocked(Logger.info).mockClear();
+
+      service.startHeartbeat();
+      // Two ping cycles with no pong → heartbeat removes the incumbent.
+      vi.advanceTimersByTime(30_000);
+      vi.advanceTimersByTime(30_000);
+      // The heartbeat's ws.close() would in real ws fire the close handler,
+      // re-entering removeConnection.
+      incumbent._emitClose();
+
+      const summaryCalls = vi
+        .mocked(Logger.info)
+        .mock.calls.filter((c) =>
+          String(c[0]).includes('Refused 4 reconnect challenger(s)'),
+        );
+      expect(summaryCalls).toHaveLength(1);
+    });
+
     it('should not emit a storm summary when no challengers were refused', () => {
       const ws = createMockWs();
       service.addConnection(1, 'client-a', ws as any);

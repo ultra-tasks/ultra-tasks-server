@@ -17,6 +17,14 @@ interface ConnectedClient {
   cooldownUntil: number;
   /** Count of challengers refused during this incumbent's lifetime. */
   refusedChallengers: number;
+  /**
+   * Set true after `removeConnection` emits the storm-summary INFO. Guards
+   * against the inevitable `ws.on('close')` re-entry (triggered by
+   * removeConnection's own ws.close — eviction, heartbeat, closeAll) firing
+   * the summary a second time. Preferred over zeroing `refusedChallengers`
+   * because the count remains observably truthful for the life of the object.
+   */
+  summaryLogged: boolean;
 }
 
 /**
@@ -43,13 +51,15 @@ export class WebSocketConnectionService {
   /** Close code sent to a challenger socket refused during the reconnect cooldown */
   private static readonly RECONNECT_COOLDOWN_CLOSE_CODE = 4008;
   /**
-   * If a still-OPEN socket for this clientId was accepted less than this long
-   * ago, a new socket from the same clientId is refused (the incumbent is kept,
-   * NOT evicted). Breaks the shared-clientId reconnect storm from pre-18.6.0
-   * clients that reconnect immediately on the 4009 eviction: the incumbent is
-   * never evicted, so the server stops emitting 4009 and the loop loses its
-   * fuel. A genuinely dead/closing incumbent bypasses this (see addConnection),
-   * so a real network-blip reconnect still recovers within the cooldown.
+   * Sliding-window cooldown. While a still-OPEN incumbent's `cooldownUntil` is
+   * in the future, a new socket from the same clientId is refused (the
+   * incumbent is kept, NOT evicted) and `cooldownUntil` is extended by another
+   * RECONNECT_COOLDOWN_MS. Eviction only resumes after this long of QUIET (no
+   * challengers). Breaks the shared-clientId reconnect storm from pre-18.6.0
+   * clients that reconnect immediately on the 4009 eviction: under sustained
+   * load the gate never expires, so the server stops emitting 4009 and the
+   * loop loses its fuel. A genuinely dead/closing incumbent bypasses this (see
+   * addConnection), so a real network-blip reconnect still recovers.
    */
   private static readonly RECONNECT_COOLDOWN_MS = 5_000;
 
@@ -145,6 +155,7 @@ export class WebSocketConnectionService {
       connectedAt: nowMs,
       cooldownUntil: nowMs + WebSocketConnectionService.RECONNECT_COOLDOWN_MS,
       refusedChallengers: 0,
+      summaryLogged: false,
     };
     userSet.add(client);
 
@@ -200,14 +211,14 @@ export class WebSocketConnectionService {
     // Storm summary: the first refusal logged a WARN; the rest were silent.
     // When the incumbent finally goes away, log the cumulative count so the
     // operator sees the scale of the storm without per-attempt log spam.
-    // Zero the counter so the eventual `ws.on('close')` re-entry (triggered by
-    // our own ws.close below) does not double-log this summary.
-    if (client.refusedChallengers > 0) {
+    // `summaryLogged` guards against the inevitable `ws.on('close')` re-entry
+    // (triggered by our own ws.close below) double-logging.
+    if (client.refusedChallengers > 0 && !client.summaryLogged) {
       const incumbentLifetimeMs = Date.now() - client.connectedAt;
       Logger.info(
         `[ws:user:${userId}:${client.clientId}] Refused ${client.refusedChallengers} reconnect challenger(s) over ${incumbentLifetimeMs}ms incumbent lifetime before removal`,
       );
-      client.refusedChallengers = 0;
+      client.summaryLogged = true;
     }
     // Close the WebSocket if still open
     if (

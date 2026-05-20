@@ -159,9 +159,11 @@ export const createServer = (
         // would flood the log without adding info. Downgrade those to debug.
         // Exact-match the WS route (allowing trailing slash + querystring) so
         // future sibling routes like /api/sync/ws-status do not silently
-        // inherit the debug-only behavior.
-        const path = req.url.split('?', 1)[0].replace(/\/+$/, '');
-        const isWsRateLimit = statusCode === 429 && path === '/api/sync/ws';
+        // inherit the debug-only behavior. statusCode gate short-circuits the
+        // path-normalize on the ~99% of error responses that aren't 429.
+        const isWsRateLimit =
+          statusCode === 429 &&
+          req.url.split('?', 1)[0].replace(/\/+$/, '') === '/api/sync/ws';
         if (statusCode >= 500) {
           Logger.error(logMessage, error.stack);
         } else if (isWsRateLimit) {

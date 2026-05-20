@@ -11,12 +11,12 @@ export {
 /**
  * Type-guard for clientId validation. Order matters: cheap length check first
  * so an attacker passing a multi-megabyte clientId is rejected before the
- * regex scans it. Used by the WS route handler AND the rate-limit
- * keyGenerator — keep both call sites in sync via this helper.
+ * regex scans it. The regex already requires `+` (≥1 char), so an explicit
+ * non-empty check is redundant. Used by the WS route handler AND the
+ * rate-limit keyGenerator — keep both call sites in sync via this helper.
  */
 export const isValidClientId = (cid: unknown): cid is string =>
   typeof cid === 'string' &&
-  cid.length > 0 &&
   cid.length <= SUPER_SYNC_MAX_CLIENT_ID_LENGTH &&
   SUPER_SYNC_CLIENT_ID_REGEX.test(cid);
 

@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { CLIENT_ID_REGEX, MAX_CLIENT_ID_LENGTH } from '../src/sync/sync.const';
+import {
+  CLIENT_ID_REGEX,
+  MAX_CLIENT_ID_LENGTH,
+  isValidClientId,
+} from '../src/sync/sync.const';
 import {
   WS_CONNECTION_RATE_LIMIT_MAX,
   WS_CONNECTION_RATE_LIMIT_WINDOW,
@@ -59,11 +63,7 @@ async function simulateWsHandler(
       return 'rejected';
     }
 
-    if (
-      !clientId ||
-      !CLIENT_ID_REGEX.test(clientId) ||
-      clientId.length > MAX_CLIENT_ID_LENGTH
-    ) {
+    if (!isValidClientId(clientId)) {
       socket.close(4001, 'Invalid clientId');
       return 'rejected';
     }
