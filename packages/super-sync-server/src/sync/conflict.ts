@@ -68,13 +68,18 @@ export const detectConflictForEntities = async (
       start,
       start + CONFLICT_DETECTION_ENTITY_BATCH_SIZE,
     );
-    // Match each requested id against the op's full entity set: entity_ids when
-    // present, else the scalar entity_id (pre-migration rows). The `&&`/`= ANY`
-    // prefilter keeps the GIN(entity_ids) + entity_id indexes usable; the unnest
-    // + `eid = ANY` keeps only the requested entities, then DISTINCT ON picks the
-    // latest op per entity. Kept inline (not a shared fragment) so the positional
-    // params stay stable for the conflict-detection.spec mock; the same shape is
-    // duplicated in prefetchLatestEntityOpsForBatch — keep them in sync. (#8334)
+    // Match each requested id against the op's full entity set: the entity_ids
+    // array UNION the scalar entity_id. The scalar is always folded in (not just
+    // when entity_ids is empty) so an op whose entity_id is NOT a member of its
+    // own entity_ids — possible when a multi-entity op dedups to a different
+    // primary, see getStoredEntityIds — still exposes that scalar entity here.
+    // DISTINCT ON dedupes the harmless overlap when entity_id is already in the
+    // array (the common entity_id = entityIds[0] case). The `&&`/`= ANY`
+    // prefilter keeps the GIN(entity_ids) + entity_id indexes usable; `eid = ANY`
+    // keeps only the requested entities, then DISTINCT ON picks the latest op per
+    // entity. Kept inline (not a shared fragment) so the positional params stay
+    // stable for the conflict-detection.spec mock; the same shape is duplicated in
+    // prefetchLatestEntityOpsForBatch — keep them in sync. (#8334)
     const idArray = Prisma.sql`ARRAY[${Prisma.join(batchEntityIds)}]::text[]`;
     const latestOps = await tx.$queryRaw<LatestEntityOperationRow[]>`
       SELECT DISTINCT ON (eid)
@@ -83,7 +88,7 @@ export const detectConflictForEntities = async (
         o.vector_clock AS "vectorClock"
       FROM operations o
       CROSS JOIN LATERAL unnest(
-        CASE WHEN cardinality(o.entity_ids) > 0 THEN o.entity_ids ELSE ARRAY[o.entity_id] END
+        o.entity_ids || CASE WHEN o.entity_id IS NULL THEN '{}'::text[] ELSE ARRAY[o.entity_id] END
       ) AS eid
       WHERE o.user_id = ${userId}
         AND o.entity_type = ${op.entityType}
@@ -386,7 +391,10 @@ export const prefetchLatestEntityOpsForBatch = async (
     );
     // Prefilter array (all requested ids) so the JOIN below can match a requested
     // id inside a stored op's entity_ids set, not just its scalar entity_id, while
-    // keeping the GIN(entity_ids) + entity_id indexes usable. (#8334)
+    // keeping the GIN(entity_ids) + entity_id indexes usable. The unnest folds the
+    // scalar entity_id into the entity_ids set (UNION, deduped by DISTINCT ON) so a
+    // divergent scalar is never missed — see the matching note in
+    // detectConflictForEntities; keep the two shapes in sync. (#8334)
     const idArray = Prisma.sql`ARRAY[${Prisma.join(
       batchPairs.map((pair) => pair.entityId),
     )}]::text[]`;
@@ -399,7 +407,7 @@ export const prefetchLatestEntityOpsForBatch = async (
         o.vector_clock AS "vectorClock"
       FROM operations o
       CROSS JOIN LATERAL unnest(
-        CASE WHEN cardinality(o.entity_ids) > 0 THEN o.entity_ids ELSE ARRAY[o.entity_id] END
+        o.entity_ids || CASE WHEN o.entity_id IS NULL THEN '{}'::text[] ELSE ARRAY[o.entity_id] END
       ) AS eid
       JOIN (VALUES ${Prisma.join(touchedRows)}) AS touched(entity_type, entity_id)
         ON touched.entity_type = o.entity_type

@@ -222,14 +222,16 @@ vi.mock('../src/db', async () => {
           (entityId): entityId is string => typeof entityId === 'string',
         ),
       );
-      // An op covers an entity via its full entity_ids set (multi-entity ops),
-      // falling back to the scalar entity_id for pre-migration rows (#8334).
-      const coveredEntityIds = (op: any): string[] =>
-        Array.isArray(op.entityIds) && op.entityIds.length > 0
-          ? op.entityIds
-          : op.entityId != null
-            ? [op.entityId]
-            : [];
+      // An op covers every entity in its entity_ids set UNION its scalar
+      // entity_id — mirrors the `entity_ids || ARRAY[entity_id]` unnest. The
+      // scalar is always folded in (not just for empty/pre-migration rows) so a
+      // divergent scalar entity_id is never missed; the Set below dedupes the
+      // common entity_id = entityIds[0] overlap. (#8334)
+      const coveredEntityIds = (op: any): string[] => {
+        const ids = Array.isArray(op.entityIds) ? [...op.entityIds] : [];
+        if (op.entityId != null) ids.push(op.entityId);
+        return ids;
+      };
       const latestByEntityId = new Map<string, any>();
       const ops = Array.from(state.operations.values())
         .filter((op: any) => op.userId === userId && op.entityType === entityType)
