@@ -1,7 +1,6 @@
 import { Logger } from '../logger';
 import { Prisma } from '@prisma/client';
 import {
-  SUPER_SYNC_MAX_OPS_PER_UPLOAD,
   SUPER_SYNC_OP_TYPES,
   SUPER_SYNC_SNAPSHOT_OP_TYPES,
   type SuperSyncOpType,
@@ -52,8 +51,6 @@ export const SYNC_ERROR_CODES = {
   // Conflict errors (409)
   CONFLICT_CONCURRENT: 'CONFLICT_CONCURRENT',
   CONFLICT_SUPERSEDED: 'CONFLICT_SUPERSEDED',
-  /** @deprecated Use CONFLICT_SUPERSEDED. Keep for backward compat with older clients. */
-  CONFLICT_STALE: 'CONFLICT_STALE',
   DUPLICATE_OPERATION: 'DUPLICATE_OPERATION',
 
   // Rate limiting (429)
@@ -322,14 +319,8 @@ export interface DownloadOpsResponse {
    */
   gapDetected?: boolean;
   /**
-   * Server sequence of the latest full-state operation (SYNC_IMPORT, BACKUP_IMPORT, REPAIR).
-   * Fresh clients (sinceSeq=0) can use this to understand where the effective state starts.
-   * Operations before this seq are superseded by the full-state operation.
-   */
-  latestSnapshotSeq?: number;
-  /**
    * Aggregated vector clock from all ops before and including the snapshot.
-   * Only set when snapshot optimization is used (sinceSeq < latestSnapshotSeq).
+   * Only set when snapshot optimization is used.
    * Clients need this to create merged updates that dominate all known clocks.
    */
   snapshotVectorClock?: VectorClock;
@@ -337,21 +328,6 @@ export interface DownloadOpsResponse {
    * Server timestamp for client clock drift detection.
    */
   serverTime?: number;
-}
-
-// Snapshot types
-export interface SnapshotResponse {
-  state: unknown;
-  serverSeq: number;
-  generatedAt: number;
-}
-
-export interface UploadSnapshotRequest {
-  state: unknown;
-  clientId: string;
-  reason: 'initial' | 'recovery' | 'migration';
-  vectorClock: VectorClock;
-  schemaVersion?: number;
 }
 
 // Status types
@@ -369,31 +345,6 @@ export interface SnapshotResult {
   serverSeq: number;
   generatedAt: number;
   schemaVersion: number;
-}
-
-// Restore point types
-export type RestorePointType =
-  | 'SYNC_IMPORT'
-  | 'BACKUP_IMPORT'
-  | 'REPAIR'
-  | 'DAILY_BOUNDARY';
-
-export interface RestorePoint {
-  serverSeq: number;
-  timestamp: number; // clientTimestamp from the operation
-  type: RestorePointType;
-  clientId: string;
-  description?: string; // e.g., "Backup from Desktop" or "Daily checkpoint"
-}
-
-export interface RestorePointsResponse {
-  restorePoints: RestorePoint[];
-}
-
-export interface RestoreSnapshotResponse {
-  state: unknown;
-  serverSeq: number;
-  generatedAt: number;
 }
 
 // Payload validation result
@@ -472,11 +423,8 @@ export const validatePayload = (
 
 // Configuration
 export interface SyncConfig {
-  maxOpsPerUpload: number;
   maxPayloadSizeBytes: number;
-  downloadLimit: number;
   uploadRateLimit: { max: number; windowMs: number };
-  downloadRateLimit: { max: number; windowMs: number };
   retentionMs: number; // Unified retention period for ops, devices, and validation
   maxClockDriftMs: number;
   batchUpload: boolean;
@@ -495,11 +443,8 @@ export const RETENTION_MS = RETENTION_DAYS * MS_PER_DAY;
 export const ONLINE_DEVICE_THRESHOLD_MS = 5 * MS_PER_MINUTE; // 5 minutes
 
 export const DEFAULT_SYNC_CONFIG: SyncConfig = {
-  maxOpsPerUpload: SUPER_SYNC_MAX_OPS_PER_UPLOAD,
   maxPayloadSizeBytes: 20 * 1024 * 1024, // 20MB - needed for large imports
-  downloadLimit: 1000,
   uploadRateLimit: { max: 100, windowMs: MS_PER_MINUTE },
-  downloadRateLimit: { max: 200, windowMs: MS_PER_MINUTE },
   retentionMs: RETENTION_MS, // 45 days - used for ops, devices, and validation
   maxClockDriftMs: MS_PER_MINUTE, // 60 seconds
   batchUpload: false,
