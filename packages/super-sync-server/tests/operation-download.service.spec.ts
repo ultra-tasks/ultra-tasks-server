@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import type { Prisma } from '@prisma/client';
 import { OperationDownloadService } from '../src/sync/services/operation-download.service';
 
 // Mock prisma
@@ -35,6 +36,7 @@ const EXPECTED_OPERATION_DOWNLOAD_SELECT = {
   opType: true,
   entityType: true,
   entityId: true,
+  entityIds: true,
   payload: true,
   vectorClock: true,
   schemaVersion: true,
@@ -54,6 +56,7 @@ const createMockOpRow = (
     actionType: string;
     entityType: string;
     entityId: string | null;
+    entityIds: string[];
     payload: unknown;
     vectorClock: Record<string, number>;
     schemaVersion: number;
@@ -71,6 +74,7 @@ const createMockOpRow = (
   entityType: overrides.entityType ?? 'Task',
   // Use 'in' check to allow null to be explicitly set
   entityId: 'entityId' in overrides ? overrides.entityId : `task-${serverSeq}`,
+  entityIds: overrides.entityIds ?? [],
   payload: overrides.payload ?? { title: `Task ${serverSeq}` },
   vectorClock: overrides.vectorClock ?? { [clientId]: serverSeq },
   schemaVersion: overrides.schemaVersion ?? 1,
@@ -356,6 +360,30 @@ describe('OperationDownloadService', () => {
           }),
         }),
       );
+    });
+
+    it('should round-trip batch entityIds in downloaded operations', async () => {
+      vi.mocked(prisma.$transaction).mockImplementation(
+        async (fn: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
+          fn({
+            operation: {
+              findFirst: vi.fn().mockResolvedValue(null),
+              findMany: vi.fn().mockResolvedValue([
+                createMockOpRow(1, 'batch-client', {
+                  entityId: 'task-1',
+                  entityIds: ['task-1', 'task-2'],
+                }),
+              ]),
+            },
+            userSyncState: {
+              findUnique: vi.fn().mockResolvedValue({ lastSeq: 1 }),
+            },
+          } as unknown as Prisma.TransactionClient),
+      );
+
+      const result = await service.getOpsSinceWithSeq(1, 0);
+
+      expect(result.ops[0].op.entityIds).toEqual(['task-1', 'task-2']);
     });
 
     it('should detect gap when client is ahead of server', async () => {

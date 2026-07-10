@@ -22,6 +22,7 @@ const createStore = (appendResult: {
   skippedCount: number;
 }): RemoteOperationApplyStorePort<Operation<string>> => ({
   appendBatchSkipDuplicates: vi.fn().mockResolvedValue(appendResult),
+  markArchivePending: vi.fn().mockResolvedValue(undefined),
   markApplied: vi.fn().mockResolvedValue(undefined),
   markFailed: vi.fn().mockResolvedValue(undefined),
   mergeRemoteOpClocks: vi.fn().mockResolvedValue(undefined),
@@ -31,7 +32,10 @@ const createStore = (appendResult: {
 const createApplier = (
   result: Awaited<ReturnType<OperationApplyPort<Operation<string>>['applyOperations']>>,
 ): OperationApplyPort<Operation<string>> => ({
-  applyOperations: vi.fn().mockResolvedValue(result),
+  applyOperations: vi.fn(async (ops, options) => {
+    await options?.onReducersCommitted?.(ops);
+    return result;
+  }),
 });
 
 describe('applyRemoteOperations', () => {
@@ -50,7 +54,11 @@ describe('applyRemoteOperations', () => {
     expect(store.appendBatchSkipDuplicates).toHaveBeenCalledWith([op1, op2], 'remote', {
       pendingApply: true,
     });
-    expect(applier.applyOperations).toHaveBeenCalledWith([op2]);
+    expect(applier.applyOperations).toHaveBeenCalledWith(
+      [op2],
+      jasmineLikeObjectContainingFunction(),
+    );
+    expect(store.markArchivePending).toHaveBeenCalledWith([10]);
     expect(store.markApplied).toHaveBeenCalledWith([10]);
     expect(store.mergeRemoteOpClocks).toHaveBeenCalledWith([op2]);
     expect(result).toEqual({
@@ -104,7 +112,7 @@ describe('applyRemoteOperations', () => {
     expect(result.clearedFullStateOpCount).toBe(3);
   });
 
-  it('marks the failed op and remaining unapplied ops as failed', async () => {
+  it('checkpoints the whole reducer batch but charges only the attempted archive failure', async () => {
     const op1 = createOperation('op-1');
     const op2 = createOperation('op-2');
     const op3 = createOperation('op-3');
@@ -126,13 +134,14 @@ describe('applyRemoteOperations', () => {
     });
 
     expect(store.markApplied).toHaveBeenCalledWith([1]);
-    expect(store.mergeRemoteOpClocks).toHaveBeenCalledWith([op1]);
-    expect(store.markFailed).toHaveBeenCalledWith(['op-2', 'op-3']);
+    expect(store.markArchivePending).toHaveBeenCalledWith([1, 2, 3]);
+    expect(store.mergeRemoteOpClocks).toHaveBeenCalledWith([op1, op2, op3]);
+    expect(store.markFailed).toHaveBeenCalledWith(['op-2']);
     expect(result.failedOp).toEqual({ op: op2, error });
-    expect(result.failedOpIds).toEqual(['op-2', 'op-3']);
+    expect(result.failedOpIds).toEqual(['op-2']);
   });
 
-  it('marks only the reported failed op if it is not in the appended batch', async () => {
+  it('rejects an applier result whose failed op is not in the appended batch', async () => {
     const op1 = createOperation('op-1');
     const unknownFailedOp = createOperation('unknown-failed-op');
     const store = createStore({ seqs: [1], writtenOps: [op1], skippedCount: 0 });
@@ -141,9 +150,12 @@ describe('applyRemoteOperations', () => {
       failedOp: { op: unknownFailedOp, error: new Error('unexpected') },
     });
 
-    const result = await applyRemoteOperations({ ops: [op1], store, applier });
-
-    expect(store.markFailed).toHaveBeenCalledWith(['unknown-failed-op']);
-    expect(result.failedOpIds).toEqual(['unknown-failed-op']);
+    await expect(applyRemoteOperations({ ops: [op1], store, applier })).rejects.toThrow(
+      'unknown-failed-op',
+    );
+    expect(store.markFailed).not.toHaveBeenCalled();
   });
 });
+
+const jasmineLikeObjectContainingFunction = (): object =>
+  expect.objectContaining({ onReducersCommitted: expect.any(Function) });

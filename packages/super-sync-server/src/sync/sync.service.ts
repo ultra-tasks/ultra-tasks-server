@@ -454,26 +454,44 @@ export class SyncService {
     return this.rateLimitService.cleanupExpiredCounters();
   }
 
-  checkOpsRequestDedup(userId: number, requestId: string): UploadResult[] | null {
-    return this.requestDeduplicationService.checkDeduplication(userId, 'ops', requestId);
+  checkOpsRequestDedup(
+    userId: number,
+    requestId: string,
+    fingerprint?: string,
+  ): UploadResult[] | null {
+    return this.requestDeduplicationService.checkDeduplication(
+      userId,
+      'ops',
+      requestId,
+      fingerprint,
+    );
   }
 
   cacheOpsRequestResults(
     userId: number,
     requestId: string,
     results: UploadResult[],
+    fingerprint?: string,
   ): void {
-    this.requestDeduplicationService.cacheResults(userId, 'ops', requestId, results);
+    this.requestDeduplicationService.cacheResults(
+      userId,
+      'ops',
+      requestId,
+      results,
+      fingerprint,
+    );
   }
 
   checkSnapshotRequestDedup(
     userId: number,
     requestId: string,
+    fingerprint?: string,
   ): SnapshotDedupResponse | null {
     return this.requestDeduplicationService.checkDeduplication(
       userId,
       'snapshot',
       requestId,
+      fingerprint,
     );
   }
 
@@ -481,12 +499,14 @@ export class SyncService {
     userId: number,
     requestId: string,
     response: SnapshotDedupResponse,
+    fingerprint?: string,
   ): void {
     this.requestDeduplicationService.cacheResults(
       userId,
       'snapshot',
       requestId,
       response,
+      fingerprint,
     );
   }
 

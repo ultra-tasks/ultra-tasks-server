@@ -24,6 +24,7 @@ import {
   getStoredEntityIds,
   getEntityConflictKey,
   isSameDuplicateOperation,
+  isSameIncomingOperation,
   prefetchLatestEntityOpsForBatch,
   pruneVectorClockForStorage,
   resolveConflictForExistingOp,
@@ -317,10 +318,9 @@ export class OperationUploadService {
   }
 
   /**
-   * Stage 2: within a single batch, accept the first op for an id and reject
-   * every later op sharing that id as DUPLICATE_OPERATION (by id, not content
-   * — see plan §1a step 2 / the C4 divergence note). Must run before sequence
-   * reservation so a duplicate never consumes a server_seq.
+   * Stage 2: within a single batch, accept the first op for an id. Exact retries
+   * are DUPLICATE_OPERATION; same-id operations with different complete identity
+   * are INVALID_OP_ID. Must run before sequence reservation.
    */
   private rejectIntraBatchDuplicates(
     userId: number,
@@ -328,20 +328,31 @@ export class OperationUploadService {
     validatedCandidates: BatchUploadCandidate[],
     results: UploadResult[],
   ): BatchUploadCandidate[] {
-    const seenOpIds = new Set<string>();
+    const firstCandidateByOpId = new Map<string, BatchUploadCandidate>();
     const uniqueCandidates: BatchUploadCandidate[] = [];
     for (const candidate of validatedCandidates) {
-      if (seenOpIds.has(candidate.op.id)) {
+      const firstCandidate = firstCandidateByOpId.get(candidate.op.id);
+      if (firstCandidate) {
+        const isExactRetry = isSameIncomingOperation(
+          firstCandidate.op,
+          candidate.op,
+          firstCandidate.originalTimestamp,
+          candidate.originalTimestamp,
+        );
         results[candidate.resultIndex] = this.rejectedUploadResult(
           userId,
           clientId,
           candidate.op,
-          'Duplicate operation ID',
-          SYNC_ERROR_CODES.DUPLICATE_OPERATION,
+          isExactRetry
+            ? 'Duplicate operation ID'
+            : 'Operation ID already belongs to a different operation',
+          isExactRetry
+            ? SYNC_ERROR_CODES.DUPLICATE_OPERATION
+            : SYNC_ERROR_CODES.INVALID_OP_ID,
         );
         continue;
       }
-      seenOpIds.add(candidate.op.id);
+      firstCandidateByOpId.set(candidate.op.id, candidate);
       uniqueCandidates.push(candidate);
     }
     return uniqueCandidates;

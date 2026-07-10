@@ -97,6 +97,7 @@ export const MiscToTasksSettingsMigration_v1v2: SchemaMigration = {
       result.push({
         ...op,
         id: `${op.id}_misc`,
+        entityIds: ['misc'],
         payload: buildPayload(miscCfg, 'misc'),
       });
     }
@@ -106,6 +107,7 @@ export const MiscToTasksSettingsMigration_v1v2: SchemaMigration = {
         ...op,
         id: `${op.id}_tasks`,
         entityId: 'tasks',
+        entityIds: ['tasks'],
         payload: buildPayload(tasksCfg, 'tasks'),
       });
     }

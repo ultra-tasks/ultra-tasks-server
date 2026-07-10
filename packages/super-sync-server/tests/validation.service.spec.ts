@@ -315,6 +315,16 @@ describe('ValidationService', () => {
       expect(result.errorCode).toBe(SYNC_ERROR_CODES.INVALID_SCHEMA_VERSION);
     });
 
+    it('should reject non-integer schema versions', () => {
+      const result = validationService.validateOp(
+        createValidOp({ schemaVersion: 1.5 }),
+        clientId,
+      );
+
+      expect(result.valid).toBe(false);
+      expect(result.errorCode).toBe(SYNC_ERROR_CODES.INVALID_SCHEMA_VERSION);
+    });
+
     it('should accept valid schema versions 1-100', () => {
       for (const schemaVersion of [1, 50, 100]) {
         const op = createValidOp({ schemaVersion });

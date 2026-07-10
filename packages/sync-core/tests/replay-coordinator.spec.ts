@@ -69,6 +69,9 @@ describe('replayOperationBatch', () => {
     const onRemoteArchiveDataApplied = vi.fn(() => {
       callOrder.push('remoteArchiveDataApplied');
     });
+    const onReducersCommitted = vi.fn(async () => {
+      callOrder.push('reducersCommitted');
+    });
 
     const result = await replayOperationBatch({
       ops,
@@ -87,6 +90,7 @@ describe('replayOperationBatch', () => {
       }),
       isArchiveAffectingAction: (action) => action.archiveAffecting === true,
       onRemoteArchiveDataApplied,
+      onReducersCommitted,
       yieldToEventLoop,
     });
 
@@ -101,6 +105,7 @@ describe('replayOperationBatch', () => {
       'startApplyingRemoteOps',
       'dispatchBulk',
       'yield',
+      'reducersCommitted',
       'archive:op-1',
       'archive:op-2',
       'yield',

@@ -21,6 +21,7 @@ const OPERATION_DOWNLOAD_SELECT = {
   opType: true,
   entityType: true,
   entityId: true,
+  entityIds: true,
   payload: true,
   vectorClock: true,
   schemaVersion: true,
@@ -54,6 +55,7 @@ type OperationDownloadRow = {
   opType: string;
   entityType: string;
   entityId: string | null;
+  entityIds: string[];
   payload: unknown;
   vectorClock: unknown;
   schemaVersion: number;
@@ -72,6 +74,7 @@ const mapOperationRow = (row: OperationDownloadRow): ServerOperation => ({
     opType: row.opType as Operation['opType'],
     entityType: row.entityType,
     entityId: row.entityId ?? undefined,
+    entityIds: row.entityIds.length > 0 ? row.entityIds : undefined,
     payload: row.payload,
     vectorClock: row.vectorClock as VectorClock,
     schemaVersion: row.schemaVersion,

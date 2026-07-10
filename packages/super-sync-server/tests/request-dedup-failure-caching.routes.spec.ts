@@ -196,6 +196,7 @@ describe('Request dedup — transaction-failure results are not cached (#8332)',
         userId,
         'ops-v1-success',
         results,
+        expect.any(String),
       );
     });
 
@@ -218,6 +219,7 @@ describe('Request dedup — transaction-failure results are not cached (#8332)',
         userId,
         'ops-v1-conflict',
         results,
+        expect.any(String),
       );
     });
   });
@@ -245,6 +247,7 @@ describe('Request dedup — transaction-failure results are not cached (#8332)',
         userId,
         'snapshot-v1-success',
         { accepted: true, serverSeq: 5, error: undefined },
+        expect.any(String),
       );
     });
   });

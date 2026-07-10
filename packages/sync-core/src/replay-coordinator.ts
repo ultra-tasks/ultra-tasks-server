@@ -35,6 +35,7 @@ export interface OperationReplayCoordinatorOptions<
   operationToAction?: (op: TOperation) => TReplayAction;
   isArchiveAffectingAction?: (action: TReplayAction) => boolean;
   onRemoteArchiveDataApplied?: () => void;
+  onReducersCommitted?: (ops: TOperation[]) => Promise<void>;
   onArchiveSideEffectError?: (
     context: OperationReplayArchiveFailureContext<TOperation>,
   ) => void;
@@ -94,6 +95,7 @@ export const replayOperationBatch = async <
   operationToAction,
   isArchiveAffectingAction = () => false,
   onRemoteArchiveDataApplied,
+  onReducersCommitted,
   onArchiveSideEffectError,
   onPostSyncCooldownError,
   yieldToEventLoop: waitForEventLoop = yieldToEventLoop,
@@ -118,6 +120,7 @@ export const replayOperationBatch = async <
     if (!skipReducerDispatch) {
       dispatcher.dispatch(createBulkApplyAction(ops));
       await waitForEventLoop();
+      await onReducersCommitted?.(ops);
     }
 
     if (!isLocalHydration && archiveSideEffects !== undefined && operationToAction) {

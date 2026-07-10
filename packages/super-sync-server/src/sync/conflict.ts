@@ -265,6 +265,34 @@ export const isSameDuplicateOperation = (
   );
 };
 
+/** Complete identity comparison for two validated operations in one request. */
+export const isSameIncomingOperation = (
+  first: Operation,
+  second: Operation,
+  firstOriginalTimestamp: number = first.timestamp,
+  secondOriginalTimestamp: number = second.timestamp,
+): boolean => {
+  const bothEncrypted =
+    (first.isPayloadEncrypted ?? false) && (second.isPayloadEncrypted ?? false);
+  return (
+    first.clientId === second.clientId &&
+    first.actionType === second.actionType &&
+    first.opType === second.opType &&
+    first.entityType === second.entityType &&
+    first.entityId === second.entityId &&
+    areJsonValuesEqual(getStoredEntityIds(first), getStoredEntityIds(second)) &&
+    (bothEncrypted || areJsonValuesEqual(first.payload, second.payload)) &&
+    areJsonValuesEqual(
+      limitVectorClockSize(first.vectorClock, [first.clientId]),
+      limitVectorClockSize(second.vectorClock, [second.clientId]),
+    ) &&
+    first.schemaVersion === second.schemaVersion &&
+    firstOriginalTimestamp === secondOriginalTimestamp &&
+    (first.isPayloadEncrypted ?? false) === (second.isPayloadEncrypted ?? false) &&
+    (first.syncImportReason ?? null) === (second.syncImportReason ?? null)
+  );
+};
+
 export const isSameDuplicateTimestamp = (
   existingTimestamp: bigint | number | string,
   existingReceivedAt: bigint | number | string,

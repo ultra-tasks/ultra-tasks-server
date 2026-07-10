@@ -29,6 +29,7 @@ import {
   sendQuotaExceededReply,
   sendSyncImportExistsReply,
 } from './sync.routes.quota';
+import { createSnapshotRequestFingerprint } from './services/request-deduplication.service';
 
 export const uploadSnapshotHandler = async (
   req: FastifyRequest<{ Body: unknown }>,
@@ -99,9 +100,27 @@ export const uploadSnapshotHandler = async (
       requestId,
     } = snapshotRequest;
     const syncService = getSyncService();
+    const requestFingerprint = requestId
+      ? createSnapshotRequestFingerprint({
+          state,
+          clientId,
+          reason,
+          vectorClock,
+          schemaVersion,
+          isPayloadEncrypted,
+          syncImportReason,
+          opId,
+          isCleanSlate,
+          snapshotOpType,
+        })
+      : undefined;
 
     if (requestId) {
-      const cachedResponse = syncService.checkSnapshotRequestDedup(userId, requestId);
+      const cachedResponse = syncService.checkSnapshotRequestDedup(
+        userId,
+        requestId,
+        requestFingerprint,
+      );
       if (cachedResponse) {
         Logger.info(
           `[user:${userId}] Returning cached snapshot result for request ${requestId}`,
@@ -340,7 +359,12 @@ export const uploadSnapshotHandler = async (
       finalResult.errorCode !== SYNC_ERROR_CODES.DUPLICATE_OPERATION &&
       finalResult.errorCode !== SYNC_ERROR_CODES.INTERNAL_ERROR
     ) {
-      syncService.cacheSnapshotRequestResult(userId, requestId, responseBody);
+      syncService.cacheSnapshotRequestResult(
+        userId,
+        requestId,
+        responseBody,
+        requestFingerprint,
+      );
     }
 
     return reply.send(responseBody);

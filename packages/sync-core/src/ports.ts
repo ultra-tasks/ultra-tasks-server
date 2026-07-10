@@ -20,7 +20,10 @@ export interface SyncActionLike {
 export interface OperationApplyPort<TOperation extends Operation<string> = Operation> {
   applyOperations(
     ops: TOperation[],
-    options?: ApplyOperationsOptions,
+    options?: ApplyOperationsOptions & {
+      /** Persist reducer-commit bookkeeping before post-dispatch side effects start. */
+      onReducersCommitted?: (ops: TOperation[]) => Promise<void>;
+    },
   ): Promise<ApplyOperationsResult<TOperation>>;
 }
 

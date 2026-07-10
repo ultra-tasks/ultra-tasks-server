@@ -72,6 +72,33 @@ describe('SuperSync HTTP contract schemas', () => {
     ).toThrow();
   });
 
+  it.each([0, 1.5, -1, 101])(
+    'rejects malformed operation schema version %s',
+    (schemaVersion) => {
+      expect(() =>
+        SuperSyncUploadOpsRequestSchema.parse({
+          ops: [{ ...createValidOperation(), schemaVersion }],
+          clientId: 'client_1',
+        }),
+      ).toThrow();
+    },
+  );
+
+  it.each([0, 1.5, -1, 101])(
+    'rejects malformed snapshot schema version %s',
+    (schemaVersion) => {
+      expect(() =>
+        SuperSyncUploadSnapshotRequestSchema.parse({
+          state: {},
+          clientId: 'client_1',
+          reason: 'recovery',
+          vectorClock: { client_1: 1 },
+          schemaVersion,
+        }),
+      ).toThrow();
+    },
+  );
+
   it('coerces download query numbers like the route-level schema', () => {
     const parsed = SuperSyncDownloadOpsQuerySchema.parse({
       sinceSeq: '5',

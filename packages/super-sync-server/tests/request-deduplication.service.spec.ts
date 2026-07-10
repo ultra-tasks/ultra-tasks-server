@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { RequestDeduplicationService } from '../src/sync/services/request-deduplication.service';
+import {
+  RequestDeduplicationService,
+  createSnapshotRequestFingerprint,
+} from '../src/sync/services/request-deduplication.service';
 import { UploadResult } from '../src/sync/sync.types';
 
 describe('RequestDeduplicationService', () => {
@@ -34,6 +37,18 @@ describe('RequestDeduplicationService', () => {
 
       const result = service.checkDeduplication(1, 'ops', 'request-123');
       expect(result).toEqual(mockResults);
+    });
+
+    it('should treat the same requestId with a different body fingerprint as a cache miss', () => {
+      const mockResults = createMockResults(1);
+      service.cacheResults(1, 'ops', 'request-123', mockResults, 'fingerprint-a');
+
+      expect(
+        service.checkDeduplication(1, 'ops', 'request-123', 'fingerprint-a'),
+      ).toEqual(mockResults);
+      expect(
+        service.checkDeduplication(1, 'ops', 'request-123', 'fingerprint-b'),
+      ).toBeNull();
     });
 
     it('should return null for expired request', () => {
@@ -111,6 +126,41 @@ describe('RequestDeduplicationService', () => {
       service.cacheResults(1, 'ops', 'request-3', createMockResults(3));
 
       expect(service.getCacheCount()).toBe(3);
+    });
+  });
+
+  describe('snapshot request fingerprints', () => {
+    const request = {
+      state: { task: { ids: ['task-1'] } },
+      clientId: 'client-1',
+      reason: 'recovery',
+      vectorClock: { 'client-1': 1 },
+      schemaVersion: 4,
+    };
+
+    it('changes when an unencrypted snapshot body changes', () => {
+      expect(createSnapshotRequestFingerprint(request)).not.toBe(
+        createSnapshotRequestFingerprint({
+          ...request,
+          state: { task: { ids: ['task-2'] } },
+        }),
+      );
+    });
+
+    it('stays stable across encrypted snapshot IV changes', () => {
+      expect(
+        createSnapshotRequestFingerprint({
+          ...request,
+          state: 'ciphertext-a',
+          isPayloadEncrypted: true,
+        }),
+      ).toBe(
+        createSnapshotRequestFingerprint({
+          ...request,
+          state: 'ciphertext-b',
+          isPayloadEncrypted: true,
+        }),
+      );
     });
   });
 

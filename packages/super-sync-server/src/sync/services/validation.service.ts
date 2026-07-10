@@ -158,7 +158,11 @@ export class ValidationService {
       };
     }
     if (op.schemaVersion !== undefined) {
-      if (op.schemaVersion < 1 || op.schemaVersion > 100) {
+      if (
+        !Number.isInteger(op.schemaVersion) ||
+        op.schemaVersion < 1 ||
+        op.schemaVersion > 100
+      ) {
         return {
           valid: false,
           error: `Invalid schema version: ${op.schemaVersion}`,

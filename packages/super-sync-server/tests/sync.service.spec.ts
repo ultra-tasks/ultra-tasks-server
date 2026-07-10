@@ -708,15 +708,7 @@ describe('SyncService', () => {
       expect(testState.operations.size).toBe(25);
     });
 
-    it('rejects an intra-batch same-id op as DUPLICATE_OPERATION even when its content differs (deliberate divergence from the legacy per-op path, which yields INVALID_OP_ID)', async () => {
-      // C4: the batch path dedups intra-batch purely by op.id (plan §1a step 2)
-      // and rejects the later op as DUPLICATE_OPERATION regardless of content.
-      // The legacy per-op path inserts the first then catches the second at the
-      // DB and returns INVALID_OP_ID for differing content. Both are terminal
-      // rejections with no row and no sequence gap, so sync invariants hold;
-      // the client treats DUPLICATE_OPERATION as a silent success and
-      // INVALID_OP_ID as a hard rejection. This test pins the chosen batch
-      // semantics so the divergence stays intentional, not accidental drift.
+    it('rejects an intra-batch same-id collision as INVALID_OP_ID', async () => {
       const service = new SyncService({ batchUpload: true });
       const opId = uuidv7();
       const first = makeOp({
@@ -747,12 +739,34 @@ describe('SyncService', () => {
       expect(results[1]).toEqual(
         expect.objectContaining({
           accepted: false,
-          errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
+          errorCode: SYNC_ERROR_CODES.INVALID_OP_ID,
         }),
       );
       // No sequence gap: lastSeq advanced by exactly 1, exactly one row.
       expect(testState.userSyncStates.get(userId)?.lastSeq).toBe(1);
       expect(testState.operations.size).toBe(1);
+    });
+
+    it('preserves an exact intra-batch retry as DUPLICATE_OPERATION', async () => {
+      const service = new SyncService({ batchUpload: true });
+      const retry = makeOp({
+        id: uuidv7(),
+        entityId: 'task-1',
+        entityIds: ['task-1', 'task-2'],
+        vectorClock: { [clientId]: 1 },
+      });
+
+      const results = await service.uploadOps(userId, clientId, [retry, { ...retry }]);
+
+      expect(results[0]).toEqual(
+        expect.objectContaining({ accepted: true, serverSeq: 1 }),
+      );
+      expect(results[1]).toEqual(
+        expect.objectContaining({
+          accepted: false,
+          errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
+        }),
+      );
     });
 
     it('should reject intra-batch entity conflicts in order', async () => {

@@ -8,6 +8,9 @@
  * Entries expire after 5 minutes.
  */
 import type { UploadResult } from '../sync.types';
+import type { Operation } from '../sync.types';
+import { createHash } from 'node:crypto';
+import { stableJsonStringify } from '../conflict';
 
 /**
  * Maximum entries in deduplication cache to prevent unbounded memory growth.
@@ -38,8 +41,18 @@ export interface SnapshotDedupResponse {
  * even if the same `requestId` string is reused across namespaces.
  */
 type RequestDeduplicationEntry =
-  | { namespace: 'ops'; processedAt: number; results: UploadResult[] }
-  | { namespace: 'snapshot'; processedAt: number; results: SnapshotDedupResponse };
+  | {
+      namespace: 'ops';
+      processedAt: number;
+      results: UploadResult[];
+      fingerprint?: string;
+    }
+  | {
+      namespace: 'snapshot';
+      processedAt: number;
+      results: SnapshotDedupResponse;
+      fingerprint?: string;
+    };
 
 type DedupPayload<N extends RequestDedupNamespace> = N extends 'ops'
   ? UploadResult[]
@@ -56,6 +69,7 @@ export class RequestDeduplicationService {
     userId: number,
     namespace: N,
     requestId: string,
+    fingerprint?: string,
   ): DedupPayload<N> | null {
     const key = this._key(userId, namespace, requestId);
     const entry = this.cache.get(key);
@@ -66,6 +80,7 @@ export class RequestDeduplicationService {
     }
     // Defensive: keying already isolates namespaces, but verify before casting.
     if (entry.namespace !== namespace) return null;
+    if (fingerprint !== undefined && entry.fingerprint !== fingerprint) return null;
     return entry.results as DedupPayload<N>;
   }
 
@@ -77,6 +92,7 @@ export class RequestDeduplicationService {
     namespace: N,
     requestId: string,
     results: DedupPayload<N>,
+    fingerprint?: string,
   ): void {
     const key = this._key(userId, namespace, requestId);
     if (this.cache.size >= MAX_CACHE_SIZE) {
@@ -88,6 +104,7 @@ export class RequestDeduplicationService {
       namespace,
       processedAt: Date.now(),
       results,
+      fingerprint,
     } as RequestDeduplicationEntry);
   }
 
@@ -138,3 +155,41 @@ export class RequestDeduplicationService {
     return `${userId}:${namespace}:${requestId}`;
   }
 }
+
+export const createOpsRequestFingerprint = (
+  clientId: string,
+  ops: Operation[],
+): string => {
+  const logicalOps = ops.map((op) => ({
+    ...op,
+    payload: op.isPayloadEncrypted ? '[encrypted-payload]' : op.payload,
+  }));
+  return createHash('sha256')
+    .update(stableJsonStringify({ clientId, ops: logicalOps }))
+    .digest('base64url');
+};
+
+export interface SnapshotRequestFingerprintInput {
+  state: unknown;
+  clientId: string;
+  reason: string;
+  vectorClock: Record<string, number>;
+  schemaVersion?: number;
+  isPayloadEncrypted?: boolean;
+  syncImportReason?: string;
+  opId?: string;
+  isCleanSlate?: boolean;
+  snapshotOpType?: string;
+}
+
+export const createSnapshotRequestFingerprint = (
+  request: SnapshotRequestFingerprintInput,
+): string => {
+  const logicalRequest = {
+    ...request,
+    state: request.isPayloadEncrypted ? '[encrypted-state]' : request.state,
+  };
+  return createHash('sha256')
+    .update(stableJsonStringify(logicalRequest))
+    .digest('base64url');
+};

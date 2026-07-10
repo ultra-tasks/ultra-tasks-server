@@ -151,7 +151,7 @@ export interface OperationLogEntry<TOperation extends Operation<string> = Operat
    * For remote ops only: tracks whether the op was successfully applied to local state.
    * Used for crash recovery: on startup, any 'pending' or 'failed' remote ops are re-dispatched.
    */
-  applicationStatus?: 'pending' | 'applied' | 'failed';
+  applicationStatus?: 'pending' | 'archive_pending' | 'applied' | 'failed';
 
   /**
    * For 'failed' ops: number of retry attempts.

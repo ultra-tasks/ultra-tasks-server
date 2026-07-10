@@ -69,7 +69,7 @@ export const SuperSyncOperationSchema = z.object({
   payload: z.unknown(),
   vectorClock: SuperSyncVectorClockSchema,
   timestamp: z.number(),
-  schemaVersion: z.number(),
+  schemaVersion: z.number().int().min(1).max(100),
   isPayloadEncrypted: z.boolean().optional(),
   syncImportReason: z.enum(SUPER_SYNC_IMPORT_REASONS).optional(),
 });
@@ -92,7 +92,7 @@ export const SuperSyncUploadSnapshotRequestSchema = z.object({
   clientId: SuperSyncClientIdSchema,
   reason: z.enum(SUPER_SYNC_SNAPSHOT_REASONS),
   vectorClock: SuperSyncVectorClockSchema,
-  schemaVersion: z.number().optional(),
+  schemaVersion: z.number().int().min(1).max(100).optional(),
   isPayloadEncrypted: z.boolean().optional(),
   syncImportReason: z.enum(SUPER_SYNC_IMPORT_REASONS).optional(),
   opId: z.string().uuid().optional(),

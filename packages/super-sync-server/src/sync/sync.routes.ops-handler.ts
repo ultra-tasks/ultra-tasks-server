@@ -30,6 +30,7 @@ import {
   getRawOpsCount,
   sendOpsBatchTooLargeReply,
 } from './sync.routes.quota';
+import { createOpsRequestFingerprint } from './services/request-deduplication.service';
 
 export const uploadOpsHandler = async (
   req: FastifyRequest<{ Body: UploadOpsRequest }>,
@@ -86,6 +87,9 @@ export const uploadOpsHandler = async (
     }
 
     const { ops, clientId, lastKnownServerSeq, requestId } = parseResult.data;
+    const requestFingerprint = requestId
+      ? createOpsRequestFingerprint(clientId, ops as unknown as Operation[])
+      : undefined;
     const syncService = getSyncService();
 
     Logger.info(
@@ -112,7 +116,11 @@ export const uploadOpsHandler = async (
     // This ensures retries after successful uploads don't fail with 413
     // if the original upload pushed the user over quota
     if (requestId) {
-      const cachedResults = syncService.checkOpsRequestDedup(userId, requestId);
+      const cachedResults = syncService.checkOpsRequestDedup(
+        userId,
+        requestId,
+        requestFingerprint,
+      );
       if (cachedResults) {
         Logger.info(`[user:${userId}] Returning cached results for request ${requestId}`);
 
@@ -214,7 +222,7 @@ export const uploadOpsHandler = async (
       requestId &&
       !results.some((r) => r.errorCode === SYNC_ERROR_CODES.INTERNAL_ERROR)
     ) {
-      syncService.cacheOpsRequestResults(userId, requestId, results);
+      syncService.cacheOpsRequestResults(userId, requestId, results, requestFingerprint);
     }
 
     const accepted = results.filter((r) => r.accepted).length;

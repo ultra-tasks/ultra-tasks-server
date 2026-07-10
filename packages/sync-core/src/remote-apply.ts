@@ -24,6 +24,7 @@ export interface RemoteOperationApplyStorePort<
     source: 'remote',
     options: { pendingApply: true },
   ): Promise<RemoteOperationAppendResult<TOperation>>;
+  markArchivePending(seqs: number[]): Promise<void>;
   markApplied(seqs: number[]): Promise<void>;
   markFailed(opIds: string[]): Promise<void>;
   mergeRemoteOpClocks(ops: TOperation[]): Promise<void>;
@@ -111,7 +112,25 @@ export const applyRemoteOperations = async <
     }
   });
 
-  const applyResult = await applier.applyOperations(appendResult.writtenOps);
+  const applyResult = await applier.applyOperations(appendResult.writtenOps, {
+    onReducersCommitted: async (reducerCommittedOps) => {
+      const reducerCommittedSeqs = reducerCommittedOps
+        .map((op) => opIdToSeq.get(op.id))
+        .filter((seq): seq is number => seq !== undefined);
+      if (reducerCommittedSeqs.length !== reducerCommittedOps.length) {
+        throw new Error(
+          'applyRemoteOperations: reducer commit contained an operation outside the appended batch.',
+        );
+      }
+      await store.markArchivePending(reducerCommittedSeqs);
+      await store.mergeRemoteOpClocks(reducerCommittedOps);
+    },
+  });
+  if (applyResult.failedOp && !opIdToSeq.has(applyResult.failedOp.op.id)) {
+    throw new Error(
+      `applyRemoteOperations: applier reported unknown failed op ${applyResult.failedOp.op.id}.`,
+    );
+  }
   const appliedSeqs = applyResult.appliedOps
     .map((op) => opIdToSeq.get(op.id))
     .filter((seq): seq is number => seq !== undefined);
@@ -120,7 +139,6 @@ export const applyRemoteOperations = async <
 
   if (appliedSeqs.length > 0) {
     await store.markApplied(appliedSeqs);
-    await store.mergeRemoteOpClocks(applyResult.appliedOps);
 
     const appliedFullStateOpIds = applyResult.appliedOps
       .filter(isFullStateOperation)
@@ -132,9 +150,7 @@ export const applyRemoteOperations = async <
     }
   }
 
-  const failedOpIds = applyResult.failedOp
-    ? getFailedOpIds(appendResult.writtenOps, applyResult.failedOp.op)
-    : [];
+  const failedOpIds = applyResult.failedOp ? [applyResult.failedOp.op.id] : [];
 
   if (failedOpIds.length > 0) {
     await store.markFailed(failedOpIds);
@@ -149,13 +165,4 @@ export const applyRemoteOperations = async <
     failedOp: applyResult.failedOp,
     failedOpIds,
   };
-};
-
-const getFailedOpIds = <TOperation extends Operation<string>>(
-  opsToApply: TOperation[],
-  failedOp: TOperation,
-): string[] => {
-  const failedOpIndex = opsToApply.findIndex((op) => op.id === failedOp.id);
-  const failedOps = failedOpIndex === -1 ? [failedOp] : opsToApply.slice(failedOpIndex);
-  return failedOps.map((op) => op.id);
 };
