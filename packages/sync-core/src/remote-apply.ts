@@ -113,20 +113,58 @@ export const applyRemoteOperations = async <
     }
   });
 
+  let reducerCommitCallbackCount = 0;
+  let reducerCommitPromise: Promise<void> | undefined;
   const applyResult = await applier.applyOperations(appendResult.writtenOps, {
-    onReducersCommitted: async (reducerCommittedOps) => {
-      const reducerCommittedSeqs = reducerCommittedOps
-        .map((op) => opIdToSeq.get(op.id))
-        .filter((seq): seq is number => seq !== undefined);
-      if (reducerCommittedSeqs.length !== reducerCommittedOps.length) {
-        throw new Error(
-          'applyRemoteOperations: reducer commit contained an operation outside the appended batch.',
+    onReducersCommitted: (reducerCommittedOps) => {
+      reducerCommitCallbackCount++;
+      if (reducerCommitCallbackCount !== 1) {
+        reducerCommitPromise = Promise.reject(
+          new Error(
+            'applyRemoteOperations: reducer-commit callback must be invoked exactly once.',
+          ),
         );
+        return reducerCommitPromise;
       }
-      await store.markArchivePending(reducerCommittedSeqs);
-      await store.mergeRemoteOpClocks(reducerCommittedOps);
+
+      const isEntireAppendedBatch =
+        reducerCommittedOps.length === appendResult.writtenOps.length &&
+        reducerCommittedOps.every(
+          (op, index) => op.id === appendResult.writtenOps[index]?.id,
+        );
+      if (!isEntireAppendedBatch) {
+        reducerCommitPromise = Promise.reject(
+          new Error(
+            'applyRemoteOperations: reducer-commit callback must contain the entire appended batch in order.',
+          ),
+        );
+        return reducerCommitPromise;
+      }
+
+      reducerCommitPromise = (async () => {
+        const reducerCommittedSeqs = reducerCommittedOps
+          .map((op) => opIdToSeq.get(op.id))
+          .filter((seq): seq is number => seq !== undefined);
+        if (reducerCommittedSeqs.length !== reducerCommittedOps.length) {
+          throw new Error(
+            'applyRemoteOperations: reducer commit contained an operation outside the appended batch.',
+          );
+        }
+        await store.markArchivePending(reducerCommittedSeqs);
+        await store.mergeRemoteOpClocks(reducerCommittedOps);
+      })();
+      return reducerCommitPromise;
     },
   });
+  if (reducerCommitCallbackCount !== 1 || reducerCommitPromise === undefined) {
+    throw new Error(
+      'applyRemoteOperations: applier did not invoke the reducer-commit callback.',
+    );
+  }
+  // Also await host bookkeeping when an applier invoked the callback without
+  // awaiting its returned promise. Pending ops must never be marked applied
+  // before the reducer/archive checkpoint is durable.
+  await reducerCommitPromise;
   if (applyResult.failedOp && !opIdToSeq.has(applyResult.failedOp.op.id)) {
     throw new Error(
       `applyRemoteOperations: applier reported unknown failed op ${applyResult.failedOp.op.id}.`,

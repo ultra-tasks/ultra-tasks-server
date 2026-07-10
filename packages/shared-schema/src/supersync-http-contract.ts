@@ -74,8 +74,16 @@ export const SuperSyncOperationSchema = z.object({
   syncImportReason: z.enum(SUPER_SYNC_IMPORT_REASONS).optional(),
 });
 
+// Upload requests are envelopes for independently validated operations. Keep
+// the transport shape numeric, but let the server return a per-op
+// INVALID_SCHEMA_VERSION result so one malformed op cannot reject and stall
+// every valid sibling in the batch. Download/response schemas remain strict.
+const SuperSyncUploadOperationSchema = SuperSyncOperationSchema.extend({
+  schemaVersion: z.number(),
+});
+
 export const SuperSyncUploadOpsRequestSchema = z.object({
-  ops: z.array(SuperSyncOperationSchema).min(1).max(SUPER_SYNC_MAX_OPS_PER_UPLOAD),
+  ops: z.array(SuperSyncUploadOperationSchema).min(1).max(SUPER_SYNC_MAX_OPS_PER_UPLOAD),
   clientId: SuperSyncClientIdSchema,
   lastKnownServerSeq: z.number().optional(),
   requestId: SuperSyncRequestIdSchema.optional(),

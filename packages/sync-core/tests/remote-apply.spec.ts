@@ -187,6 +187,57 @@ describe('applyRemoteOperations', () => {
     );
     expect(store.markFailed).not.toHaveBeenCalled();
   });
+
+  it('fails closed when the applier ignores the reducer-commit callback', async () => {
+    const op = createOperation('op-1');
+    const store = createStore({ seqs: [1], writtenOps: [op], skippedCount: 0 });
+    const applier: OperationApplyPort<Operation<string>> = {
+      applyOperations: vi.fn().mockResolvedValue({ appliedOps: [op] }),
+    };
+
+    await expect(applyRemoteOperations({ ops: [op], store, applier })).rejects.toThrow(
+      'reducer-commit callback',
+    );
+    expect(store.markApplied).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the reducer-commit callback omits an appended op', async () => {
+    const op1 = createOperation('op-1');
+    const op2 = createOperation('op-2');
+    const store = createStore({
+      seqs: [1, 2],
+      writtenOps: [op1, op2],
+      skippedCount: 0,
+    });
+    const applier: OperationApplyPort<Operation<string>> = {
+      applyOperations: vi.fn(async (_ops, options) => {
+        await options?.onReducersCommitted?.([op1]);
+        return { appliedOps: [op1, op2] };
+      }),
+    };
+
+    await expect(
+      applyRemoteOperations({ ops: [op1, op2], store, applier }),
+    ).rejects.toThrow('entire appended batch');
+    expect(store.markApplied).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the reducer-commit callback is invoked twice', async () => {
+    const op = createOperation('op-1');
+    const store = createStore({ seqs: [1], writtenOps: [op], skippedCount: 0 });
+    const applier: OperationApplyPort<Operation<string>> = {
+      applyOperations: vi.fn(async (ops, options) => {
+        await options?.onReducersCommitted?.(ops);
+        await options?.onReducersCommitted?.(ops);
+        return { appliedOps: ops };
+      }),
+    };
+
+    await expect(applyRemoteOperations({ ops: [op], store, applier })).rejects.toThrow(
+      'exactly once',
+    );
+    expect(store.markApplied).not.toHaveBeenCalled();
+  });
 });
 
 const jasmineLikeObjectContainingFunction = (): object =>

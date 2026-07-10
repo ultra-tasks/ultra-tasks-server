@@ -212,6 +212,49 @@ describe('Sync compressed body routes', () => {
     expect(quotaCall[1]).toBeLessThan(payloadSize);
   });
 
+  it('should pass mixed schema versions to per-operation validation', async () => {
+    const clientId = 'mixed-schema-client';
+    const validOp = createOp(clientId);
+    const invalidOp = {
+      ...createOp(clientId),
+      id: 'invalid-schema-op',
+      schemaVersion: 101,
+    };
+    mocks.syncService.uploadOps.mockResolvedValueOnce([
+      { opId: validOp.id, accepted: true, serverSeq: 1 },
+      {
+        opId: invalidOp.id,
+        accepted: false,
+        error: 'Invalid schema version: 101',
+        errorCode: SYNC_ERROR_CODES.INVALID_SCHEMA_VERSION,
+      },
+    ]);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sync/ops',
+      headers: {
+        authorization: `Bearer ${authToken}`,
+        'content-type': 'application/json',
+      },
+      payload: { ops: [validOp, invalidOp], clientId },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().results).toEqual([
+      expect.objectContaining({ opId: validOp.id, accepted: true }),
+      expect.objectContaining({
+        opId: invalidOp.id,
+        accepted: false,
+        errorCode: SYNC_ERROR_CODES.INVALID_SCHEMA_VERSION,
+      }),
+    ]);
+    expect(mocks.syncService.uploadOps).toHaveBeenCalledWith(1, clientId, [
+      validOp,
+      invalidOp,
+    ]);
+  });
+
   it('should subtract exact already-stored duplicate ops from the ops quota gate', async () => {
     const clientId = 'known-duplicate-quota-client';
     const duplicateOp = {

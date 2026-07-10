@@ -4,6 +4,7 @@ import {
   SUPER_SYNC_MAX_OPS_PER_UPLOAD,
   SuperSyncDownloadOpsQuerySchema,
   SuperSyncDownloadOpsResponseSchema,
+  SuperSyncOperationSchema,
   SuperSyncUploadOpsRequestSchema,
   SuperSyncUploadSnapshotRequestSchema,
 } from '../src/supersync-http-contract';
@@ -73,12 +74,18 @@ describe('SuperSync HTTP contract schemas', () => {
   });
 
   it.each([0, 1.5, -1, 101])(
-    'rejects malformed operation schema version %s',
+    'passes operation schema version %s through the upload transport schema',
     (schemaVersion) => {
+      const parsed = SuperSyncUploadOpsRequestSchema.parse({
+        ops: [{ ...createValidOperation(), schemaVersion }],
+        clientId: 'client_1',
+      });
+
+      expect(parsed.ops[0].schemaVersion).toBe(schemaVersion);
       expect(() =>
-        SuperSyncUploadOpsRequestSchema.parse({
-          ops: [{ ...createValidOperation(), schemaVersion }],
-          clientId: 'client_1',
+        SuperSyncOperationSchema.parse({
+          ...createValidOperation(),
+          schemaVersion,
         }),
       ).toThrow();
     },
