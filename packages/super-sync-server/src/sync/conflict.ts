@@ -246,6 +246,10 @@ export const isSameDuplicateOperation = (
     existingOp.opType === op.opType &&
     existingOp.entityType === op.entityType &&
     existingOp.entityId === (op.entityId ?? null) &&
+    // Compare against the same normalization the row was persisted with
+    // (getStoredEntityIds: single-entity sets collapse to []), so a genuine
+    // retry matches while a batch op differing only in entityIds does not.
+    areJsonValuesEqual(existingOp.entityIds, getStoredEntityIds(op)) &&
     payloadsMatch &&
     areJsonValuesEqual(existingOp.vectorClock, storedVectorClock) &&
     existingOp.schemaVersion === op.schemaVersion &&

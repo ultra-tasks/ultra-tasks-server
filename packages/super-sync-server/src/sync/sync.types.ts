@@ -184,6 +184,7 @@ export interface DuplicateOperationCandidate {
   opType: string;
   entityType: string;
   entityId: string | null;
+  entityIds: string[];
   payload: unknown;
   vectorClock: unknown;
   schemaVersion: number;
@@ -207,6 +208,7 @@ export const DUPLICATE_OP_SELECT = {
   opType: true,
   entityType: true,
   entityId: true,
+  entityIds: true,
   payload: true,
   vectorClock: true,
   schemaVersion: true,

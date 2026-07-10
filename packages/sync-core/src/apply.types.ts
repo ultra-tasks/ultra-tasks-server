@@ -12,7 +12,11 @@ export interface ApplyOperationsResult<TOperation extends Operation<string> = Op
 
   /**
    * If an error occurred, this contains the failed operation and the error.
-   * Operations after this one in the batch were NOT applied.
+   * The failed op and the operations after it in the batch did NOT complete
+   * their archive side effects — but their reducer effects DID commit: the
+   * bulk dispatch is all-or-nothing and runs before archive handling, so
+   * archive side effects are the only per-op failure point. Retry paths must
+   * therefore use `skipReducerDispatch` to avoid double-applying reducers.
    */
   failedOp?: {
     op: TOperation;
@@ -27,4 +31,13 @@ export interface ApplyOperationsOptions {
    * local operations during hydration.
    */
   isLocalHydration?: boolean;
+
+  /**
+   * When true, skip the bulk reducer dispatch and run only the post-dispatch
+   * archive side effects. Used to retry operations whose reducer effects
+   * already committed in an earlier batch (see `failedOp`): re-dispatching on
+   * retry would double-apply additive reducers such as time-tracking deltas
+   * and counter increments.
+   */
+  skipReducerDispatch?: boolean;
 }

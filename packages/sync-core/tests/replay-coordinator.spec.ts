@@ -264,6 +264,88 @@ describe('replayOperationBatch', () => {
     ]);
   });
 
+  it('runs only archive side effects when skipReducerDispatch is set (retry path)', async () => {
+    const callOrder: string[] = [];
+    const ops = [createOperation('op-1'), createOperation('op-2')];
+    const dispatcher: ActionDispatchPort<BulkReplayAction> = {
+      dispatch: vi.fn(() => {
+        callOrder.push('dispatchBulk');
+      }),
+    };
+    const archiveSideEffects: ArchiveSideEffectPort<ReplayAction> = {
+      handleOperation: vi.fn(async (action) => {
+        callOrder.push(`archive:${action.opId}`);
+      }),
+    };
+
+    const result = await replayOperationBatch({
+      ops,
+      applyOptions: { skipReducerDispatch: true },
+      dispatcher,
+      createBulkApplyAction: (operations) => ({
+        type: '[Test] Bulk Apply',
+        operations,
+      }),
+      remoteApplyWindow: createRemoteApplyWindow(callOrder),
+      deferredLocalActions: createDeferredLocalActions(callOrder),
+      archiveSideEffects,
+      operationToAction: (op) => ({ type: '[Test] Action', opId: op.id }),
+      yieldToEventLoop: vi.fn(async () => {
+        callOrder.push('yield');
+      }),
+    });
+
+    expect(result).toEqual({ appliedOps: ops });
+    expect(dispatcher.dispatch).not.toHaveBeenCalled();
+    expect(callOrder).toEqual([
+      'startApplyingRemoteOps',
+      'archive:op-1',
+      'archive:op-2',
+      'yield',
+      'startPostSyncCooldown',
+      'endApplyingRemoteOps',
+      'processDeferredActions',
+    ]);
+  });
+
+  it('reports archive failures without re-dispatching when skipReducerDispatch is set', async () => {
+    const op1 = createOperation('op-1');
+    const op2 = createOperation('op-2');
+    const archiveError = new Error('archive failed again');
+    const dispatcher: ActionDispatchPort<BulkReplayAction> = { dispatch: vi.fn() };
+    const archiveSideEffects: ArchiveSideEffectPort<ReplayAction> = {
+      handleOperation: vi.fn(async (action) => {
+        if (action.opId === 'op-2') {
+          throw archiveError;
+        }
+      }),
+    };
+
+    const result = await replayOperationBatch({
+      ops: [op1, op2],
+      applyOptions: { skipReducerDispatch: true },
+      dispatcher,
+      createBulkApplyAction: (operations) => ({
+        type: '[Test] Bulk Apply',
+        operations,
+      }),
+      remoteApplyWindow: createRemoteApplyWindow([]),
+      deferredLocalActions: createDeferredLocalActions([]),
+      archiveSideEffects,
+      operationToAction: (op) => ({ type: '[Test] Action', opId: op.id }),
+      yieldToEventLoop: vi.fn(async () => undefined),
+    });
+
+    expect(dispatcher.dispatch).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      appliedOps: [op1],
+      failedOp: {
+        op: op2,
+        error: archiveError,
+      },
+    });
+  });
+
   it('fails fast when archive side effects are configured without operation conversion', async () => {
     const callOrder: string[] = [];
     const archiveSideEffects: ArchiveSideEffectPort<ReplayAction> = {

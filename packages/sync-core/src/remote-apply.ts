@@ -74,7 +74,9 @@ const emptyRemoteApplyResult = <
  * 3. mark successfully applied seqs;
  * 4. merge applied remote vector clocks;
  * 5. retain only the newest applied full-state ops when configured;
- * 6. mark the failed op and remaining unapplied ops as failed on partial error.
+ * 6. mark the failed op and remaining ops as failed on partial error — their
+ *    reducer effects committed with the bulk dispatch; only their archive side
+ *    effects are outstanding (see ApplyOperationsResult.failedOp).
  */
 export const applyRemoteOperations = async <
   TOperation extends Operation<string> = Operation,

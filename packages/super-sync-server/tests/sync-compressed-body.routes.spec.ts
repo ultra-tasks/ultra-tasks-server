@@ -93,6 +93,7 @@ const createStoredDuplicateOp = (op: ReturnType<typeof createOp>) => ({
   opType: op.opType,
   entityType: op.entityType,
   entityId: op.entityId,
+  entityIds: [],
   payload: op.payload,
   vectorClock: op.vectorClock,
   schemaVersion: op.schemaVersion,

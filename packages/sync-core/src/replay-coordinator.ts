@@ -71,7 +71,9 @@ export const yieldToEventLoop = (): Promise<void> =>
  * package. This coordinator only owns the generic ordering:
  *
  * 1. open the remote-apply window;
- * 2. dispatch the host's bulk replay action;
+ * 2. dispatch the host's bulk replay action (skipped when the caller marks
+ *    reducers as already committed via `skipReducerDispatch` — retry paths
+ *    must not double-apply additive reducers);
  * 3. yield once so host state reducers finish before side effects;
  * 4. run remote archive side effects after dispatch, when configured;
  * 5. start post-sync cooldown before closing the remote-apply window;
@@ -103,6 +105,7 @@ export const replayOperationBatch = async <
   }
 
   const isLocalHydration = applyOptions.isLocalHydration ?? false;
+  const skipReducerDispatch = applyOptions.skipReducerDispatch ?? false;
 
   if (!isLocalHydration && archiveSideEffects !== undefined && !operationToAction) {
     throw new Error(
@@ -112,8 +115,10 @@ export const replayOperationBatch = async <
 
   remoteApplyWindow.startApplyingRemoteOps();
   try {
-    dispatcher.dispatch(createBulkApplyAction(ops));
-    await waitForEventLoop();
+    if (!skipReducerDispatch) {
+      dispatcher.dispatch(createBulkApplyAction(ops));
+      await waitForEventLoop();
+    }
 
     if (!isLocalHydration && archiveSideEffects !== undefined && operationToAction) {
       const archiveResult = await processArchiveSideEffects({
