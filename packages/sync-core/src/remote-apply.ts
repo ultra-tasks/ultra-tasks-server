@@ -74,7 +74,8 @@ const emptyRemoteApplyResult = <
  * 2. apply only the newly appended ops through the host applier;
  * 3. mark successfully applied seqs;
  * 4. merge applied remote vector clocks;
- * 5. retain only the newest applied full-state ops when configured;
+ * 5. after applying a full-state op, clear older full-state ops while
+ *    retaining every full-state op of this batch (incl. archive_pending);
  * 6. mark the failed op and remaining ops as failed on partial error — their
  *    reducer effects committed with the bulk dispatch; only their archive side
  *    effects are outstanding (see ApplyOperationsResult.failedOp).
@@ -145,8 +146,16 @@ export const applyRemoteOperations = async <
       .map((op) => op.id);
 
     if (appliedFullStateOpIds.length > 0) {
-      clearedFullStateOpCount =
-        await store.clearFullStateOpsExcept(appliedFullStateOpIds);
+      // Exclude every full-state op of THIS batch, not only the applied ones:
+      // a later full-state op whose reducers committed but whose archive
+      // handling failed is still archive_pending/failed and must survive
+      // cleanup so the retry path can finish it. Deleting it here would let
+      // markFailed miss it and lose a change already visible at runtime on
+      // the next startup replay.
+      const batchFullStateOpIds = appendResult.writtenOps
+        .filter(isFullStateOperation)
+        .map((op) => op.id);
+      clearedFullStateOpCount = await store.clearFullStateOpsExcept(batchFullStateOpIds);
     }
   }
 

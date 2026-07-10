@@ -810,7 +810,7 @@ describe('Sync compressed body routes', () => {
     expect(mocks.syncService.checkSnapshotRequestDedup).toHaveBeenCalledWith(
       1,
       'snapshot-v1-retry',
-      expect.any(String),
+      expect.any(Function),
     );
     expect(mocks.syncService.checkOpsRequestDedup).not.toHaveBeenCalled();
     expect(mocks.prisma.operation.findFirst).not.toHaveBeenCalled();

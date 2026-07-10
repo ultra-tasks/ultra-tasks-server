@@ -303,6 +303,9 @@ describe('Sync System Fixes', () => {
       const clientA = 'client-a';
       const clientB = 'client-b';
       const requestId = 'req-123';
+      // A true retry resends the IDENTICAL body — the request fingerprint
+      // treats a same-requestId/different-body request as a cache miss.
+      const opA = createOp(clientA, { entityId: 'task-a' });
 
       // Step 1: Client A uploads with requestId
       const firstResponse = await app.inject({
@@ -310,7 +313,7 @@ describe('Sync System Fixes', () => {
         url: '/api/sync/ops',
         headers: { authorization: `Bearer ${authToken}` },
         payload: {
-          ops: [createOp(clientA, { entityId: 'task-a' })],
+          ops: [opA],
           clientId: clientA,
           lastKnownServerSeq: 0,
           requestId,
@@ -339,7 +342,7 @@ describe('Sync System Fixes', () => {
         url: '/api/sync/ops',
         headers: { authorization: `Bearer ${authToken}` },
         payload: {
-          ops: [createOp(clientA, { entityId: 'task-a' })],
+          ops: [opA],
           clientId: clientA,
           lastKnownServerSeq: clientASeq,
           requestId,
@@ -366,6 +369,7 @@ describe('Sync System Fixes', () => {
       const clientA = 'client-a';
       const clientB = 'client-b';
       const requestId = 'req-456';
+      const opA = createOp(clientA, { entityId: 'task-1' });
 
       // Client A uploads
       await app.inject({
@@ -373,7 +377,7 @@ describe('Sync System Fixes', () => {
         url: '/api/sync/ops',
         headers: { authorization: `Bearer ${authToken}` },
         payload: {
-          ops: [createOp(clientA, { entityId: 'task-1' })],
+          ops: [opA],
           clientId: clientA,
           lastKnownServerSeq: 0,
           requestId,
@@ -397,7 +401,7 @@ describe('Sync System Fixes', () => {
         url: '/api/sync/ops',
         headers: { authorization: `Bearer ${authToken}` },
         payload: {
-          ops: [createOp(clientA, { entityId: 'task-1' })],
+          ops: [opA],
           clientId: clientA,
           lastKnownServerSeq: 0,
           requestId,
@@ -488,6 +492,7 @@ describe('Sync System Fixes', () => {
     it('should return cached results even when quota would be exceeded on retry', async () => {
       const clientId = uuidv7();
       const requestId = uuidv7();
+      const op = createOp(clientId, { entityId: 'task-1' });
 
       // First request with requestId
       const firstResponse = await app.inject({
@@ -495,7 +500,7 @@ describe('Sync System Fixes', () => {
         url: '/api/sync/ops',
         headers: { authorization: `Bearer ${authToken}` },
         payload: {
-          ops: [createOp(clientId, { entityId: 'task-1' })],
+          ops: [op],
           clientId,
           lastKnownServerSeq: 0,
           requestId,
@@ -513,7 +518,7 @@ describe('Sync System Fixes', () => {
         url: '/api/sync/ops',
         headers: { authorization: `Bearer ${authToken}` },
         payload: {
-          ops: [createOp(clientId, { entityId: 'task-1' })],
+          ops: [op],
           clientId,
           lastKnownServerSeq: 0,
           requestId,

@@ -63,13 +63,19 @@ export class RequestDeduplicationService {
 
   /**
    * Check if a request has already been processed for this user + namespace.
-   * @returns Cached results if found and not expired, null otherwise.
+   *
+   * @param getFingerprint lazy fingerprint supplier — hashing the full request
+   *   body is expensive (stable stringify + SHA-256 over up to multi-MB
+   *   payloads), so it must only run when an entry for this requestId actually
+   *   exists (genuine retries are rare) and never for first-time requests.
+   * @returns Cached results if found, not expired, and fingerprint-matching;
+   *   null otherwise.
    */
   checkDeduplication<N extends RequestDedupNamespace>(
     userId: number,
     namespace: N,
     requestId: string,
-    fingerprint?: string,
+    getFingerprint?: () => string,
   ): DedupPayload<N> | null {
     const key = this._key(userId, namespace, requestId);
     const entry = this.cache.get(key);
@@ -80,7 +86,14 @@ export class RequestDeduplicationService {
     }
     // Defensive: keying already isolates namespaces, but verify before casting.
     if (entry.namespace !== namespace) return null;
-    if (fingerprint !== undefined && entry.fingerprint !== fingerprint) return null;
+    if (getFingerprint !== undefined) {
+      // A pre-fingerprint (legacy) entry cannot prove body equality — treat as
+      // a miss so the request is re-processed (safe: the server dedups ops by
+      // id anyway).
+      if (entry.fingerprint === undefined || entry.fingerprint !== getFingerprint()) {
+        return null;
+      }
+    }
     return entry.results as DedupPayload<N>;
   }
 

@@ -457,13 +457,13 @@ export class SyncService {
   checkOpsRequestDedup(
     userId: number,
     requestId: string,
-    fingerprint?: string,
+    getFingerprint?: () => string,
   ): UploadResult[] | null {
     return this.requestDeduplicationService.checkDeduplication(
       userId,
       'ops',
       requestId,
-      fingerprint,
+      getFingerprint,
     );
   }
 
@@ -485,13 +485,13 @@ export class SyncService {
   checkSnapshotRequestDedup(
     userId: number,
     requestId: string,
-    fingerprint?: string,
+    getFingerprint?: () => string,
   ): SnapshotDedupResponse | null {
     return this.requestDeduplicationService.checkDeduplication(
       userId,
       'snapshot',
       requestId,
-      fingerprint,
+      getFingerprint,
     );
   }
 

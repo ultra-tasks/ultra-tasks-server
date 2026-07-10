@@ -1,9 +1,5 @@
 // Schema version constants
-export {
-  CURRENT_SCHEMA_VERSION,
-  MIN_SUPPORTED_SCHEMA_VERSION,
-  MAX_VERSION_SKIP,
-} from './schema-version';
+export { CURRENT_SCHEMA_VERSION, MIN_SUPPORTED_SCHEMA_VERSION } from './schema-version';
 
 // Types
 export type {

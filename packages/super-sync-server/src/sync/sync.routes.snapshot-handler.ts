@@ -100,26 +100,31 @@ export const uploadSnapshotHandler = async (
       requestId,
     } = snapshotRequest;
     const syncService = getSyncService();
-    const requestFingerprint = requestId
-      ? createSnapshotRequestFingerprint({
-          state,
-          clientId,
-          reason,
-          vectorClock,
-          schemaVersion,
-          isPayloadEncrypted,
-          syncImportReason,
-          opId,
-          isCleanSlate,
-          snapshotOpType,
-        })
-      : undefined;
+    // Lazy + memoized: fingerprinting stable-stringifies + SHA-256-hashes the
+    // full (possibly multi-MB plaintext) snapshot state. It must not run
+    // before the pre-quota gate below, and first-time requests never need it —
+    // the dedup check only invokes it when an entry for this requestId exists
+    // (a genuine retry).
+    let memoizedFingerprint: string | undefined;
+    const getRequestFingerprint = (): string =>
+      (memoizedFingerprint ??= createSnapshotRequestFingerprint({
+        state,
+        clientId,
+        reason,
+        vectorClock,
+        schemaVersion,
+        isPayloadEncrypted,
+        syncImportReason,
+        opId,
+        isCleanSlate,
+        snapshotOpType,
+      }));
 
     if (requestId) {
       const cachedResponse = syncService.checkSnapshotRequestDedup(
         userId,
         requestId,
-        requestFingerprint,
+        getRequestFingerprint,
       );
       if (cachedResponse) {
         Logger.info(
@@ -154,6 +159,13 @@ export const uploadSnapshotHandler = async (
           });
         }
       }
+    }
+
+    // Pin the fingerprint BEFORE processing mutates anything, but AFTER the
+    // pre-quota gate above so quota-exhausted clients cannot burn CPU on the
+    // full-state hash.
+    if (requestId) {
+      getRequestFingerprint();
     }
 
     // Reject duplicate SYNC_IMPORT before we acquire the per-user lock — a
@@ -363,7 +375,7 @@ export const uploadSnapshotHandler = async (
         userId,
         requestId,
         responseBody,
-        requestFingerprint,
+        getRequestFingerprint(),
       );
     }
 

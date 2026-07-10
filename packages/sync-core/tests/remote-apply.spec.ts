@@ -112,6 +112,38 @@ describe('applyRemoteOperations', () => {
     expect(result.clearedFullStateOpCount).toBe(3);
   });
 
+  it('cleanup preserves a batch full-state op whose archive handling failed (archive_pending)', async () => {
+    // Both imports reducer-committed; the LATER one failed only its archive
+    // side effects. Cleanup keyed on the applied one must not delete the
+    // archive_pending entry, or markFailed misses it and the change is lost
+    // from the next startup replay.
+    const appliedImport = createOperation('sync-import-1', 'SYNC_IMPORT');
+    const failedImport = createOperation('sync-import-2', 'SYNC_IMPORT');
+    const error = new Error('archive failure');
+    const store = createStore({
+      seqs: [1, 2],
+      writtenOps: [appliedImport, failedImport],
+      skippedCount: 0,
+    });
+    const applier = createApplier({
+      appliedOps: [appliedImport],
+      failedOp: { op: failedImport, error },
+    });
+
+    await applyRemoteOperations({
+      ops: [appliedImport, failedImport],
+      store,
+      applier,
+      isFullStateOperation: (op) => op.opType === 'SYNC_IMPORT',
+    });
+
+    expect(store.clearFullStateOpsExcept).toHaveBeenCalledWith([
+      'sync-import-1',
+      'sync-import-2',
+    ]);
+    expect(store.markFailed).toHaveBeenCalledWith(['sync-import-2']);
+  });
+
   it('checkpoints the whole reducer batch but charges only the attempted archive failure', async () => {
     const op1 = createOperation('op-1');
     const op2 = createOperation('op-2');

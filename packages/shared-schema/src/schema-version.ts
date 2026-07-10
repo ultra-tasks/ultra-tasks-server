@@ -10,9 +10,6 @@ export const CURRENT_SCHEMA_VERSION = 2;
  */
 export const MIN_SUPPORTED_SCHEMA_VERSION = 1;
 
-/**
- * Maximum version difference we tolerate before forcing an app update.
- * If remote data is more than MAX_VERSION_SKIP versions ahead,
- * the user must update their app.
- */
-export const MAX_VERSION_SKIP = 3;
+// NOTE: there is deliberately NO forward-compat band: any op from a NEWER
+// schema version is blocked outright (the client cannot know how to interpret
+// it), and the user is prompted to update the app.

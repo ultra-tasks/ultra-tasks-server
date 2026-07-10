@@ -87,9 +87,15 @@ export const uploadOpsHandler = async (
     }
 
     const { ops, clientId, lastKnownServerSeq, requestId } = parseResult.data;
-    const requestFingerprint = requestId
-      ? createOpsRequestFingerprint(clientId, ops as unknown as Operation[])
-      : undefined;
+    // Lazy + memoized: hashing the full ops payload is expensive and must not
+    // run before the rate-limit gate below, nor on first-time requests — the
+    // dedup check only invokes it when an entry for this requestId exists.
+    let memoizedFingerprint: string | undefined;
+    const getRequestFingerprint = (): string =>
+      (memoizedFingerprint ??= createOpsRequestFingerprint(
+        clientId,
+        ops as unknown as Operation[],
+      ));
     const syncService = getSyncService();
 
     Logger.info(
@@ -119,7 +125,7 @@ export const uploadOpsHandler = async (
       const cachedResults = syncService.checkOpsRequestDedup(
         userId,
         requestId,
-        requestFingerprint,
+        getRequestFingerprint,
       );
       if (cachedResults) {
         Logger.info(`[user:${userId}] Returning cached results for request ${requestId}`);
@@ -168,6 +174,14 @@ export const uploadOpsHandler = async (
           ...(hasMorePiggyback ? { hasMorePiggyback: true } : {}),
         } as UploadOpsResponse & { deduplicated: boolean });
       }
+    }
+
+    // Pin the fingerprint BEFORE processing: uploadOps mutates the parsed ops
+    // (e.g. vector-clock pruning), so hashing after it would never match the
+    // retry's pre-processing hash. Still after the rate-limit gate above, so a
+    // rate-limited client cannot burn CPU on it.
+    if (requestId) {
+      getRequestFingerprint();
     }
 
     const results = await syncService.runWithStorageUsageLock<UploadResult[] | null>(
@@ -222,7 +236,12 @@ export const uploadOpsHandler = async (
       requestId &&
       !results.some((r) => r.errorCode === SYNC_ERROR_CODES.INTERNAL_ERROR)
     ) {
-      syncService.cacheOpsRequestResults(userId, requestId, results, requestFingerprint);
+      syncService.cacheOpsRequestResults(
+        userId,
+        requestId,
+        results,
+        getRequestFingerprint(),
+      );
     }
 
     const accepted = results.filter((r) => r.accepted).length;
