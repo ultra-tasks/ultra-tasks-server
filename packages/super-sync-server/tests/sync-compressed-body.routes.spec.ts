@@ -252,10 +252,13 @@ describe('Sync compressed body routes', () => {
         errorCode: SYNC_ERROR_CODES.INVALID_SCHEMA_VERSION,
       }),
     ]);
-    expect(mocks.syncService.uploadOps).toHaveBeenCalledWith(1, clientId, [
-      validOp,
-      invalidOp,
-    ]);
+    expect(mocks.syncService.uploadOps).toHaveBeenCalledWith(
+      1,
+      clientId,
+      [validOp, invalidOp],
+      undefined,
+      new Set(),
+    );
   });
 
   it('should not let an invalid large sibling poison a near-quota upload', async () => {
@@ -314,10 +317,13 @@ describe('Sync compressed body routes', () => {
       clientId,
     );
     expect(mocks.syncService.checkStorageQuota).toHaveBeenCalledWith(1, validBytes);
-    expect(mocks.syncService.uploadOps).toHaveBeenCalledWith(1, clientId, [
-      validOp,
-      invalidLargeOp,
-    ]);
+    expect(mocks.syncService.uploadOps).toHaveBeenCalledWith(
+      1,
+      clientId,
+      [validOp, invalidLargeOp],
+      undefined,
+      new Set(),
+    );
   });
 
   it('should subtract exact already-stored duplicate ops from the ops quota gate', async () => {
@@ -366,10 +372,13 @@ describe('Sync compressed body routes', () => {
       1,
       computeOpStorageBytes(newOp).bytes,
     );
-    expect(mocks.syncService.uploadOps).toHaveBeenCalledWith(1, clientId, [
-      duplicateOp,
-      newOp,
-    ]);
+    expect(mocks.syncService.uploadOps).toHaveBeenCalledWith(
+      1,
+      clientId,
+      [duplicateOp, newOp],
+      undefined,
+      new Set([duplicateOp.id]),
+    );
   });
 
   it('should not charge same-id different-content ops in the quota gate', async () => {
@@ -409,6 +418,17 @@ describe('Sync compressed body routes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(mocks.syncService.checkStorageQuota).toHaveBeenCalledWith(1, 0);
+    expect(mocks.prisma.operation.findMany).toHaveBeenCalledWith({
+      where: { id: { in: [incomingOp.id] } },
+      select: { id: true },
+    });
+    expect(mocks.syncService.uploadOps).toHaveBeenCalledWith(
+      1,
+      clientId,
+      [incomingOp],
+      undefined,
+      new Set([incomingOp.id]),
+    );
   });
 
   it('should charge only the first occurrence of a repeated new ID', async () => {

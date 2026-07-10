@@ -129,6 +129,7 @@ export class SyncService {
     clientId: string,
     ops: Operation[],
     isCleanSlate?: boolean,
+    requestStartOccupiedIds?: ReadonlySet<string>,
   ): Promise<UploadResult[]> {
     const results: UploadResult[] = [];
     const now = Date.now();
@@ -199,6 +200,7 @@ export class SyncService {
               now,
               tx,
               prevalidatedResults,
+              requestStartOccupiedIds,
             );
             results.push(...batchResult.results);
             acceptedDeltaBytes = batchResult.acceptedDeltaBytes;
@@ -225,6 +227,7 @@ export class SyncService {
                   now,
                   tx,
                   prevalidatedResults.get(op),
+                  requestStartOccupiedIds?.has(op.id),
                 );
               results.push(result);
               if (result.accepted) {

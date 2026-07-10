@@ -190,6 +190,7 @@ export class OperationUploadService {
     now: number,
     tx: Prisma.TransactionClient,
     prevalidatedResults?: ReadonlyMap<Operation, ValidationResult>,
+    requestStartOccupiedIds?: ReadonlySet<string>,
   ): Promise<{
     results: UploadResult[];
     acceptedDeltaBytes: number;
@@ -235,6 +236,7 @@ export class OperationUploadService {
       uniqueCandidates,
       tx,
       results,
+      requestStartOccupiedIds,
     );
     dbRoundtrips += classified.dbRoundtrips;
     const duplicateFreeCandidates = classified.duplicateFreeCandidates;
@@ -363,10 +365,12 @@ export class OperationUploadService {
   }
 
   /**
-   * Stage 3: prefetch any already-persisted ops sharing an incoming id (one
+   * Stage 3: prefetch any currently persisted ops sharing an incoming id (one
    * query) and classify each as an idempotent retry (DUPLICATE_OPERATION) or
-   * an id collision with different content (INVALID_OP_ID). Survivors are
-   * returned for conflict detection.
+   * an id collision with different content (INVALID_OP_ID). If quota cleanup
+   * removed a row after the route's occupancy check, the request-start set
+   * still rejects that ID rather than letting it consume unestimated storage.
+   * Survivors are returned for conflict detection.
    */
   private async classifyExistingDuplicates(
     userId: number,
@@ -374,6 +378,7 @@ export class OperationUploadService {
     uniqueCandidates: BatchUploadCandidate[],
     tx: Prisma.TransactionClient,
     results: UploadResult[],
+    requestStartOccupiedIds?: ReadonlySet<string>,
   ): Promise<{
     duplicateFreeCandidates: BatchUploadCandidate[];
     dbRoundtrips: number;
@@ -390,6 +395,16 @@ export class OperationUploadService {
     for (const candidate of uniqueCandidates) {
       const existingOp = existingOpById.get(candidate.op.id);
       if (!existingOp) {
+        if (requestStartOccupiedIds?.has(candidate.op.id)) {
+          results[candidate.resultIndex] = this.rejectedUploadResult(
+            userId,
+            clientId,
+            candidate.op,
+            'Operation ID was already occupied before quota enforcement',
+            SYNC_ERROR_CODES.INVALID_OP_ID,
+          );
+          continue;
+        }
         duplicateFreeCandidates.push(candidate);
         continue;
       }
@@ -618,6 +633,7 @@ export class OperationUploadService {
     now: number,
     tx: Prisma.TransactionClient,
     prevalidatedResult?: ValidationResult,
+    wasOccupiedAtRequestStart?: boolean,
   ): Promise<ProcessOperationResult> {
     // Rejected ops have no storage cost; the caller only reads storageBytes when
     // result.accepted is true.
@@ -716,6 +732,18 @@ export class OperationUploadService {
         error: 'Duplicate operation ID',
         errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
       });
+    }
+
+    if (wasOccupiedAtRequestStart) {
+      return reject(
+        this.rejectedUploadResult(
+          userId,
+          clientId,
+          op,
+          'Operation ID was already occupied before quota enforcement',
+          SYNC_ERROR_CODES.INVALID_OP_ID,
+        ),
+      );
     }
 
     // Check for conflicts with existing operations

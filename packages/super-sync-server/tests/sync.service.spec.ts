@@ -733,6 +733,38 @@ describe('SyncService', () => {
       expect(testState.operations.size).toBe(25);
     });
 
+    it.each([
+      ['legacy serial', false],
+      ['batch', true],
+    ])(
+      'rejects a request-start occupied ID in the %s path after its row disappears',
+      async (_label, batchUpload) => {
+        const service = new SyncService({ batchUpload });
+        const op = makeOp({
+          id: 'occupied-before-quota-cleanup',
+          entityId: 'new-entity-after-cleanup',
+          payload: { title: 'Must not consume unestimated storage' },
+        });
+
+        const results = await service.uploadOps(
+          userId,
+          clientId,
+          [op],
+          undefined,
+          new Set([op.id]),
+        );
+
+        expect(results).toEqual([
+          expect.objectContaining({
+            opId: op.id,
+            accepted: false,
+            errorCode: SYNC_ERROR_CODES.INVALID_OP_ID,
+          }),
+        ]);
+        expect(testState.operations.has(op.id)).toBe(false);
+      },
+    );
+
     it('rejects an intra-batch same-id collision as INVALID_OP_ID', async () => {
       const service = new SyncService({ batchUpload: true });
       const opId = uuidv7();

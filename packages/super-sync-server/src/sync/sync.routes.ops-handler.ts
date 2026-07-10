@@ -190,18 +190,22 @@ export const uploadOpsHandler = async (
         // Check storage quota before processing (after dedup to allow retries).
         // Account using the same per-op payload+vectorClock measure that the
         // post-accept counter increment uses, so the gate and the increment
-        // cannot disagree on what "size" means. Already-stored exact
-        // duplicates are rejected by uploadOps and never written, so don't make
-        // quota cleanup reserve space for them.
+        // cannot disagree on what "size" means. Already-occupied IDs are
+        // rejected by uploadOps and never written, so don't make quota cleanup
+        // reserve space for them. Carry the occupied-ID snapshot through upload
+        // so cleanup cannot make one of those IDs insertable mid-request.
         const typedOpsForGate = ops as unknown as Operation[];
         const validOpsForQuota = syncService.filterValidOpsForQuota(
           typedOpsForGate,
           clientId,
         );
-        const { bytes: estimatedDelta, fallback: gateFallback } =
-          await computeOpsStorageBytesExcludingUnstorableIds(validOpsForQuota, (op) =>
-            syncService.getPrevalidatedPayloadBytes(op),
-          );
+        const {
+          bytes: estimatedDelta,
+          fallback: gateFallback,
+          requestStartOccupiedIds,
+        } = await computeOpsStorageBytesExcludingUnstorableIds(validOpsForQuota, (op) =>
+          syncService.getPrevalidatedPayloadBytes(op),
+        );
         if (gateFallback > 0) {
           Logger.warn(
             `computeOpsStorageBytes: ${gateFallback}/${validOpsForQuota.length} unserializable op(s) ` +
@@ -220,6 +224,8 @@ export const uploadOpsHandler = async (
           userId,
           clientId,
           ops as unknown as Operation[],
+          undefined,
+          requestStartOccupiedIds,
         );
 
         return uploadResults;
