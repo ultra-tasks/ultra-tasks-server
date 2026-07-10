@@ -28,6 +28,24 @@ export interface OperationApplyPort<TOperation extends Operation<string> = Opera
 }
 
 /**
+ * Operation applier contract for crash-safe remote application.
+ *
+ * Unlike the general-purpose {@link OperationApplyPort}, remote application
+ * requires the reducer-commit callback: the coordinator must durably checkpoint
+ * the whole reducer batch before archive side effects can begin.
+ */
+export interface ReducerCommitAwareOperationApplyPort<
+  TOperation extends Operation<string> = Operation,
+> {
+  applyOperations(
+    ops: TOperation[],
+    options: ApplyOperationsOptions & {
+      onReducersCommitted: (ops: TOperation[]) => Promise<void>;
+    },
+  ): Promise<ApplyOperationsResult<TOperation>>;
+}
+
+/**
  * Port for dispatching host actions.
  *
  * Implementations must preserve action objects, especially host `meta`, exactly.

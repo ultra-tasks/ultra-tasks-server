@@ -1,6 +1,6 @@
 import type { ApplyOperationsResult } from './apply.types';
 import type { Operation } from './operation.types';
-import type { OperationApplyPort } from './ports';
+import type { ReducerCommitAwareOperationApplyPort } from './ports';
 
 export interface RemoteOperationAppendResult<
   TOperation extends Operation<string> = Operation,
@@ -36,7 +36,7 @@ export interface ApplyRemoteOperationsOptions<
 > {
   ops: TOperation[];
   store: RemoteOperationApplyStorePort<TOperation>;
-  applier: OperationApplyPort<TOperation>;
+  applier: ReducerCommitAwareOperationApplyPort<TOperation>;
   isFullStateOperation?: (op: TOperation) => boolean;
 }
 
@@ -71,14 +71,14 @@ const emptyRemoteApplyResult = <
  * the generic ordering:
  *
  * 1. append incoming remote ops as pending, skipping duplicates atomically;
- * 2. apply only the newly appended ops through the host applier;
- * 3. mark successfully applied seqs;
- * 4. merge applied remote vector clocks;
+ * 2. bulk-apply only the newly appended ops through the host applier;
+ * 3. at reducer commit, mark the whole batch archive_pending and merge all
+ *    reducer-committed vector clocks before archive side effects begin;
+ * 4. mark archive-complete seqs applied;
  * 5. after applying a full-state op, clear older full-state ops while
  *    retaining every full-state op of this batch (incl. archive_pending);
- * 6. mark the failed op and remaining ops as failed on partial error — their
- *    reducer effects committed with the bulk dispatch; only their archive side
- *    effects are outstanding (see ApplyOperationsResult.failedOp).
+ * 6. mark only the attempted archive failure as failed; unattempted successors
+ *    remain archive_pending for ordered startup recovery.
  */
 export const applyRemoteOperations = async <
   TOperation extends Operation<string> = Operation,
@@ -114,48 +114,62 @@ export const applyRemoteOperations = async <
   });
 
   let reducerCommitCallbackCount = 0;
+  let reducerCommitCallbackError: Error | undefined;
   let reducerCommitPromise: Promise<void> | undefined;
-  const applyResult = await applier.applyOperations(appendResult.writtenOps, {
-    onReducersCommitted: (reducerCommittedOps) => {
-      reducerCommitCallbackCount++;
-      if (reducerCommitCallbackCount !== 1) {
-        reducerCommitPromise = Promise.reject(
-          new Error(
+  let applyResult: ApplyOperationsResult<TOperation>;
+  try {
+    applyResult = await applier.applyOperations(appendResult.writtenOps, {
+      onReducersCommitted: (reducerCommittedOps) => {
+        reducerCommitCallbackCount++;
+        if (reducerCommitCallbackCount !== 1) {
+          reducerCommitCallbackError = new Error(
             'applyRemoteOperations: reducer-commit callback must be invoked exactly once.',
-          ),
-        );
-        return reducerCommitPromise;
-      }
-
-      const isEntireAppendedBatch =
-        reducerCommittedOps.length === appendResult.writtenOps.length &&
-        reducerCommittedOps.every(
-          (op, index) => op.id === appendResult.writtenOps[index]?.id,
-        );
-      if (!isEntireAppendedBatch) {
-        reducerCommitPromise = Promise.reject(
-          new Error(
-            'applyRemoteOperations: reducer-commit callback must contain the entire appended batch in order.',
-          ),
-        );
-        return reducerCommitPromise;
-      }
-
-      reducerCommitPromise = (async () => {
-        const reducerCommittedSeqs = reducerCommittedOps
-          .map((op) => opIdToSeq.get(op.id))
-          .filter((seq): seq is number => seq !== undefined);
-        if (reducerCommittedSeqs.length !== reducerCommittedOps.length) {
-          throw new Error(
-            'applyRemoteOperations: reducer commit contained an operation outside the appended batch.',
           );
+          throw reducerCommitCallbackError;
         }
-        await store.markArchivePending(reducerCommittedSeqs);
-        await store.mergeRemoteOpClocks(reducerCommittedOps);
-      })();
-      return reducerCommitPromise;
-    },
-  });
+
+        const isEntireAppendedBatch =
+          reducerCommittedOps.length === appendResult.writtenOps.length &&
+          reducerCommittedOps.every(
+            (op, index) => op.id === appendResult.writtenOps[index]?.id,
+          );
+        if (!isEntireAppendedBatch) {
+          reducerCommitCallbackError = new Error(
+            'applyRemoteOperations: reducer-commit callback must contain the entire appended batch in order.',
+          );
+          throw reducerCommitCallbackError;
+        }
+
+        reducerCommitPromise = (async () => {
+          const reducerCommittedSeqs = appendResult.writtenOps
+            .map((op) => opIdToSeq.get(op.id))
+            .filter((seq): seq is number => seq !== undefined);
+          if (reducerCommittedSeqs.length !== appendResult.writtenOps.length) {
+            throw new Error(
+              'applyRemoteOperations: reducer commit contained an operation outside the appended batch.',
+            );
+          }
+          await store.markArchivePending(reducerCommittedSeqs);
+          await store.mergeRemoteOpClocks(appendResult.writtenOps);
+        })();
+        return reducerCommitPromise;
+      },
+    });
+  } catch (applyError) {
+    // A valid first callback may already have started durable bookkeeping before
+    // a duplicate callback (or another applier error) throws. Observe that
+    // promise before propagating so it cannot become an unhandled rejection.
+    if (reducerCommitPromise) {
+      await reducerCommitPromise;
+    }
+    throw applyError;
+  }
+  if (reducerCommitCallbackError) {
+    if (reducerCommitPromise) {
+      await reducerCommitPromise;
+    }
+    throw reducerCommitCallbackError;
+  }
   if (reducerCommitCallbackCount !== 1 || reducerCommitPromise === undefined) {
     throw new Error(
       'applyRemoteOperations: applier did not invoke the reducer-commit callback.',
@@ -165,12 +179,40 @@ export const applyRemoteOperations = async <
   // awaiting its returned promise. Pending ops must never be marked applied
   // before the reducer/archive checkpoint is durable.
   await reducerCommitPromise;
-  if (applyResult.failedOp && !opIdToSeq.has(applyResult.failedOp.op.id)) {
+
+  const appliedOpCount = applyResult.appliedOps.length;
+  const hasExactAppliedPrefix =
+    appliedOpCount <= appendResult.writtenOps.length &&
+    applyResult.appliedOps.every(
+      (op, index) => op.id === appendResult.writtenOps[index]?.id,
+    );
+  if (!hasExactAppliedPrefix) {
     throw new Error(
-      `applyRemoteOperations: applier reported unknown failed op ${applyResult.failedOp.op.id}.`,
+      'applyRemoteOperations: applied operations must be the exact ordered prefix of the appended batch.',
     );
   }
-  const appliedSeqs = applyResult.appliedOps
+
+  const expectedFailedOp = appendResult.writtenOps[appliedOpCount];
+  if (
+    (applyResult.failedOp && applyResult.failedOp.op.id !== expectedFailedOp?.id) ||
+    (!applyResult.failedOp && expectedFailedOp !== undefined)
+  ) {
+    const reportedFailedOpId = applyResult.failedOp?.op.id ?? 'none';
+    const expectedFailedOpId = expectedFailedOp?.id ?? 'none';
+    throw new Error(
+      'applyRemoteOperations: applier must report the failed operation immediately after the applied prefix. ' +
+        `Reported ${reportedFailedOpId}; expected ${expectedFailedOpId}.`,
+    );
+  }
+
+  const authoritativeAppliedOps = appendResult.writtenOps.slice(0, appliedOpCount);
+  const authoritativeFailedOp = applyResult.failedOp
+    ? {
+        op: expectedFailedOp!,
+        error: applyResult.failedOp.error,
+      }
+    : undefined;
+  const appliedSeqs = authoritativeAppliedOps
     .map((op) => opIdToSeq.get(op.id))
     .filter((seq): seq is number => seq !== undefined);
 
@@ -179,7 +221,7 @@ export const applyRemoteOperations = async <
   if (appliedSeqs.length > 0) {
     await store.markApplied(appliedSeqs);
 
-    const appliedFullStateOpIds = applyResult.appliedOps
+    const appliedFullStateOpIds = authoritativeAppliedOps
       .filter(isFullStateOperation)
       .map((op) => op.id);
 
@@ -197,7 +239,7 @@ export const applyRemoteOperations = async <
     }
   }
 
-  const failedOpIds = applyResult.failedOp ? [applyResult.failedOp.op.id] : [];
+  const failedOpIds = authoritativeFailedOp ? [authoritativeFailedOp.op.id] : [];
 
   if (failedOpIds.length > 0) {
     await store.markFailed(failedOpIds);
@@ -206,10 +248,10 @@ export const applyRemoteOperations = async <
   return {
     appendedOps: appendResult.writtenOps,
     skippedCount: appendResult.skippedCount,
-    appliedOps: applyResult.appliedOps,
+    appliedOps: authoritativeAppliedOps,
     appliedSeqs,
     clearedFullStateOpCount,
-    failedOp: applyResult.failedOp,
+    failedOp: authoritativeFailedOp,
     failedOpIds,
   };
 };

@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { applyRemoteOperations } from '../src/remote-apply';
 import type { RemoteOperationApplyStorePort } from '../src/remote-apply';
-import type { Operation, OperationApplyPort } from '../src';
+import type {
+  Operation,
+  OperationApplyPort,
+  ReducerCommitAwareOperationApplyPort,
+} from '../src';
 
 const createOperation = (id: string, opType = 'UPD'): Operation<string> => ({
   id,
@@ -31,7 +35,7 @@ const createStore = (appendResult: {
 
 const createApplier = (
   result: Awaited<ReturnType<OperationApplyPort<Operation<string>>['applyOperations']>>,
-): OperationApplyPort<Operation<string>> => ({
+): ReducerCommitAwareOperationApplyPort<Operation<string>> => ({
   applyOperations: vi.fn(async (ops, options) => {
     await options?.onReducersCommitted?.(ops);
     return result;
@@ -237,6 +241,145 @@ describe('applyRemoteOperations', () => {
       'exactly once',
     );
     expect(store.markApplied).not.toHaveBeenCalled();
+  });
+
+  it('uses authoritative written operations for clocks, cleanup, and results', async () => {
+    const writtenImport = createOperation('sync-import-1', 'SYNC_IMPORT');
+    writtenImport.vectorClock = { authoritative: 7 };
+    const callbackClone = {
+      ...writtenImport,
+      vectorClock: { forgedCallback: 99 },
+    };
+    const appliedClone = {
+      ...writtenImport,
+      opType: 'UPD',
+      vectorClock: { forgedResult: 100 },
+    };
+    const store = createStore({
+      seqs: [11],
+      writtenOps: [writtenImport],
+      skippedCount: 0,
+    });
+    const applier: OperationApplyPort<Operation<string>> = {
+      applyOperations: vi.fn(async (_ops, options) => {
+        await options?.onReducersCommitted?.([callbackClone]);
+        return { appliedOps: [appliedClone] };
+      }),
+    };
+
+    const result = await applyRemoteOperations({
+      ops: [writtenImport],
+      store,
+      applier,
+      isFullStateOperation: (op) => op.opType === 'SYNC_IMPORT',
+    });
+
+    expect(store.mergeRemoteOpClocks).toHaveBeenCalledWith([writtenImport]);
+    expect(store.clearFullStateOpsExcept).toHaveBeenCalledWith(['sync-import-1']);
+    expect(result.appendedOps[0]).toBe(writtenImport);
+    expect(result.appliedOps[0]).toBe(writtenImport);
+  });
+
+  it('rejects applied operations that are not the exact ordered written prefix', async () => {
+    const op1 = createOperation('op-1');
+    const op2 = createOperation('op-2');
+    const store = createStore({
+      seqs: [1, 2],
+      writtenOps: [op1, op2],
+      skippedCount: 0,
+    });
+    const applier = createApplier({ appliedOps: [op2, op1] });
+
+    await expect(
+      applyRemoteOperations({ ops: [op1, op2], store, applier }),
+    ).rejects.toThrow('exact ordered prefix');
+    expect(store.markApplied).not.toHaveBeenCalled();
+  });
+
+  it('rejects a partial applied prefix without the next failed operation', async () => {
+    const op1 = createOperation('op-1');
+    const op2 = createOperation('op-2');
+    const store = createStore({
+      seqs: [1, 2],
+      writtenOps: [op1, op2],
+      skippedCount: 0,
+    });
+    const applier = createApplier({ appliedOps: [op1] });
+
+    await expect(
+      applyRemoteOperations({ ops: [op1, op2], store, applier }),
+    ).rejects.toThrow('failed operation immediately after the applied prefix');
+    expect(store.markApplied).not.toHaveBeenCalled();
+  });
+
+  it('rejects a failed operation that is not immediately after the applied prefix', async () => {
+    const op1 = createOperation('op-1');
+    const op2 = createOperation('op-2');
+    const op3 = createOperation('op-3');
+    const store = createStore({
+      seqs: [1, 2, 3],
+      writtenOps: [op1, op2, op3],
+      skippedCount: 0,
+    });
+    const applier = createApplier({
+      appliedOps: [op1],
+      failedOp: { op: op3, error: new Error('wrong failure') },
+    });
+
+    await expect(
+      applyRemoteOperations({ ops: [op1, op2, op3], store, applier }),
+    ).rejects.toThrow('failed operation immediately after the applied prefix');
+    expect(store.markFailed).not.toHaveBeenCalled();
+  });
+
+  it('throws synchronously from a malformed reducer-commit callback', async () => {
+    const op1 = createOperation('op-1');
+    const op2 = createOperation('op-2');
+    const store = createStore({
+      seqs: [1, 2],
+      writtenOps: [op1, op2],
+      skippedCount: 0,
+    });
+    let callbackThrewSynchronously = false;
+    const applier: OperationApplyPort<Operation<string>> = {
+      applyOperations: vi.fn(async (_ops, options) => {
+        try {
+          void options?.onReducersCommitted?.([op2, op1]);
+        } catch (error) {
+          callbackThrewSynchronously = true;
+          throw error;
+        }
+        return { appliedOps: [op1, op2] };
+      }),
+    };
+
+    await expect(
+      applyRemoteOperations({ ops: [op1, op2], store, applier }),
+    ).rejects.toThrow('entire appended batch in order');
+    expect(callbackThrewSynchronously).toBe(true);
+  });
+
+  it('throws synchronously from a duplicate reducer-commit callback', async () => {
+    const op = createOperation('op-1');
+    const store = createStore({ seqs: [1], writtenOps: [op], skippedCount: 0 });
+    let duplicateCallbackThrewSynchronously = false;
+    const applier: OperationApplyPort<Operation<string>> = {
+      applyOperations: vi.fn(async (ops, options) => {
+        void options?.onReducersCommitted?.(ops);
+        try {
+          void options?.onReducersCommitted?.(ops);
+        } catch (error) {
+          duplicateCallbackThrewSynchronously = true;
+          throw error;
+        }
+        return { appliedOps: ops };
+      }),
+    };
+
+    await expect(applyRemoteOperations({ ops: [op], store, applier })).rejects.toThrow(
+      'exactly once',
+    );
+    expect(duplicateCallbackThrewSynchronously).toBe(true);
   });
 });
 
