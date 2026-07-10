@@ -653,6 +653,31 @@ describe('SyncService', () => {
     delete process.env.OLD_OPS_CLEANUP_MAX_DELETED_PER_RUN;
   });
 
+  describe('filterValidOpsForQuota', () => {
+    it('excludes invalid schema and oversized payload siblings from quota sizing', () => {
+      const service = new SyncService({ maxPayloadSizeBytes: 100 });
+      const validOp = makeOp({
+        id: 'valid-op',
+        payload: { title: 'Fits quota' },
+      });
+      const invalidSchemaOp = makeOp({
+        id: 'invalid-schema-op',
+        schemaVersion: 101,
+      });
+      const oversizedInvalidOp = makeOp({
+        id: 'oversized-invalid-op',
+        payload: { data: 'x'.repeat(200) },
+      });
+
+      const result = service.filterValidOpsForQuota(
+        [validOp, invalidSchemaOp, oversizedInvalidOp],
+        clientId,
+      );
+
+      expect(result).toEqual([validOp]);
+    });
+  });
+
   describe('uploadOps', () => {
     it('should correctly upload operations', async () => {
       const service = getSyncService();

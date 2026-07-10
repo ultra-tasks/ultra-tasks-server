@@ -27,6 +27,8 @@ const mocks = vi.hoisted(() => {
     getCachedSnapshotBytes: vi.fn(),
     markStorageNeedsReconcile: vi.fn(),
     getMaxClockDriftMs: vi.fn(),
+    filterValidOpsForQuota: vi.fn(),
+    getPrevalidatedPayloadBytes: vi.fn(),
   };
   const prisma = {
     operation: {
@@ -115,6 +117,7 @@ describe('Sync compressed body routes', () => {
     mocks.syncService.checkOpsRequestDedup.mockReturnValue(null);
     mocks.syncService.checkSnapshotRequestDedup.mockReturnValue(null);
     mocks.syncService.getMaxClockDriftMs.mockReturnValue(60_000);
+    mocks.syncService.filterValidOpsForQuota.mockImplementation((ops: unknown[]) => ops);
     mocks.syncService.checkStorageQuota.mockResolvedValue({
       allowed: true,
       currentUsage: 0,
@@ -255,6 +258,68 @@ describe('Sync compressed body routes', () => {
     ]);
   });
 
+  it('should not let an invalid large sibling poison a near-quota upload', async () => {
+    const clientId = 'invalid-sibling-quota-client';
+    const validOp = {
+      ...createOp(clientId),
+      id: 'valid-near-quota-op',
+      payload: { title: 'Valid task' },
+    };
+    const invalidLargeOp = {
+      ...createOp(clientId),
+      id: 'invalid-large-op',
+      opType: 'UNKNOWN',
+      payload: { data: 'x'.repeat(10_000) },
+    };
+    const validBytes = computeOpStorageBytes(validOp).bytes;
+    mocks.syncService.filterValidOpsForQuota.mockReturnValueOnce([validOp]);
+    mocks.syncService.checkStorageQuota.mockImplementation(
+      async (_userId: number, additionalBytes: number) => ({
+        allowed: additionalBytes <= validBytes,
+        currentUsage: 1_000_000 - validBytes,
+        quota: 1_000_000,
+      }),
+    );
+    mocks.syncService.uploadOps.mockResolvedValueOnce([
+      { opId: validOp.id, accepted: true, serverSeq: 1 },
+      {
+        opId: invalidLargeOp.id,
+        accepted: false,
+        error: 'Invalid opType',
+        errorCode: SYNC_ERROR_CODES.INVALID_OP_TYPE,
+      },
+    ]);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sync/ops',
+      headers: {
+        authorization: `Bearer ${authToken}`,
+        'content-type': 'application/json',
+      },
+      payload: { ops: [validOp, invalidLargeOp], clientId },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().results).toEqual([
+      expect.objectContaining({ opId: validOp.id, accepted: true }),
+      expect.objectContaining({
+        opId: invalidLargeOp.id,
+        accepted: false,
+        errorCode: SYNC_ERROR_CODES.INVALID_OP_TYPE,
+      }),
+    ]);
+    expect(mocks.syncService.filterValidOpsForQuota).toHaveBeenCalledWith(
+      [validOp, invalidLargeOp],
+      clientId,
+    );
+    expect(mocks.syncService.checkStorageQuota).toHaveBeenCalledWith(1, validBytes);
+    expect(mocks.syncService.uploadOps).toHaveBeenCalledWith(1, clientId, [
+      validOp,
+      invalidLargeOp,
+    ]);
+  });
+
   it('should subtract exact already-stored duplicate ops from the ops quota gate', async () => {
     const clientId = 'known-duplicate-quota-client';
     const duplicateOp = {
@@ -307,7 +372,7 @@ describe('Sync compressed body routes', () => {
     ]);
   });
 
-  it('should keep same-id different-content ops charged in the ops quota gate', async () => {
+  it('should not charge same-id different-content ops in the quota gate', async () => {
     const clientId = 'id-collision-quota-client';
     const incomingOp = {
       ...createOp(clientId),
@@ -343,9 +408,37 @@ describe('Sync compressed body routes', () => {
     });
 
     expect(response.statusCode).toBe(200);
+    expect(mocks.syncService.checkStorageQuota).toHaveBeenCalledWith(1, 0);
+  });
+
+  it('should charge only the first occurrence of a repeated new ID', async () => {
+    const clientId = 'intra-batch-duplicate-quota-client';
+    const firstOp = {
+      ...createOp(clientId),
+      id: 'repeated-new-id',
+      entityId: 'task-first',
+      payload: { title: 'First content' },
+    };
+    const repeatedOp = {
+      ...firstOp,
+      entityId: 'task-second',
+      payload: { title: 'Different repeated content' },
+    };
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sync/ops',
+      headers: {
+        authorization: `Bearer ${authToken}`,
+        'content-type': 'application/json',
+      },
+      payload: { ops: [firstOp, repeatedOp], clientId },
+    });
+
+    expect(response.statusCode).toBe(200);
     expect(mocks.syncService.checkStorageQuota).toHaveBeenCalledWith(
       1,
-      computeOpStorageBytes(incomingOp).bytes,
+      computeOpStorageBytes(firstOp).bytes,
     );
   });
 

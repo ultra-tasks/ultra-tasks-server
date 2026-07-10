@@ -5,6 +5,12 @@ export const SUPER_SYNC_MAX_CLIENT_ID_LENGTH = 255;
 export const SUPER_SYNC_MAX_OPS_PER_UPLOAD = 100;
 export const SUPER_SYNC_MAX_ENTITY_IDS_PER_OP = 1000;
 
+// Upload-only fields must be loose enough to reach per-operation validation,
+// but still bounded so one invalid item cannot amplify logs/responses or make
+// semantic validation walk an arbitrarily large identifier collection.
+const SUPER_SYNC_MAX_INVALID_FIELD_TRANSPORT_LENGTH = 4096;
+const SUPER_SYNC_MAX_INVALID_ENTITY_IDS_TRANSPORT = SUPER_SYNC_MAX_ENTITY_IDS_PER_OP * 2;
+
 export const SUPER_SYNC_OP_TYPES = [
   'CRT',
   'UPD',
@@ -75,10 +81,21 @@ export const SuperSyncOperationSchema = z.object({
 });
 
 // Upload requests are envelopes for independently validated operations. Keep
-// the transport shape numeric, but let the server return a per-op
-// INVALID_SCHEMA_VERSION result so one malformed op cannot reject and stall
-// every valid sibling in the batch. Download/response schemas remain strict.
+// structural types and fields that ValidationService does not handle strict,
+// but defer semantic operation validation to the server so one malformed op
+// cannot reject and stall every valid sibling in the batch. Download/response
+// schemas remain strict.
 const SuperSyncUploadOperationSchema = SuperSyncOperationSchema.extend({
+  id: z.string().max(SUPER_SYNC_MAX_INVALID_FIELD_TRANSPORT_LENGTH),
+  clientId: z.string().max(SUPER_SYNC_MAX_INVALID_FIELD_TRANSPORT_LENGTH),
+  opType: z.string().max(SUPER_SYNC_MAX_INVALID_FIELD_TRANSPORT_LENGTH),
+  entityType: z.string().max(SUPER_SYNC_MAX_INVALID_FIELD_TRANSPORT_LENGTH),
+  entityId: z.string().max(SUPER_SYNC_MAX_INVALID_FIELD_TRANSPORT_LENGTH).optional(),
+  entityIds: z
+    .array(z.string().max(SUPER_SYNC_MAX_INVALID_FIELD_TRANSPORT_LENGTH))
+    .max(SUPER_SYNC_MAX_INVALID_ENTITY_IDS_TRANSPORT)
+    .optional(),
+  vectorClock: z.record(z.string(), z.unknown()),
   schemaVersion: z.number(),
 });
 

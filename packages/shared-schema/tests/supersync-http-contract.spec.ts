@@ -47,21 +47,22 @@ describe('SuperSync HTTP contract schemas', () => {
     expect('extraOpField' in parsed.ops[0]).toBe(false);
   });
 
-  it('caps entityIds per operation', () => {
-    expect(() =>
-      SuperSyncUploadOpsRequestSchema.parse({
-        ops: [
-          {
-            ...createValidOperation(),
-            entityIds: Array.from(
-              { length: SUPER_SYNC_MAX_ENTITY_IDS_PER_OP + 1 },
-              (_, i) => `task-${i}`,
-            ),
-          },
-        ],
-        clientId: 'client_1',
-      }),
-    ).toThrow();
+  it('passes oversized entityIds through for per-operation validation', () => {
+    const operation = {
+      ...createValidOperation(),
+      entityIds: Array.from(
+        { length: SUPER_SYNC_MAX_ENTITY_IDS_PER_OP + 1 },
+        (_, i) => `task-${i}`,
+      ),
+    };
+
+    const parsed = SuperSyncUploadOpsRequestSchema.parse({
+      ops: [operation],
+      clientId: 'client_1',
+    });
+
+    expect(parsed.ops[0].entityIds).toHaveLength(SUPER_SYNC_MAX_ENTITY_IDS_PER_OP + 1);
+    expect(() => SuperSyncOperationSchema.parse(operation)).toThrow();
   });
 
   it('rejects invalid client IDs in upload requests', () => {
@@ -90,6 +91,54 @@ describe('SuperSync HTTP contract schemas', () => {
       ).toThrow();
     },
   );
+
+  it.each([
+    ['empty operation ID', { id: '' }],
+    ['overlong operation ID', { id: 'x'.repeat(256) }],
+    ['mismatched operation client ID', { clientId: 'other client' }],
+    ['unknown operation type', { opType: 'UNKNOWN' }],
+    ['unknown entity type', { entityType: 'UNKNOWN' }],
+    ['overlong entity ID', { entityId: 'x'.repeat(256) }],
+    ['invalid vector-clock entry', { vectorClock: { client_1: 'invalid' } }],
+  ])('passes semantic %s through for per-operation validation', (_label, override) => {
+    const operation = { ...createValidOperation(), ...override };
+    const parsed = SuperSyncUploadOpsRequestSchema.parse({
+      ops: [operation],
+      clientId: 'client_1',
+    });
+
+    expect(parsed.ops).toHaveLength(1);
+  });
+
+  it.each([
+    ['non-string operation ID', { id: 123 }],
+    ['empty action type', { actionType: '' }],
+    ['non-string operation type', { opType: 123 }],
+    ['non-string entity type', { entityType: 123 }],
+    ['non-string entity ID', { entityId: 123 }],
+    ['non-string entityIds member', { entityIds: ['task-1', 123] }],
+    ['non-object vector clock', { vectorClock: [] }],
+    ['non-numeric timestamp', { timestamp: '123' }],
+    ['non-numeric schema version', { schemaVersion: '1' }],
+    ['non-boolean encryption flag', { isPayloadEncrypted: 'true' }],
+    ['unknown import reason', { syncImportReason: 'UNKNOWN' }],
+  ])('keeps the upload transport constraint for %s', (_label, override) => {
+    expect(() =>
+      SuperSyncUploadOpsRequestSchema.parse({
+        ops: [{ ...createValidOperation(), ...override }],
+        clientId: 'client_1',
+      }),
+    ).toThrow();
+  });
+
+  it('rejects semantically invalid identifiers beyond the absolute transport cap', () => {
+    expect(() =>
+      SuperSyncUploadOpsRequestSchema.parse({
+        ops: [{ ...createValidOperation(), id: 'x'.repeat(4097) }],
+        clientId: 'client_1',
+      }),
+    ).toThrow();
+  });
 
   it.each([0, 1.5, -1, 101])(
     'rejects malformed snapshot schema version %s',

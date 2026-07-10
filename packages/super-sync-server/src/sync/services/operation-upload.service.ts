@@ -29,7 +29,7 @@ import {
   pruneVectorClockForStorage,
   resolveConflictForExistingOp,
 } from '../conflict';
-import { ValidationService } from './validation.service';
+import { ValidationService, type ValidationResult } from './validation.service';
 
 // Observability threshold: log a warning when the full-state op aggregate scan
 // exceeds this duration. Mirrors the threshold used by the legacy snapshot
@@ -189,6 +189,7 @@ export class OperationUploadService {
     ops: Operation[],
     now: number,
     tx: Prisma.TransactionClient,
+    prevalidatedResults?: ReadonlyMap<Operation, ValidationResult>,
   ): Promise<{
     results: UploadResult[];
     acceptedDeltaBytes: number;
@@ -209,6 +210,7 @@ export class OperationUploadService {
       ops,
       now,
       results,
+      prevalidatedResults,
     );
 
     const uniqueCandidates = this.rejectIntraBatchDuplicates(
@@ -286,12 +288,14 @@ export class OperationUploadService {
     ops: Operation[],
     now: number,
     results: UploadResult[],
+    prevalidatedResults?: ReadonlyMap<Operation, ValidationResult>,
   ): BatchUploadCandidate[] {
     const validatedCandidates: BatchUploadCandidate[] = [];
     for (let i = 0; i < ops.length; i++) {
       const op = ops[i];
       const originalTimestamp = this.clampFutureTimestamp(userId, clientId, op, now);
-      const validation = this.validationService.validateOp(op, clientId);
+      const validation =
+        prevalidatedResults?.get(op) ?? this.validationService.validateOp(op, clientId);
 
       if (!validation.valid) {
         results[i] = this.rejectedUploadResult(
@@ -613,6 +617,7 @@ export class OperationUploadService {
     op: Operation,
     now: number,
     tx: Prisma.TransactionClient,
+    prevalidatedResult?: ValidationResult,
   ): Promise<ProcessOperationResult> {
     // Rejected ops have no storage cost; the caller only reads storageBytes when
     // result.accepted is true.
@@ -627,7 +632,8 @@ export class OperationUploadService {
     const originalTimestamp = this.clampFutureTimestamp(userId, clientId, op, now);
 
     // Validate operation (including clientId match)
-    const validation = this.validationService.validateOp(op, clientId);
+    const validation =
+      prevalidatedResult ?? this.validationService.validateOp(op, clientId);
     if (!validation.valid) {
       Logger.audit({
         event: 'OP_REJECTED',

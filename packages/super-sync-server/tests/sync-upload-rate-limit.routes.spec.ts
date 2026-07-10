@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => {
     getLatestSeq: vi.fn(),
     getOpsSinceWithSeq: vi.fn(),
     getMaxClockDriftMs: vi.fn(),
+    filterValidOpsForQuota: vi.fn(),
+    getPrevalidatedPayloadBytes: vi.fn(),
   };
 
   return {
@@ -106,6 +108,7 @@ describe('Sync upload route rate limiting', () => {
       latestSeq: 1,
     });
     mocks.syncService.getMaxClockDriftMs.mockReturnValue(60_000);
+    mocks.syncService.filterValidOpsForQuota.mockImplementation((ops: unknown[]) => ops);
     mocks.prisma.operation.findMany.mockResolvedValue([]);
 
     app = Fastify();

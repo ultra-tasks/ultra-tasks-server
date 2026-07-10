@@ -23,6 +23,7 @@ import {
   type CacheSnapshotResult,
   type SnapshotDedupResponse,
 } from './services';
+import type { ValidationResult } from './services/validation.service';
 const getPrismaP2002TargetTokens = (
   err: Prisma.PrismaClientKnownRequestError,
 ): string[] => {
@@ -82,6 +83,7 @@ export class SyncService {
   private storageQuotaService: StorageQuotaService;
   private snapshotService: SnapshotService;
   private operationUploadService: OperationUploadService;
+  private prevalidatedOps = new WeakMap<Operation, ValidationResult>();
 
   constructor(config: Partial<SyncConfig> = {}) {
     this.config = { ...DEFAULT_SYNC_CONFIG, ...config };
@@ -102,6 +104,24 @@ export class SyncService {
     return this.config.maxClockDriftMs;
   }
 
+  /**
+   * Return only operations that can consume storage if this upload commits.
+   * Invalid siblings still reach uploadOps so the client receives a terminal
+   * per-operation rejection, but they must not inflate the pre-write quota gate
+   * and block otherwise valid operations in the same request.
+   */
+  filterValidOpsForQuota(ops: Operation[], clientId: string): Operation[] {
+    return ops.filter((op) => {
+      const validation = this.validationService.validateOp(op, clientId);
+      this.prevalidatedOps.set(op, validation);
+      return validation.valid;
+    });
+  }
+
+  getPrevalidatedPayloadBytes(op: Operation): number | undefined {
+    return this.prevalidatedOps.get(op)?.payloadBytes;
+  }
+
   // === Upload Operations ===
 
   async uploadOps(
@@ -114,6 +134,13 @@ export class SyncService {
     const now = Date.now();
     const txStartedAt = Date.now();
     let uploadDbRoundtrips = 0;
+    const prevalidatedResults = new Map<Operation, ValidationResult>();
+    for (const op of ops) {
+      const validation = this.prevalidatedOps.get(op);
+      if (validation) {
+        prevalidatedResults.set(op, validation);
+      }
+    }
 
     try {
       // Use transaction to acquire write lock and ensure atomicity
@@ -171,6 +198,7 @@ export class SyncService {
               ops,
               now,
               tx,
+              prevalidatedResults,
             );
             results.push(...batchResult.results);
             acceptedDeltaBytes = batchResult.acceptedDeltaBytes;
@@ -196,6 +224,7 @@ export class SyncService {
                   op,
                   now,
                   tx,
+                  prevalidatedResults.get(op),
                 );
               results.push(result);
               if (result.accepted) {

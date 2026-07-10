@@ -25,7 +25,7 @@ import {
   sendCompressedBodyParseFailure,
 } from './sync.routes.payload';
 import {
-  computeOpsStorageBytesExcludingKnownDuplicates,
+  computeOpsStorageBytesExcludingUnstorableIds,
   enforceStorageQuota,
   getRawOpsCount,
   sendOpsBatchTooLargeReply,
@@ -194,15 +194,17 @@ export const uploadOpsHandler = async (
         // duplicates are rejected by uploadOps and never written, so don't make
         // quota cleanup reserve space for them.
         const typedOpsForGate = ops as unknown as Operation[];
+        const validOpsForQuota = syncService.filterValidOpsForQuota(
+          typedOpsForGate,
+          clientId,
+        );
         const { bytes: estimatedDelta, fallback: gateFallback } =
-          await computeOpsStorageBytesExcludingKnownDuplicates(
-            userId,
-            typedOpsForGate,
-            syncService.getMaxClockDriftMs(),
+          await computeOpsStorageBytesExcludingUnstorableIds(validOpsForQuota, (op) =>
+            syncService.getPrevalidatedPayloadBytes(op),
           );
         if (gateFallback > 0) {
           Logger.warn(
-            `computeOpsStorageBytes: ${gateFallback}/${typedOpsForGate.length} unserializable op(s) ` +
+            `computeOpsStorageBytes: ${gateFallback}/${validOpsForQuota.length} unserializable op(s) ` +
               `charged at APPROX_BYTES_PER_OP for user=${userId} (gate)`,
           );
         }
