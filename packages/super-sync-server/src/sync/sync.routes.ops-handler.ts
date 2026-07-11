@@ -87,15 +87,6 @@ export const uploadOpsHandler = async (
     }
 
     const { ops, clientId, lastKnownServerSeq, requestId } = parseResult.data;
-    // Lazy + memoized: hashing the full ops payload is expensive and must not
-    // run before the rate-limit gate below, nor on first-time requests — the
-    // dedup check only invokes it when an entry for this requestId exists.
-    let memoizedFingerprint: string | undefined;
-    const getRequestFingerprint = (): string =>
-      (memoizedFingerprint ??= createOpsRequestFingerprint(
-        clientId,
-        ops as unknown as Operation[],
-      ));
     const syncService = getSyncService();
 
     Logger.info(
@@ -118,14 +109,25 @@ export const uploadOpsHandler = async (
       });
     }
 
+    // Compute the request fingerprint AFTER the rate-limit gate (a rate-limited
+    // client must not burn CPU on it) and BEFORE any processing: uploadOps and
+    // the quota prevalidation mutate the parsed ops (e.g. vector-clock
+    // sanitizing/pruning), so hashing later would never match a retry's
+    // pre-processing hash. Eager is as cheap as lazy here — every non-limited
+    // requestId-bearing request needs the hash exactly once (either the dedup
+    // check below or the post-upload cache write).
+    const requestFingerprint = requestId
+      ? createOpsRequestFingerprint(clientId, ops as unknown as Operation[])
+      : undefined;
+
     // Check for duplicate request (client retry) BEFORE quota check
     // This ensures retries after successful uploads don't fail with 413
     // if the original upload pushed the user over quota
-    if (requestId) {
+    if (requestId && requestFingerprint) {
       const cachedResults = syncService.checkOpsRequestDedup(
         userId,
         requestId,
-        getRequestFingerprint,
+        () => requestFingerprint,
       );
       if (cachedResults) {
         Logger.info(`[user:${userId}] Returning cached results for request ${requestId}`);
@@ -174,14 +176,6 @@ export const uploadOpsHandler = async (
           ...(hasMorePiggyback ? { hasMorePiggyback: true } : {}),
         } as UploadOpsResponse & { deduplicated: boolean });
       }
-    }
-
-    // Pin the fingerprint BEFORE processing: uploadOps mutates the parsed ops
-    // (e.g. vector-clock pruning), so hashing after it would never match the
-    // retry's pre-processing hash. Still after the rate-limit gate above, so a
-    // rate-limited client cannot burn CPU on it.
-    if (requestId) {
-      getRequestFingerprint();
     }
 
     const results = await syncService.runWithStorageUsageLock<UploadResult[] | null>(
@@ -242,14 +236,10 @@ export const uploadOpsHandler = async (
     // batch to it, so a single match means the transaction failed. #8332
     if (
       requestId &&
+      requestFingerprint &&
       !results.some((r) => r.errorCode === SYNC_ERROR_CODES.INTERNAL_ERROR)
     ) {
-      syncService.cacheOpsRequestResults(
-        userId,
-        requestId,
-        results,
-        getRequestFingerprint(),
-      );
+      syncService.cacheOpsRequestResults(userId, requestId, results, requestFingerprint);
     }
 
     const accepted = results.filter((r) => r.accepted).length;
