@@ -26,10 +26,10 @@ const createStore = (appendResult: {
   skippedCount: number;
 }): RemoteOperationApplyStorePort<Operation<string>> => ({
   appendBatchSkipDuplicates: vi.fn().mockResolvedValue(appendResult),
-  markArchivePending: vi.fn().mockResolvedValue(undefined),
+  mergeRemoteOpClocks: vi.fn().mockResolvedValue(undefined),
+  markReducersCommittedAndMergeClocks: vi.fn().mockResolvedValue(undefined),
   markApplied: vi.fn().mockResolvedValue(undefined),
   markFailed: vi.fn().mockResolvedValue(undefined),
-  mergeRemoteOpClocks: vi.fn().mockResolvedValue(undefined),
   clearFullStateOpsExcept: vi.fn().mockResolvedValue(0),
 });
 
@@ -62,9 +62,9 @@ describe('applyRemoteOperations', () => {
       [op2],
       jasmineLikeObjectContainingFunction(),
     );
-    expect(store.markArchivePending).toHaveBeenCalledWith([10]);
-    expect(store.markApplied).toHaveBeenCalledWith([10]);
     expect(store.mergeRemoteOpClocks).toHaveBeenCalledWith([op2]);
+    expect(store.markReducersCommittedAndMergeClocks).toHaveBeenCalledWith([10], [op2]);
+    expect(store.markApplied).toHaveBeenCalledWith([10]);
     expect(result).toEqual({
       appendedOps: [op2],
       skippedCount: 1,
@@ -85,6 +85,7 @@ describe('applyRemoteOperations', () => {
     expect(applier.applyOperations).not.toHaveBeenCalled();
     expect(store.markApplied).not.toHaveBeenCalled();
     expect(store.mergeRemoteOpClocks).not.toHaveBeenCalled();
+    expect(store.markReducersCommittedAndMergeClocks).not.toHaveBeenCalled();
     expect(result).toEqual({
       appendedOps: [],
       skippedCount: 1,
@@ -116,10 +117,10 @@ describe('applyRemoteOperations', () => {
     expect(result.clearedFullStateOpCount).toBe(3);
   });
 
-  it('cleanup preserves a batch full-state op whose archive handling failed (archive_pending)', async () => {
+  it('cleanup preserves a batch full-state op whose archive handling failed (quarantined)', async () => {
     // Both imports reducer-committed; the LATER one failed only its archive
     // side effects. Cleanup keyed on the applied one must not delete the
-    // archive_pending entry, or markFailed misses it and the change is lost
+    // quarantined entry, or markFailed misses it and the change is lost
     // from the next startup replay.
     const appliedImport = createOperation('sync-import-1', 'SYNC_IMPORT');
     const failedImport = createOperation('sync-import-2', 'SYNC_IMPORT');
@@ -170,8 +171,10 @@ describe('applyRemoteOperations', () => {
     });
 
     expect(store.markApplied).toHaveBeenCalledWith([1]);
-    expect(store.markArchivePending).toHaveBeenCalledWith([1, 2, 3]);
-    expect(store.mergeRemoteOpClocks).toHaveBeenCalledWith([op1, op2, op3]);
+    expect(store.markReducersCommittedAndMergeClocks).toHaveBeenCalledWith(
+      [1, 2, 3],
+      [op1, op2, op3],
+    );
     expect(store.markFailed).toHaveBeenCalledWith(['op-2']);
     expect(result.failedOp).toEqual({ op: op2, error });
     expect(result.failedOpIds).toEqual(['op-2']);
@@ -274,7 +277,10 @@ describe('applyRemoteOperations', () => {
       isFullStateOperation: (op) => op.opType === 'SYNC_IMPORT',
     });
 
-    expect(store.mergeRemoteOpClocks).toHaveBeenCalledWith([writtenImport]);
+    expect(store.markReducersCommittedAndMergeClocks).toHaveBeenCalledWith(
+      [11],
+      [writtenImport],
+    );
     expect(store.clearFullStateOpsExcept).toHaveBeenCalledWith(['sync-import-1']);
     expect(result.appendedOps[0]).toBe(writtenImport);
     expect(result.appliedOps[0]).toBe(writtenImport);
@@ -380,6 +386,149 @@ describe('applyRemoteOperations', () => {
       'exactly once',
     );
     expect(duplicateCallbackThrewSynchronously).toBe(true);
+  });
+
+  it('preserves the applier error when an unawaited reducer checkpoint also fails', async () => {
+    const op = createOperation('op-1');
+    const applyError = new Error('dispatcher failed');
+    const checkpointError = new Error('checkpoint failed');
+    const store = createStore({ seqs: [1], writtenOps: [op], skippedCount: 0 });
+    vi.mocked(store.markReducersCommittedAndMergeClocks).mockRejectedValue(
+      checkpointError,
+    );
+    const applier: ReducerCommitAwareOperationApplyPort<Operation<string>> = {
+      applyOperations: vi.fn(async (ops, options) => {
+        void options.onReducersCommitted(ops);
+        throw applyError;
+      }),
+    };
+
+    await expect(applyRemoteOperations({ ops: [op], store, applier })).rejects.toBe(
+      applyError,
+    );
+  });
+
+  it('preserves a callback-contract error when the first reducer checkpoint also fails', async () => {
+    const op = createOperation('op-1');
+    const checkpointError = new Error('checkpoint failed');
+    const store = createStore({ seqs: [1], writtenOps: [op], skippedCount: 0 });
+    vi.mocked(store.markReducersCommittedAndMergeClocks).mockRejectedValue(
+      checkpointError,
+    );
+    let callbackContractError: unknown;
+    const applier: ReducerCommitAwareOperationApplyPort<Operation<string>> = {
+      applyOperations: vi.fn(async (ops, options) => {
+        void options.onReducersCommitted(ops);
+        try {
+          void options.onReducersCommitted(ops);
+        } catch (error) {
+          callbackContractError = error;
+          throw error;
+        }
+        return { appliedOps: ops };
+      }),
+    };
+
+    let thrown: unknown;
+    try {
+      await applyRemoteOperations({ ops: [op], store, applier });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(callbackContractError).toBeInstanceOf(Error);
+    expect(thrown).toBe(callbackContractError);
+  });
+
+  it('does not start reducer application when the pre-apply clock merge fails', async () => {
+    const op = createOperation('op-1');
+    const clockError = new Error('clock merge failed');
+    const store = createStore({ seqs: [1], writtenOps: [op], skippedCount: 0 });
+    vi.mocked(store.mergeRemoteOpClocks).mockRejectedValue(clockError);
+    const applier = createApplier({ appliedOps: [op] });
+    const onRemoteClocksDurable = vi.fn();
+
+    await expect(
+      applyRemoteOperations({
+        ops: [op],
+        store,
+        applier,
+        onRemoteClocksDurable,
+      }),
+    ).rejects.toBe(clockError);
+
+    expect(onRemoteClocksDurable).not.toHaveBeenCalled();
+    expect(applier.applyOperations).not.toHaveBeenCalled();
+    expect(store.markReducersCommittedAndMergeClocks).not.toHaveBeenCalled();
+    expect(store.markApplied).not.toHaveBeenCalled();
+  });
+
+  it('signals durable remote clocks before a later atomic checkpoint failure', async () => {
+    const op = createOperation('op-1');
+    const checkpointError = new Error('checkpoint failed');
+    const store = createStore({ seqs: [1], writtenOps: [op], skippedCount: 0 });
+    vi.mocked(store.markReducersCommittedAndMergeClocks).mockRejectedValue(
+      checkpointError,
+    );
+    const onRemoteClocksDurable = vi.fn();
+
+    await expect(
+      applyRemoteOperations({
+        ops: [op],
+        store,
+        applier: createApplier({ appliedOps: [op] }),
+        onRemoteClocksDurable,
+      }),
+    ).rejects.toBe(checkpointError);
+
+    expect(onRemoteClocksDurable).toHaveBeenCalledWith([op]);
+    expect(store.markApplied).not.toHaveBeenCalled();
+  });
+
+  it('signals durable remote clocks before later bookkeeping can fail', async () => {
+    const op = createOperation('op-1');
+    const markAppliedError = new Error('mark applied failed');
+    const store = createStore({ seqs: [1], writtenOps: [op], skippedCount: 0 });
+    vi.mocked(store.markApplied).mockRejectedValue(markAppliedError);
+    const onRemoteClocksDurable = vi.fn();
+
+    await expect(
+      applyRemoteOperations({
+        ops: [op],
+        store,
+        applier: createApplier({ appliedOps: [op] }),
+        onRemoteClocksDurable,
+      }),
+    ).rejects.toBe(markAppliedError);
+
+    expect(onRemoteClocksDurable).toHaveBeenCalledWith([op]);
+  });
+
+  it('merges clocks before applying reducers and keeps the atomic checkpoint afterward', async () => {
+    const op = createOperation('op-1');
+    const store = createStore({ seqs: [1], writtenOps: [op], skippedCount: 0 });
+    const callOrder: string[] = [];
+    vi.mocked(store.mergeRemoteOpClocks).mockImplementation(async () => {
+      callOrder.push('mergeRemoteOpClocks');
+    });
+    vi.mocked(store.markReducersCommittedAndMergeClocks).mockImplementation(async () => {
+      callOrder.push('markReducersCommittedAndMergeClocks');
+    });
+    const applier: ReducerCommitAwareOperationApplyPort<Operation<string>> = {
+      applyOperations: vi.fn(async (ops, options) => {
+        callOrder.push('applyOperations');
+        await options?.onReducersCommitted?.(ops);
+        return { appliedOps: ops };
+      }),
+    };
+
+    await applyRemoteOperations({ ops: [op], store, applier });
+
+    expect(callOrder).toEqual([
+      'mergeRemoteOpClocks',
+      'applyOperations',
+      'markReducersCommittedAndMergeClocks',
+    ]);
   });
 });
 

@@ -24,10 +24,10 @@ export interface RemoteOperationApplyStorePort<
     source: 'remote',
     options: { pendingApply: true },
   ): Promise<RemoteOperationAppendResult<TOperation>>;
-  markArchivePending(seqs: number[]): Promise<void>;
+  mergeRemoteOpClocks(ops: TOperation[]): Promise<void>;
+  markReducersCommittedAndMergeClocks(seqs: number[], ops: TOperation[]): Promise<void>;
   markApplied(seqs: number[]): Promise<void>;
   markFailed(opIds: string[]): Promise<void>;
-  mergeRemoteOpClocks(ops: TOperation[]): Promise<void>;
   clearFullStateOpsExcept(excludeIds: string[]): Promise<number>;
 }
 
@@ -38,6 +38,8 @@ export interface ApplyRemoteOperationsOptions<
   store: RemoteOperationApplyStorePort<TOperation>;
   applier: ReducerCommitAwareOperationApplyPort<TOperation>;
   isFullStateOperation?: (op: TOperation) => boolean;
+  /** Runs after incoming clocks are durable, before reducer application starts. */
+  onRemoteClocksDurable?: (ops: TOperation[]) => void;
 }
 
 export interface RemoteApplyOperationsResult<
@@ -71,14 +73,17 @@ const emptyRemoteApplyResult = <
  * the generic ordering:
  *
  * 1. append incoming remote ops as pending, skipping duplicates atomically;
- * 2. bulk-apply only the newly appended ops through the host applier;
- * 3. at reducer commit, mark the whole batch archive_pending and merge all
- *    reducer-committed vector clocks before archive side effects begin;
- * 4. mark archive-complete seqs applied;
- * 5. after applying a full-state op, clear older full-state ops while
- *    retaining every full-state op of this batch (incl. archive_pending);
- * 6. mark only the attempted archive failure as failed; unattempted successors
- *    remain archive_pending for ordered startup recovery.
+ * 2. durably merge all newly appended remote clocks before reducers or a
+ *    deferred-local-action window can start;
+ * 3. bulk-apply only the newly appended ops through the host applier;
+ * 4. at reducer commit, atomically checkpoint the whole batch as
+ *    `archive_pending` and merge all reducer-committed vector clocks before
+ *    archive side effects begin;
+ * 5. mark archive-complete seqs applied;
+ * 6. after applying a full-state op, clear older full-state ops while
+ *    retaining every full-state op of this batch (incl. quarantined ones);
+ * 7. mark only the attempted archive failure as `failed`; unattempted
+ *    successors stay `archive_pending` for ordered startup recovery.
  */
 export const applyRemoteOperations = async <
   TOperation extends Operation<string> = Operation,
@@ -87,6 +92,7 @@ export const applyRemoteOperations = async <
   store,
   applier,
   isFullStateOperation = () => false,
+  onRemoteClocksDurable,
 }: ApplyRemoteOperationsOptions<TOperation>): Promise<
   RemoteApplyOperationsResult<TOperation>
 > => {
@@ -105,6 +111,13 @@ export const applyRemoteOperations = async <
     };
   }
 
+  // Pending rows make this pre-apply clock merge crash-safe: if anything fails
+  // after it commits, startup recovery still replays the same rows. Advancing
+  // the clock before entering the reducer window also means buffered local
+  // actions can always be drained against a durable remote frontier.
+  await store.mergeRemoteOpClocks(appendResult.writtenOps);
+  onRemoteClocksDurable?.(appendResult.writtenOps);
+
   const opIdToSeq = new Map<string, number>();
   appendResult.writtenOps.forEach((op, index) => {
     const seq = appendResult.seqs[index];
@@ -117,6 +130,19 @@ export const applyRemoteOperations = async <
   let reducerCommitCallbackError: Error | undefined;
   let reducerCommitPromise: Promise<void> | undefined;
   let applyResult: ApplyOperationsResult<TOperation>;
+  const observeReducerCommitPromisePreservingPrimaryError = async (): Promise<void> => {
+    const promise = reducerCommitPromise;
+    if (!promise) {
+      return;
+    }
+    try {
+      await promise;
+    } catch {
+      // The already-selected apply/contract error is the primary failure. The
+      // checkpoint rejection is still observed here so it cannot become an
+      // unhandled rejection; pending rows make it recoverable at startup.
+    }
+  };
   try {
     applyResult = await applier.applyOperations(appendResult.writtenOps, {
       onReducersCommitted: (reducerCommittedOps) => {
@@ -149,8 +175,10 @@ export const applyRemoteOperations = async <
               'applyRemoteOperations: reducer commit contained an operation outside the appended batch.',
             );
           }
-          await store.markArchivePending(reducerCommittedSeqs);
-          await store.mergeRemoteOpClocks(appendResult.writtenOps);
+          await store.markReducersCommittedAndMergeClocks(
+            reducerCommittedSeqs,
+            appendResult.writtenOps,
+          );
         })();
         return reducerCommitPromise;
       },
@@ -159,15 +187,11 @@ export const applyRemoteOperations = async <
     // A valid first callback may already have started durable bookkeeping before
     // a duplicate callback (or another applier error) throws. Observe that
     // promise before propagating so it cannot become an unhandled rejection.
-    if (reducerCommitPromise) {
-      await reducerCommitPromise;
-    }
+    await observeReducerCommitPromisePreservingPrimaryError();
     throw applyError;
   }
   if (reducerCommitCallbackError) {
-    if (reducerCommitPromise) {
-      await reducerCommitPromise;
-    }
+    await observeReducerCommitPromisePreservingPrimaryError();
     throw reducerCommitCallbackError;
   }
   if (reducerCommitCallbackCount !== 1 || reducerCommitPromise === undefined) {

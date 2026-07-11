@@ -148,8 +148,11 @@ export interface OperationLogEntry<TOperation extends Operation<string> = Operat
   rejectedAt?: number;
 
   /**
-   * For remote ops only: tracks whether the op was successfully applied to local state.
-   * Used for crash recovery: on startup, any 'pending' or 'failed' remote ops are re-dispatched.
+   * For remote ops only: tracks whether the op was successfully applied to
+   * local state. `archive_pending` means reducers and clocks committed but
+   * archive side effects are outstanding; `failed` means an attempted archive
+   * side effect failed and retryCount was bumped. Startup recovery replays
+   * reducers status-blind and retries outstanding archive work.
    */
   applicationStatus?: 'pending' | 'archive_pending' | 'applied' | 'failed';
 

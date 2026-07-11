@@ -415,6 +415,45 @@ describe('replayOperationBatch', () => {
     ]);
   });
 
+  it('closes the sync window and flushes deferred actions when reducer bookkeeping throws', async () => {
+    const callOrder: string[] = [];
+    const checkpointError = new Error('reducer checkpoint failed');
+
+    await expect(
+      replayOperationBatch({
+        ops: [createOperation('op-1')],
+        dispatcher: {
+          dispatch: vi.fn(() => {
+            callOrder.push('dispatchBulk');
+          }),
+        },
+        createBulkApplyAction: (operations) => ({
+          type: '[Test] Bulk Apply',
+          operations,
+        }),
+        remoteApplyWindow: createRemoteApplyWindow(callOrder),
+        deferredLocalActions: createDeferredLocalActions(callOrder),
+        onReducersCommitted: vi.fn(async () => {
+          callOrder.push('reducersCommitted');
+          throw checkpointError;
+        }),
+        yieldToEventLoop: vi.fn(async () => {
+          callOrder.push('yield');
+        }),
+      }),
+    ).rejects.toBe(checkpointError);
+
+    expect(callOrder).toEqual([
+      'startApplyingRemoteOps',
+      'dispatchBulk',
+      'yield',
+      'reducersCommitted',
+      'startPostSyncCooldown',
+      'endApplyingRemoteOps',
+      'processDeferredActions',
+    ]);
+  });
+
   it('closes the sync window even when post-sync cooldown throws', async () => {
     const callOrder: string[] = [];
     const cooldownError = new Error('cooldown failed');
