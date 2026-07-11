@@ -260,12 +260,10 @@ export class OperationUploadService {
       prevalidatedResults,
     );
 
-    const uniqueCandidates = this.rejectIntraBatchDuplicates(
-      userId,
-      clientId,
-      validatedCandidates,
-      results,
-    );
+    // Intra-batch duplicate ids were already terminally rejected in stage 1:
+    // validateAndClampBatch reserves each id on first occurrence (including
+    // invalid first siblings), so validatedCandidates is unique by op id.
+    const uniqueCandidates = validatedCandidates;
 
     if (uniqueCandidates.length === 0) {
       return {
@@ -395,47 +393,6 @@ export class OperationUploadService {
       });
     }
     return validatedCandidates;
-  }
-
-  /**
-   * Stage 2: within a single batch, accept the first op for an id. Exact retries
-   * are DUPLICATE_OPERATION; same-id operations with different complete identity
-   * are INVALID_OP_ID. Must run before sequence reservation.
-   */
-  private rejectIntraBatchDuplicates(
-    userId: number,
-    clientId: string,
-    validatedCandidates: BatchUploadCandidate[],
-    results: UploadResult[],
-  ): BatchUploadCandidate[] {
-    const firstCandidateByOpId = new Map<string, BatchUploadCandidate>();
-    const uniqueCandidates: BatchUploadCandidate[] = [];
-    for (const candidate of validatedCandidates) {
-      const firstCandidate = firstCandidateByOpId.get(candidate.op.id);
-      if (firstCandidate) {
-        const isExactRetry = isSameIncomingOperation(
-          firstCandidate.op,
-          candidate.op,
-          firstCandidate.originalTimestamp,
-          candidate.originalTimestamp,
-        );
-        results[candidate.resultIndex] = this.rejectedUploadResult(
-          userId,
-          clientId,
-          candidate.op,
-          isExactRetry
-            ? 'Duplicate operation ID'
-            : 'Operation ID already belongs to a different operation',
-          isExactRetry
-            ? SYNC_ERROR_CODES.DUPLICATE_OPERATION
-            : SYNC_ERROR_CODES.INVALID_OP_ID,
-        );
-        continue;
-      }
-      firstCandidateByOpId.set(candidate.op.id, candidate);
-      uniqueCandidates.push(candidate);
-    }
-    return uniqueCandidates;
   }
 
   /**

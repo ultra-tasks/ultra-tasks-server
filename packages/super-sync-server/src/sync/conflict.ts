@@ -227,6 +227,11 @@ export const detectConflictForEntity = async (
   // the raw `GLOBAL_CONFIG:misc` key. Consult that key as an alias when the
   // incoming write targets `tasks`; no backfill (and no payload decryption) is
   // required. Pick the newer of the canonical and legacy rows.
+  //
+  // NOTE: the alias exists only on this per-entity path. A v2 MULTI-entity op
+  // whose entityIds include 'tasks' goes through detectConflictForEntities and
+  // skips the legacy lookup — acceptable today because GLOBAL_CONFIG writes are
+  // single-entity; revisit if a batch path ever carries config entities.
   const legacyMiscOp =
     op.entityType === 'GLOBAL_CONFIG' && entityId === 'tasks'
       ? await tx.operation.findFirst({

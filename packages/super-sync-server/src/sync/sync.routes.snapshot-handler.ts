@@ -140,6 +140,15 @@ export const uploadSnapshotHandler = async (
       }
     }
 
+    // Defense in depth: the contract superRefine already requires opId for
+    // clean-slate uploads, but the destructive wipe below must never depend on
+    // a schema in another package staying strict. Keep the invariant local.
+    if (isCleanSlate && !opId) {
+      return reply.code(400).send({
+        error: 'opId is required for clean-slate snapshot idempotency',
+      });
+    }
+
     // Cheap pre-quota gate BEFORE prepareSnapshotCache so quota-exhausted
     // clients can't burn CPU on JSON.stringify + zlib.gzipSync. Uses only
     // the cached counter; if it says we're already at quota, reconcile
