@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  getConflictEntityIds,
   isSameDuplicateOperation,
   isSameDuplicateTimestamp,
   pruneVectorClockForStorage,
@@ -48,6 +49,28 @@ const duplicateCandidate = (
 });
 
 describe('conflict helpers', () => {
+  it('includes a divergent scalar entityId in the incoming conflict set', () => {
+    expect(
+      getConflictEntityIds(op({ entityId: 'task-scalar', entityIds: ['task-array'] })),
+    ).toEqual(['task-scalar', 'task-array']);
+  });
+
+  it.each([false, true])(
+    'aliases legacy misc config writes to tasks when encrypted=%s',
+    (isPayloadEncrypted) => {
+      expect(
+        getConflictEntityIds(
+          op({
+            entityType: 'GLOBAL_CONFIG',
+            entityId: 'misc',
+            schemaVersion: 1,
+            isPayloadEncrypted,
+          }),
+        ),
+      ).toEqual(['misc', 'tasks']);
+    },
+  );
+
   it('accepts matching duplicate operations regardless of JSON key order', () => {
     const incoming = op({
       payload: { title: 'A', nested: { b: 2, a: 1 } },

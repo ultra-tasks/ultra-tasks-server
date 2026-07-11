@@ -222,6 +222,7 @@ export interface LatestEntityOperationRow {
   entityId: string;
   clientId: string;
   vectorClock: unknown;
+  serverSeq?: number;
 }
 
 export interface LatestBatchEntityOperationRow extends LatestEntityOperationRow {
