@@ -127,6 +127,7 @@ export type {
   ConflictResolutionSuggestion,
   EntityConflictLike,
   LwwConflictResolutionPlan,
+  LwwConflictResolutionReason,
   LwwResolvedConflict,
 } from './conflict-resolution';
 
