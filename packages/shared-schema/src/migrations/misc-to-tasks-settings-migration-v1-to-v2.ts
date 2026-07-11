@@ -30,17 +30,14 @@ export const MiscToTasksSettingsMigration_v1v2: SchemaMigration = {
 
     const tasks = state.globalConfig?.tasks ?? {};
 
-    // Skip if already migrated (tasks has new fields AND misc has no migrated fields)
-    if (tasks.isConfirmBeforeDelete !== undefined && !hasMigratedFields(misc)) {
-      return state;
-    }
-
     return {
       ...state,
       globalConfig: {
         ...state.globalConfig,
         misc: removeMigratedFields(misc),
-        tasks: { ...tasks, ...transformMiscToTasks(misc) },
+        // Existing target values come from a newer/partial migration and must
+        // not be overwritten by stale legacy copies left in misc.
+        tasks: { ...transformMiscToTasks(misc), ...tasks },
       },
     };
   },
