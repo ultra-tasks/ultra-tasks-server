@@ -6,7 +6,13 @@ import { Logger } from '../logger';
 import { getAuthUser } from '../middleware';
 import { getSyncService } from './sync.service';
 import { getWsConnectionService } from './services/websocket-connection.service';
-import { SYNC_ERROR_CODES, UploadResult } from './sync.types';
+import {
+  DUPLICATE_OP_SELECT,
+  Operation,
+  SYNC_ERROR_CODES,
+  UploadResult,
+} from './sync.types';
+import { isSameIncomingOperation } from './conflict';
 import {
   isSingleTokenGzipEncoding,
   parseCompressedJsonBody,
@@ -222,6 +228,57 @@ export const uploadSnapshotHandler = async (
     const result = await syncService.runWithStorageUsageLock<UploadResult | null>(
       userId,
       async () => {
+        // Clean-slate uploads are destructive, so request-cache deduplication is
+        // not sufficient: it is process-local and expires. The client-supplied
+        // opId is the durable idempotency key. Check it inside the per-user lock
+        // before quota work or uploadOps can delete any existing data.
+        if (isCleanSlate && opId) {
+          const existingCleanSlateOp = await prisma.operation.findUnique({
+            where: { id: opId },
+            select: { ...DUPLICATE_OP_SELECT, serverSeq: true },
+          });
+          if (existingCleanSlateOp) {
+            const existingOperation: Operation = {
+              id: existingCleanSlateOp.id,
+              clientId: existingCleanSlateOp.clientId,
+              actionType: existingCleanSlateOp.actionType,
+              opType: existingCleanSlateOp.opType as Operation['opType'],
+              entityType: existingCleanSlateOp.entityType,
+              entityId: existingCleanSlateOp.entityId ?? undefined,
+              entityIds: existingCleanSlateOp.entityIds,
+              payload: existingCleanSlateOp.payload,
+              vectorClock: existingCleanSlateOp.vectorClock as Operation['vectorClock'],
+              timestamp: op.timestamp,
+              schemaVersion: existingCleanSlateOp.schemaVersion,
+              isPayloadEncrypted: existingCleanSlateOp.isPayloadEncrypted,
+              syncImportReason: existingCleanSlateOp.syncImportReason ?? undefined,
+            };
+            const isExactRetry =
+              existingCleanSlateOp.userId === userId &&
+              (existingCleanSlateOp.opType === 'SYNC_IMPORT' ||
+                existingCleanSlateOp.opType === 'BACKUP_IMPORT' ||
+                existingCleanSlateOp.opType === 'REPAIR') &&
+              isSameIncomingOperation(existingOperation, op, 0, 0);
+            if (isExactRetry) {
+              Logger.info(
+                `[user:${userId}] Idempotent clean-slate retry from client ${clientId} ` +
+                  `for existing op seq=${existingCleanSlateOp.serverSeq}`,
+              );
+              return {
+                opId,
+                accepted: true,
+                serverSeq: existingCleanSlateOp.serverSeq,
+              };
+            }
+            return {
+              opId,
+              accepted: false,
+              error: 'Operation ID already belongs to a different operation',
+              errorCode: SYNC_ERROR_CODES.INVALID_OP_ID,
+            };
+          }
+        }
+
         if (reason === 'initial' && !isCleanSlate) {
           const existingImport = await findExistingSyncImport(userId, opId);
 

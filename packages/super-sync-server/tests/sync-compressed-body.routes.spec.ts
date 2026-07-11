@@ -70,7 +70,7 @@ vi.mock('../src/db', () => ({
 import { syncRoutes } from '../src/sync/sync.routes';
 import { SYNC_ERROR_CODES } from '../src/sync/sync.types';
 import { computeOpStorageBytes } from '../src/sync/sync.const';
-import { SUPER_SYNC_MAX_OPS_PER_UPLOAD } from '@sp/shared-schema';
+import { CURRENT_SCHEMA_VERSION, SUPER_SYNC_MAX_OPS_PER_UPLOAD } from '@sp/shared-schema';
 
 const gzipAsync = promisify(zlib.gzip);
 
@@ -170,6 +170,7 @@ describe('Sync compressed body routes', () => {
     });
     mocks.syncService.getCachedSnapshotBytes.mockResolvedValue(0);
     mocks.prisma.operation.findFirst.mockResolvedValue(null);
+    mocks.prisma.operation.findUnique.mockReset().mockResolvedValue(null);
     mocks.prisma.operation.findMany.mockResolvedValue([]);
 
     app = Fastify();
@@ -905,6 +906,7 @@ describe('Sync compressed body routes', () => {
         clientId,
         reason: 'initial',
         vectorClock: {},
+        opId: '018f2f0b-1c2d-7a1b-8c3d-123456789abc',
         isCleanSlate: true,
       },
     });
@@ -912,6 +914,98 @@ describe('Sync compressed body routes', () => {
     expect(response.statusCode).toBe(413);
     expect(response.json().errorCode).toBe('STORAGE_QUOTA_EXCEEDED');
     expect(mocks.syncService.uploadOps).not.toHaveBeenCalled();
+  });
+
+  it('should return persistent success for a clean-slate retry before deleting data', async () => {
+    const opId = '018f2f0b-1c2d-7a1b-8c3d-123456789abc';
+    const clientId = 'clean-slate-retry-client';
+    const state = { TASK: { 'task-1': { id: 'task-1' } } };
+    const vectorClock = { [clientId]: 1 };
+    mocks.prisma.operation.findUnique.mockResolvedValueOnce({
+      id: opId,
+      userId: 1,
+      clientId,
+      actionType: '[SP_ALL] Load(import) all data',
+      opType: 'SYNC_IMPORT',
+      entityType: 'ALL',
+      entityId: null,
+      entityIds: [],
+      payload: state,
+      vectorClock,
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      clientTimestamp: BigInt(1),
+      receivedAt: BigInt(1),
+      isPayloadEncrypted: false,
+      syncImportReason: null,
+      serverSeq: 77,
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sync/snapshot',
+      headers: { authorization: `Bearer ${authToken}` },
+      payload: {
+        state,
+        clientId,
+        reason: 'recovery',
+        vectorClock,
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        opId,
+        isCleanSlate: true,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ accepted: true, serverSeq: 77 });
+    expect(mocks.syncService.uploadOps).not.toHaveBeenCalled();
+    expect(mocks.syncService.checkStorageQuota).not.toHaveBeenCalled();
+  });
+
+  it('should reject a clean-slate retry whose opId belongs to different content', async () => {
+    const opId = '018f2f0b-1c2d-7a1b-8c3d-123456789abc';
+    const clientId = 'clean-slate-collision-client';
+    const vectorClock = { [clientId]: 1 };
+    mocks.prisma.operation.findUnique.mockResolvedValueOnce({
+      id: opId,
+      userId: 1,
+      clientId,
+      actionType: '[SP_ALL] Load(import) all data',
+      opType: 'SYNC_IMPORT',
+      entityType: 'ALL',
+      entityId: null,
+      entityIds: [],
+      payload: { TASK: { existing: { id: 'existing' } } },
+      vectorClock,
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      clientTimestamp: BigInt(1),
+      receivedAt: BigInt(1),
+      isPayloadEncrypted: false,
+      syncImportReason: null,
+      serverSeq: 77,
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sync/snapshot',
+      headers: { authorization: `Bearer ${authToken}` },
+      payload: {
+        state: { TASK: { replacement: { id: 'replacement' } } },
+        clientId,
+        reason: 'recovery',
+        vectorClock,
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        opId,
+        isCleanSlate: true,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      accepted: false,
+      error: 'Operation ID already belongs to a different operation',
+    });
+    expect(mocks.syncService.uploadOps).not.toHaveBeenCalled();
+    expect(mocks.syncService.checkStorageQuota).not.toHaveBeenCalled();
   });
 
   it('should repeat initial snapshot duplicate detection inside the user lock', async () => {

@@ -111,10 +111,13 @@ export class SyncService {
    * and block otherwise valid operations in the same request.
    */
   filterValidOpsForQuota(ops: Operation[], clientId: string): Operation[] {
+    const seenOperationIds = new Set<string>();
     return ops.filter((op) => {
+      const isFirstOccurrence = !seenOperationIds.has(op.id);
+      seenOperationIds.add(op.id);
       const validation = this.validationService.validateOp(op, clientId);
       this.prevalidatedOps.set(op, validation);
-      return validation.valid;
+      return isFirstOccurrence && validation.valid;
     });
   }
 
@@ -218,7 +221,24 @@ export class SyncService {
             });
             uploadDbRoundtrips++;
 
+            const firstOperationById = new Map<
+              string,
+              { op: Operation; originalTimestamp: number }
+            >();
+
             for (const op of ops) {
+              const firstRequestOperation = firstOperationById.get(op.id);
+              if (!firstRequestOperation) {
+                firstOperationById.set(op.id, {
+                  op,
+                  originalTimestamp: op.timestamp,
+                });
+              }
+              const validation =
+                prevalidatedResults.get(op) ??
+                this.validationService.validateOp(op, clientId);
+              prevalidatedResults.set(op, validation);
+
               const { result, storageBytes, fallback } =
                 await this.operationUploadService.processOperation(
                   userId,
@@ -226,8 +246,9 @@ export class SyncService {
                   op,
                   now,
                   tx,
-                  prevalidatedResults.get(op),
+                  validation,
                   requestStartOccupiedIds?.has(op.id),
+                  firstRequestOperation,
                 );
               results.push(result);
               if (result.accepted) {

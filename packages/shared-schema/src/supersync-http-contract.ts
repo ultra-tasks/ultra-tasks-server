@@ -112,19 +112,29 @@ export const SuperSyncDownloadOpsQuerySchema = z.object({
   excludeClient: SuperSyncClientIdSchema.optional(),
 });
 
-export const SuperSyncUploadSnapshotRequestSchema = z.object({
-  state: z.unknown(),
-  clientId: SuperSyncClientIdSchema,
-  reason: z.enum(SUPER_SYNC_SNAPSHOT_REASONS),
-  vectorClock: SuperSyncVectorClockSchema,
-  schemaVersion: z.number().int().min(1).max(100).optional(),
-  isPayloadEncrypted: z.boolean().optional(),
-  syncImportReason: z.enum(SUPER_SYNC_IMPORT_REASONS).optional(),
-  opId: z.string().uuid().optional(),
-  isCleanSlate: z.boolean().optional(),
-  snapshotOpType: z.enum(SUPER_SYNC_SNAPSHOT_OP_TYPES).optional(),
-  requestId: SuperSyncRequestIdSchema.optional(),
-});
+export const SuperSyncUploadSnapshotRequestSchema = z
+  .object({
+    state: z.unknown(),
+    clientId: SuperSyncClientIdSchema,
+    reason: z.enum(SUPER_SYNC_SNAPSHOT_REASONS),
+    vectorClock: SuperSyncVectorClockSchema,
+    schemaVersion: z.number().int().min(1).max(100).optional(),
+    isPayloadEncrypted: z.boolean().optional(),
+    syncImportReason: z.enum(SUPER_SYNC_IMPORT_REASONS).optional(),
+    opId: z.string().uuid().optional(),
+    isCleanSlate: z.boolean().optional(),
+    snapshotOpType: z.enum(SUPER_SYNC_SNAPSHOT_OP_TYPES).optional(),
+    requestId: SuperSyncRequestIdSchema.optional(),
+  })
+  .superRefine((request, context) => {
+    if (request.isCleanSlate && !request.opId) {
+      context.addIssue({
+        code: 'custom',
+        path: ['opId'],
+        message: 'opId is required for clean-slate snapshot idempotency',
+      });
+    }
+  });
 
 export const SuperSyncOperationResponseSchema = SuperSyncOperationSchema.passthrough();
 

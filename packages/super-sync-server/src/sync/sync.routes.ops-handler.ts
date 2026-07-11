@@ -250,8 +250,8 @@ export const uploadOpsHandler = async (
 
     if (rejected > 0) {
       Logger.debug(
-        `[user:${userId}] Rejected ops:`,
-        results.filter((r) => !r.accepted),
+        `[user:${userId}] Rejected op error codes:`,
+        results.filter((r) => !r.accepted).map((r) => r.errorCode ?? 'UNKNOWN'),
       );
     }
 

@@ -188,6 +188,19 @@ describe('SuperSync HTTP contract schemas', () => {
     expect(parsed.requestId).toBe('snapshot-v1-request');
   });
 
+  it('requires an operation ID for destructive clean-slate snapshots', () => {
+    expect(() =>
+      SuperSyncUploadSnapshotRequestSchema.parse({
+        state: {},
+        clientId: 'client_1',
+        reason: 'recovery',
+        vectorClock: { client_1: 1 },
+        schemaVersion: 1,
+        isCleanSlate: true,
+      }),
+    ).toThrow();
+  });
+
   it('rejects requestIds containing characters outside the safe-log charset', () => {
     // Control character — would be unsafe to embed in server log lines.
     expect(() =>
