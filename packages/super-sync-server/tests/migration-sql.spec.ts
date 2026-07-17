@@ -217,7 +217,15 @@ describe('performance migrations', () => {
     expect(deployScript).toContain('jq is required');
     expect(deployScript).toContain('docker compose config --format json failed');
     expect(deployScript).toContain('docker image inspect');
-    expect(deployScript).toContain('run --rm --no-deps --interactive=false -T supersync');
+    expect(deployScript).toContain(
+      'run --rm --no-deps --interactive=false -T -e MIGRATE_STEP_TIMEOUT=$MIGRATE_STEP_TIMEOUT supersync',
+    );
+    // The host forwards its migration budget into the image so the in-image
+    // per-step timeout can't silently cap a large MIGRATION_TIMEOUT at the
+    // image default (1800s) and kill a slow CREATE INDEX CONCURRENTLY early.
+    expect(deployScript).toContain(
+      'MIGRATE_STEP_TIMEOUT="${MIGRATE_STEP_TIMEOUT:-$((MIGRATION_TIMEOUT',
+    );
     expect(deployScript).toContain('prisma db execute');
     expect(deployScript).toContain(migrationCommand);
     expect(deployScript).toContain('Migrator container started');

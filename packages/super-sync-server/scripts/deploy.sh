@@ -95,7 +95,7 @@ load_env_value() {
     export "$key=$value"
 }
 
-for env_key in GHCR_USER GHCR_TOKEN DATABASE_URL POSTGRES_SERVICE POSTGRES_WAIT_TIMEOUT MIGRATION_TIMEOUT DEPLOY_WAIT_TIMEOUT SUPERSYNC_SKIP_IMAGE_REVISION_CHECK; do
+for env_key in GHCR_USER GHCR_TOKEN DATABASE_URL POSTGRES_SERVICE POSTGRES_WAIT_TIMEOUT MIGRATION_TIMEOUT MIGRATE_STEP_TIMEOUT DEPLOY_WAIT_TIMEOUT SUPERSYNC_SKIP_IMAGE_REVISION_CHECK; do
     load_env_value "$env_key"
 done
 
@@ -286,7 +286,18 @@ echo ""
 # for arbitrarily long. Wrap the migrator with a timeout so a stuck deploy fails
 # loudly instead of hanging this script forever. Exit code 124 = timed out.
 MIGRATION_TIMEOUT="${MIGRATION_TIMEOUT:-900}"
-MIGRATOR_RUN="docker compose $COMPOSE_FILES run --rm --no-deps --interactive=false -T supersync"
+# The migrator image caps each migration step at MIGRATE_STEP_TIMEOUT (1800s by
+# default inside the image). Left unset it silently overrides a larger
+# MIGRATION_TIMEOUT and kills a slow CREATE INDEX CONCURRENTLY early, so forward
+# the operator's budget into the container. Keep it just under the host timeout
+# so the in-image guard — which prints the precise per-step message — fires
+# first, with the host timeout as a hard backstop.
+if [ "$MIGRATION_TIMEOUT" -gt 90 ]; then
+    MIGRATE_STEP_TIMEOUT="${MIGRATE_STEP_TIMEOUT:-$((MIGRATION_TIMEOUT - 30))}"
+else
+    MIGRATE_STEP_TIMEOUT="${MIGRATE_STEP_TIMEOUT:-$MIGRATION_TIMEOUT}"
+fi
+MIGRATOR_RUN="docker compose $COMPOSE_FILES run --rm --no-deps --interactive=false -T -e MIGRATE_STEP_TIMEOUT=$MIGRATE_STEP_TIMEOUT supersync"
 echo "==> Verifying database connectivity from the supersync image..."
 set +e
 timeout "$POSTGRES_WAIT_TIMEOUT" \
