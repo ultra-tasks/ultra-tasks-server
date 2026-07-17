@@ -1,6 +1,19 @@
 /**
  * Current schema version for all operations and state snapshots.
- * Increment this BEFORE adding a new migration.
+ *
+ * DO NOT BUMP THIS LIGHTLY — default is to NOT bump. A bump is a near-one-way
+ * fence: it hard-blocks every not-yet-updated post-v18.14.0 client (frozen
+ * cursor) on the new ops, and it CANNOT be reverted once any op carries the new
+ * version — a reverted client hard-blocks on the v(N+1) ops it already wrote and
+ * the USE_REMOTE recovery path throws on them. So a bump must earn its cost. If
+ * old clients can apply the op unmigrated, gate the new semantics on a payload
+ * marker / envelope (see LwwUpdatePayload in packages/sync-core) and LEAVE THIS
+ * CONSTANT ALONE. Only bump when a change genuinely requires it: a transforming
+ * migration (renamed/removed field, dropped op) or a semantic you must hard-fence
+ * off older clients. Cautionary example — v4 (#9009 project delete-wins) was
+ * bumped for a marker-only change old clients degrade on fine: it needed no bump,
+ * yet it now fences every lagging post-v18.14.0 client. Then, and only then,
+ * increment this BEFORE adding the new migration.
  *
  * BUMP POLICY — a bump does NOT protect the released fleet. Every released
  * client from v17.0.0 through v18.14.0 tolerates ops up to schema 5 (its
