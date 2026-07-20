@@ -7,27 +7,27 @@ A custom, high-performance synchronization server for Super Productivity.
 > **Related Documentation:**
 >
 > - [Authentication Architecture](./docs/authentication.md) - Auth design decisions and security features
-> - [Operation Log Architecture](/docs/sync-and-op-log/operation-log-architecture.md) - Client-side architecture
-> - [Server Architecture Diagrams](./sync-server-architecture-diagrams.md) - Visual diagrams
+> - [Sync Architecture Field Guide](../../docs/sync-and-op-log/sync-architecture.html) - Whole-system maintainer overview
+> - [Server Architecture](./docs/architecture.md) - Server-only contracts and trust boundaries
 > - [Backup & Disaster Recovery](./docs/backup-and-recovery.md) - Backup setup and recovery procedures
 
 ## Architecture
 
-The server uses an **Append-Only Log** architecture backed by **PostgreSQL** (via Prisma):
+The server uses an **append-on-write retained operation log** backed by **PostgreSQL** (via Prisma):
 
 1.  **Operations**: Clients upload atomic operations (Create, Update, Delete, Move).
-2.  **Sequence Numbers**: The server assigns a strictly increasing `server_seq` to each operation.
+2.  **Sequence Numbers**: The server assigns a strictly increasing per-user `server_seq` within the current sync dataset.
 3.  **Synchronization**: Clients request "all operations since sequence `X`".
-4.  **Snapshots**: The server can regenerate the full state by replaying operations, optimizing initial syncs.
+4.  **Full-state boundaries**: Clients can fast-forward from causal full-state operations; an optional plaintext cache supports server-side replay and restore.
 
 ### Key Design Principles
 
-| Principle                           | Description                                                               |
-| ----------------------------------- | ------------------------------------------------------------------------- |
-| **Server-Authoritative**            | Server assigns monotonic sequence numbers for total ordering              |
-| **Client-Side Conflict Resolution** | Server stores operations as-is; clients detect and resolve conflicts      |
-| **E2E Encryption Support**          | Payloads can be encrypted client-side; server treats them as opaque blobs |
-| **Idempotent Uploads**              | Request ID deduplication prevents duplicate operations                    |
+| Principle                      | Description                                                                                        |
+| ------------------------------ | -------------------------------------------------------------------------------------------------- |
+| **Scoped server authority**    | Server owns per-user order and accepted upload results, not app-state semantics                    |
+| **Two-part conflict handling** | Server detects upload conflicts; clients resolve rejections and download-side concurrency          |
+| **E2E encryption support**     | Optional payload encryption leaves routing and causal metadata plaintext                           |
+| **Idempotent uploads**         | Durable operation-ID uniqueness is the backstop; request IDs add a five-minute process-local cache |
 
 ## Quick Start
 
@@ -276,7 +276,9 @@ Response:
 
 ### Synchronization
 
-All sync endpoints require Bearer authentication: `Authorization: Bearer <jwt-token>`
+All HTTP sync endpoints require bearer authentication:
+`Authorization: Bearer <jwt-token>`. The WebSocket endpoint authenticates its
+connection token separately.
 
 #### 1. Upload Operations
 
@@ -328,73 +330,23 @@ npm run clear-data -- --all
 
 ## API Details
 
-### Upload Operations (`POST /api/sync/ops`)
-
-Request body:
-
-```json
-{
-  "ops": [
-    {
-      "id": "uuid-v7",
-      "opType": "UPD",
-      "entityType": "TASK",
-      "entityId": "task-123",
-      "payload": { "changes": { "title": "New title" } },
-      "vectorClock": { "clientA": 5 },
-      "timestamp": 1701234567890,
-      "schemaVersion": 1
-    }
-  ],
-  "clientId": "clientA",
-  "lastKnownSeq": 100
-}
-```
-
-Response:
-
-```json
-{
-  "results": [{ "opId": "uuid-v7", "accepted": true, "serverSeq": 101 }],
-  "newOps": [],
-  "latestSeq": 101
-}
-```
-
-### Download Operations (`GET /api/sync/ops`)
-
-Query parameters:
-
-- `sinceSeq` (required): Server sequence number to start from
-- `limit` (optional): Max operations to return (default: 500)
-
-### Upload Snapshot (`POST /api/sync/snapshot`)
-
-Used for full-state operations (BackupImport, SyncImport, Repair):
-
-```json
-{
-  "state": {
-    /* Full AppDataComplete */
-  },
-  "clientId": "clientA",
-  "reason": "initial",
-  "vectorClock": { "clientA": 10 },
-  "schemaVersion": 1
-}
-```
+The stable endpoint purposes and server invariants are documented in
+[Server Architecture](./docs/architecture.md). Request and response shapes are
+owned by
+[`packages/shared-schema/src/supersync-http-contract.ts`](../shared-schema/src/supersync-http-contract.ts);
+link to that executable contract instead of copying JSON examples here.
 
 ## Security Features
 
-| Feature                       | Implementation                                    |
-| ----------------------------- | ------------------------------------------------- |
-| **Authentication**            | JWT Bearer tokens in Authorization header         |
-| **Timing Attack Mitigation**  | Dummy hash comparison on invalid users            |
-| **Input Validation**          | Operation ID, entity ID, schema version validated |
-| **Rate Limiting**             | Configurable per-user limits                      |
-| **Vector Clock Sanitization** | Limited to 50 entries, 255 char keys              |
-| **Entity Type Allowlist**     | Prevents injection of invalid entity types        |
-| **Request Deduplication**     | Prevents duplicate operations on retry            |
+| Feature                       | Implementation                                                 |
+| ----------------------------- | -------------------------------------------------------------- |
+| **Authentication**            | JWT Bearer tokens in Authorization header                      |
+| **Timing Attack Mitigation**  | Dummy hash comparison on invalid users                         |
+| **Input Validation**          | Operation ID, entity ID, schema version validated              |
+| **Rate Limiting**             | Configurable per-user limits                                   |
+| **Vector Clock Sanitization** | Shared-schema limits; prune only after conflict detection      |
+| **Entity Type Allowlist**     | Prevents injection of invalid entity types                     |
+| **Request Deduplication**     | Five-minute process cache plus durable operation-ID uniqueness |
 
 ## Multi-Instance Deployment Considerations
 
@@ -425,9 +377,21 @@ When deploying multiple server instances behind a load balancer, be aware of the
 
 - Implement Redis distributed lock (optional, only for performance)
 
+### Request and Quota Coordination
+
+**Issue**: Request-result deduplication, in-flight storage reconciles, and forced
+storage-reconcile markers are process-local.
+
+**Impact**: A retry routed to another instance can be recomputed, although
+durable operation-ID uniqueness still prevents the same operation from being
+inserted twice. A forced storage-counter reconcile signal does not survive a
+process restart or move to another instance, so later exact reconciliation must
+self-heal any drift.
+
 ### Single-Instance Deployment
 
-For single-instance deployments, these limitations do not apply. The current implementation is fully functional and well-tested for single-instance use.
+For single-instance deployments, the cross-instance portions of these
+limitations do not apply. Process restarts still clear in-memory coordination.
 
 ## Security Notes
 
