@@ -105,28 +105,6 @@ describe('#8334 multi-entity conflict SQL (PGlite)', () => {
     return res.rows;
   };
 
-  // detectConflictForEntity() — single entity, Prisma `OR: [{entityId}, {entityIds:{has}}]`
-  // which Prisma renders as `entity_id = $1 OR entity_ids @> ARRAY[$1]`.
-  const detectForEntity = async (
-    entityType: string,
-    id: string,
-  ): Promise<LatestRow | null> => {
-    const res = await db.query<LatestRow>(
-      `SELECT o.entity_id AS "entityId",
-              o.client_id AS "clientId",
-              o.server_seq AS "serverSeq",
-              o.vector_clock AS "vectorClock"
-       FROM operations o
-       WHERE o.user_id = 1
-         AND o.entity_type = $1
-         AND (o.entity_id = $2 OR o.entity_ids @> ARRAY[$2]::text[])
-       ORDER BY o.server_seq DESC
-       LIMIT 1`,
-      [entityType, id],
-    );
-    return res.rows[0] ?? null;
-  };
-
   // prefetchLatestEntityOpsForBatch() — multi-entity-TYPE batch via a JOIN over
   // (entity_type, entity_id) pairs.
   const prefetchForPairs = async (
@@ -292,35 +270,6 @@ describe('#8334 multi-entity conflict SQL (PGlite)', () => {
       const byEntity = Object.fromEntries(rows.map((r) => [r.entityId, r.serverSeq]));
 
       expect(byEntity).toEqual({ 'task-1': 3, 'task-2': 1, 'task-3': 2 });
-    });
-  });
-
-  describe('detectConflictForEntity (Prisma OR / entity_ids @> ARRAY[id])', () => {
-    it('finds a multi-entity op via its non-first entity', async () => {
-      await insertOp({
-        id: 'opA',
-        serverSeq: 1,
-        clientId: 'A',
-        entityId: 'task-1',
-        entityIds: ['task-1', 'task-2'],
-      });
-
-      const row = await detectForEntity('TASK', 'task-2');
-
-      expect(row).not.toBeNull();
-      expect(row?.clientId).toBe('A');
-    });
-
-    it('returns null for an unrelated entity', async () => {
-      await insertOp({
-        id: 'opA',
-        serverSeq: 1,
-        clientId: 'A',
-        entityId: 'task-1',
-        entityIds: ['task-1', 'task-2'],
-      });
-
-      expect(await detectForEntity('TASK', 'task-9')).toBeNull();
     });
   });
 
