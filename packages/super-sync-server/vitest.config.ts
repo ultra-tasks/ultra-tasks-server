@@ -27,6 +27,8 @@ export default defineConfig({
       'tests/integration/snapshot-vector-clock-sql.integration.spec.ts',
       'tests/integration/conflict-detection-sql.integration.spec.ts',
       'tests/integration/repair-causality.integration.spec.ts',
+      'tests/integration/health-alert-db-probe.integration.spec.ts',
+      'tests/integration/migrate-deploy-db-timeout.integration.spec.ts',
       // Tests password reset routes that don't exist - server uses passkey/magic link auth
       'tests/password-reset-api.spec.ts',
     ],
