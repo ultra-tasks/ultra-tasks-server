@@ -231,54 +231,31 @@ All configuration is done via environment variables.
 
 ### Authentication
 
-#### Register a new user
+Production account creation and login use passkeys or emailed magic links; there
+is no production password-based `/api/register` or `/api/login` endpoint.
 
-```http
-POST /api/register
-Content-Type: application/json
+| Endpoint group             | Purpose                                                           |
+| -------------------------- | ----------------------------------------------------------------- |
+| `/api/register/passkey/*`  | Start and verify passkey registration                             |
+| `/api/register/magic-link` | Register an email-only account                                    |
+| `/api/verify-email`        | Activate an account and, for passkey signup, its bound credential |
+| `/api/login/passkey/*`     | Start and verify passkey authentication                           |
+| `/api/login/magic-link*`   | Request and consume a one-time login link                         |
+| `/api/recover/passkey*`    | Replace a passkey after email-token recovery                      |
+| `/api/replace-token`       | Revoke all earlier JWTs and return a replacement                  |
 
-{
-  "email": "user@example.com",
-  "password": "yourpassword"
-}
-```
-
-Response:
-
-```json
-{
-  "message": "User registered. Please verify your email.",
-  "id": 1,
-  "email": "user@example.com"
-}
-```
-
-#### Login
-
-```http
-POST /api/login
-Content-Type: application/json
-
-{
-  "email": "user@example.com",
-  "password": "yourpassword"
-}
-```
-
-Response:
-
-```json
-{
-  "token": "jwt-token",
-  "user": { "id": 1, "email": "user@example.com" }
-}
-```
+See [Authentication Architecture](./docs/authentication.md) for lifecycle and
+security boundaries. Executable routes and schemas live in
+[`src/api.ts`](./src/api.ts), with token behavior in
+[`src/auth.ts`](./src/auth.ts) and WebAuthn behavior in
+[`src/passkey.ts`](./src/passkey.ts).
 
 ### Synchronization
 
 All HTTP sync endpoints require bearer authentication:
-`Authorization: Bearer <jwt-token>`. The WebSocket endpoint authenticates its
-connection token separately.
+`Authorization: Bearer <jwt-token>`. The WebSocket endpoint uses the same
+full-access, 365-day JWT from the `token` query parameter; it is not a narrower
+WebSocket-only credential.
 
 #### 1. Upload Operations
 
@@ -332,25 +309,43 @@ npm run clear-data -- --all
 
 The stable endpoint purposes and server invariants are documented in
 [Server Architecture](./docs/architecture.md). Request and response shapes are
-owned by
-[`packages/shared-schema/src/supersync-http-contract.ts`](../shared-schema/src/supersync-http-contract.ts);
-link to that executable contract instead of copying JSON examples here.
+owned by the executable routes: sync wire shapes live in
+[`packages/shared-schema/src/supersync-http-contract.ts`](../shared-schema/src/supersync-http-contract.ts),
+while authentication schemas live beside the routes in
+[`src/api.ts`](./src/api.ts).
 
 ## Security Features
 
-| Feature                       | Implementation                                                 |
-| ----------------------------- | -------------------------------------------------------------- |
-| **Authentication**            | JWT Bearer tokens in Authorization header                      |
-| **Timing Attack Mitigation**  | Dummy hash comparison on invalid users                         |
-| **Input Validation**          | Operation ID, entity ID, schema version validated              |
-| **Rate Limiting**             | Configurable per-user limits                                   |
-| **Vector Clock Sanitization** | Shared-schema limits; prune only after conflict detection      |
-| **Entity Type Allowlist**     | Prevents injection of invalid entity types                     |
-| **Request Deduplication**     | Five-minute process cache plus durable operation-ID uniqueness |
+| Feature                          | Implementation                                                 |
+| -------------------------------- | -------------------------------------------------------------- |
+| **Authentication**               | Passkey or magic-link login issuing JWT bearer tokens          |
+| **Enumeration Resistance**       | Neutral email-flow responses and dummy passkey options         |
+| **Input Validation**             | Operation ID, entity ID, schema version validated              |
+| **Rate Limiting**                | Route-specific authentication and per-user sync limits         |
+| **Vector Clock Sanitization**    | Shared-schema limits; prune only after conflict detection      |
+| **Entity Type Allowlist**        | Prevents injection of invalid entity types                     |
+| **Request Deduplication**        | Five-minute process cache plus durable operation-ID uniqueness |
+| **Whole-Account JWT Revocation** | Token versioning with a 30-second process-local auth cache     |
 
 ## Multi-Instance Deployment Considerations
 
-When deploying multiple server instances behind a load balancer, be aware of these limitations:
+The bundled Helm chart deliberately caps SuperSync at one replica. A custom
+multi-instance deployment must address the following process-local state before
+it can provide the same guarantees.
+
+### Authentication Cache and Revocation
+
+**Issue**: Successful JWT verification caches the account's verification and
+token-version state for 30 seconds in each process. A token-version write
+invalidates only the process performing that write.
+
+**Impact**: After token replacement, passkey recovery, or account deletion, a
+different replica can accept a previously cached JWT for at most the remaining
+cache TTL.
+
+**Solution for multi-instance**: Use shared invalidation or centralized
+verification. Consistent per-account routing can reduce exposure, but is not a
+general replacement for shared invalidation.
 
 ### Passkey Challenge Storage
 
@@ -360,8 +355,8 @@ When deploying multiple server instances behind a load balancer, be aware of the
 
 **Solution for multi-instance**:
 
-- Implement Redis-backed challenge storage
-- Or use sticky sessions (less ideal)
+- Implement shared challenge storage
+- Or use sticky sessions for the complete WebAuthn ceremony
 
 **Current status**: A warning is logged at startup in production if in-memory storage is used.
 
@@ -396,6 +391,22 @@ limitations do not apply. Process restarts still clear in-memory coordination.
 ## Security Notes
 
 - **Set JWT_SECRET** to a secure random value in production (min 32 characters).
-- **Use HTTPS in production**. The Docker setup includes Caddy to handle this automatically.
+- **Treat email verification, login, and recovery links as credentials.** Their
+  tokens are currently stored in plaintext. Expiry prevents use but is not a
+  general automatic-deletion boundary: records are cleared when their flow
+  consumes or explicitly rejects them, or when a later request overwrites them;
+  an expired verification token can remain stored. See
+  [Authentication Architecture](./docs/authentication.md#email-tokens-are-bearer-secrets).
+- **Use HTTPS and WSS in production.** Every reverse-proxy logging setup must
+  omit sensitive query values and token-bearing `Referer` headers from both
+  access logs and request failure/error logs.
+  Login and recovery pages must also emit `Referrer-Policy: no-referrer` so
+  same-origin subrequests do not copy their credential-bearing URL. The
+  [bundled Caddy configuration](./Caddyfile) replaces the complete logged query
+  suffix, drops `Referer` from both Caddy log paths, and provides the response
+  policy. The application error logger likewise replaces its complete query
+  suffix. Custom setups must provide equivalent protection. See
+  [Authentication Architecture](./docs/authentication.md) for why this is a
+  full-access, 365-day credential.
 - **Restrict CORS origins** in production.
 - **Database backups** are recommended for production deployments.

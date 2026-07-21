@@ -14,5 +14,5 @@ Use these maintained owners instead:
 - [Sync documentation index](../../docs/sync-and-op-log/README.md) — focused
   client contracts and scenario catalogs.
 
-This forwarding stub preserves old links for one documentation migration cycle.
-The removed diagrams remain available in git history.
+This forwarding stub preserves historical links. The removed diagrams remain
+available in git history.

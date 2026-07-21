@@ -22,8 +22,28 @@ For the client and whole-system context, start with the
 - Upload conflicts are detected server-side and returned as rejections. The
   client resolves them by producing or applying subsequent operations.
 - All HTTP sync routes require bearer authentication. The WebSocket endpoint
-  separately verifies its connection token and sends only lightweight “new
-  operations available” notifications; payloads still move over HTTP.
+  verifies the same full-access, 365-day JWT from the `token` query parameter;
+  it sends only lightweight “new operations available” notifications, while
+  payloads still move over HTTP.
+
+Production deployments must expose HTTP and WebSocket traffic only over HTTPS
+and WSS. Every reverse-proxy logging setup must omit sensitive query values and
+token-bearing `Referer` headers from access logs and request failure/error logs,
+and token-bearing login/recovery pages must emit
+`Referrer-Policy: no-referrer`. The
+[bundled Caddy configuration](../Caddyfile) replaces the complete logged query
+suffix, drops `Referer` from both Caddy log paths, and sets that response policy;
+the application error logger also replaces its complete query suffix. See the
+[authentication architecture](./authentication.md) for the token lifecycle and
+risk.
+
+JWT verification consults a bounded, 30-second process-local cache of account
+verification and token-version state. Auth mutations invalidate the cache in
+the process performing the write, but independent replicas receive no
+invalidation signal. A multi-instance deployment therefore needs shared auth
+invalidation (or must explicitly accept the bounded revocation lag); WebAuthn
+ceremonies additionally need shared challenge storage or sticky routing. The
+bundled Helm chart remains single-replica.
 
 ## Stable API Surface
 
@@ -73,8 +93,10 @@ This serialization mechanism is a load-bearing decision; see
   while retained; cleanup, quota recovery, clean-slate replacement, and explicit
   data deletion can remove them.
 - `user_sync_state` owns `lastSeq`, the optional compressed snapshot cache, and
-  the latest causal full-state marker. `sync_devices` owns per-device
-  observation and acknowledgement state.
+  the latest causal full-state marker. `sync_devices` is used only for per-device
+  identity/metadata and last-seen tracking. Its `lastAckedSeq` field is dormant
+  legacy schema state: current sync and retention code neither advances nor
+  reads it.
 - Normal sync bootstraps from operation rows. `GET /ops` can fast-forward to the
   latest causal full-state operation; clients do not download the server's
   cached snapshot blob.
@@ -116,6 +138,7 @@ confidentiality or end-to-end authenticity of the complete operation. See the
 
 | Concern                      | Owner                                                                                                                               |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Authentication               | [`api.ts`](../src/api.ts), [`auth.ts`](../src/auth.ts), [`passkey.ts`](../src/passkey.ts), [`auth-cache.ts`](../src/auth-cache.ts)  |
 | Wire protocol                | [`supersync-http-contract.ts`](../../shared-schema/src/supersync-http-contract.ts)                                                  |
 | HTTP and WebSocket routes    | [`sync.routes.ts`](../src/sync/sync.routes.ts), [`websocket.routes.ts`](../src/sync/websocket.routes.ts)                            |
 | Upload transaction and order | [`sync.service.ts`](../src/sync/sync.service.ts), [`operation-upload.service.ts`](../src/sync/services/operation-upload.service.ts) |
