@@ -33,6 +33,8 @@ import {
 } from './sync/services/websocket-connection.service';
 import { testRoutes } from './test-routes';
 import { captureMcpRoutes, captureRoutes } from './capture';
+import { loadUltraConfig, ultraAccountRoutes } from './ultra-account';
+import { sendUltraAccountEmail } from './email';
 
 // HTML escape to prevent XSS in generated HTML
 export const escapeHtml = (unsafe: string): string => {
@@ -275,6 +277,7 @@ const generatePrivacyHtml = (privacy?: PrivacyConfig): boolean => {
 const generateIndexHtml = (options: {
   hasPrivacyPolicy: boolean;
   hasOperatorTerms: boolean;
+  hasUltraAccounts?: boolean;
   dataRegion?: string;
 }): void => {
   const publicDir = resolvePublicDir();
@@ -290,6 +293,7 @@ const generateIndexHtml = (options: {
   // operator can lawfully ask consent to. The Terms link is separately optional so an
   // instance with a policy but no operator-supplied terms does not link to a 404.
   const keep = new Set<string>();
+  if (options.hasUltraAccounts) keep.add('ULTRA_ACCOUNTS');
   if (options.hasPrivacyPolicy) {
     keep.add('LEGAL_CONSENT');
     if (options.hasOperatorTerms) keep.add('LEGAL_TERMS');
@@ -368,6 +372,7 @@ export const createServer = (
   generateIndexHtml({
     hasPrivacyPolicy,
     hasOperatorTerms,
+    hasUltraAccounts: process.env.ULTRA_ACCOUNTS_ENABLED === 'true',
     dataRegion: fullConfig.dataRegion,
   });
 
@@ -492,6 +497,28 @@ export const createServer = (
       }));
 
       // API Routes
+      const ultraConfig = loadUltraConfig(fullConfig.publicUrl);
+      if (ultraConfig) {
+        await fastifyServer.register(ultraAccountRoutes, {
+          prefix: '/api/v2/accounts',
+          db: prisma,
+          transaction: (run) => prisma.$transaction(run),
+          config: ultraConfig,
+          requireTermsConsent: isConsentRequired(fullConfig),
+          hasOperatorTerms,
+          sendMail: sendUltraAccountEmail,
+        });
+        fastifyServer.get('/account', async (_, reply) =>
+          reply
+            .header('Cache-Control', 'no-store')
+            .header('Referrer-Policy', 'no-referrer')
+            .header(
+              'Content-Security-Policy',
+              "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+            )
+            .sendFile('ultra-account.html'),
+        );
+      }
       await fastifyServer.register(apiRoutes, {
         prefix: '/api',
         requireTermsConsent: isConsentRequired(fullConfig),

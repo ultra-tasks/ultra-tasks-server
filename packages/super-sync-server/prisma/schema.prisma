@@ -261,3 +261,70 @@ model CaptureAuth {
   @@index([expiresAt])
   @@map("capture_auth")
 }
+
+model UltraAccount {
+  id String @id
+  email String @unique
+  username String? @unique
+  displayName String @default("") @map("display_name")
+  verified Boolean @default(false)
+  registrationRecord String @map("registration_record")
+  bundle Json
+  termsAcceptedAt BigInt? @map("terms_accepted_at")
+  vaultVersion Int @default(1) @map("vault_version")
+  createdAt BigInt @map("created_at")
+  sessions UltraSession[]
+  factors UltraFactor[]
+  recoveryCodes UltraRecoveryCode[]
+  @@map("ultra_accounts")
+}
+model UltraSession {
+  id String @id
+  accountId String @map("account_id")
+  deviceName String @map("device_name")
+  createdAt BigInt @map("created_at")
+  authAt BigInt @map("auth_at")
+  expiresAt BigInt @map("expires_at")
+  idleExpiresAt BigInt @map("idle_expires_at")
+  revoked Boolean @default(false)
+  account UltraAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  tokens UltraRefreshToken[]
+  @@index([accountId])
+  @@map("ultra_sessions")
+}
+model UltraRefreshToken {
+  digest String @id
+  sessionId String @map("session_id")
+  used Boolean @default(false)
+  session UltraSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  @@index([sessionId])
+  @@map("ultra_refresh_tokens")
+}
+model UltraFactor {
+  id String @id
+  accountId String @map("account_id")
+  kind String
+  enabled Boolean @default(false)
+  data Json
+  lastStep BigInt @default(-1) @map("last_step")
+  account UltraAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  @@index([accountId])
+  @@map("ultra_factors")
+}
+model UltraRecoveryCode {
+  digest String @id
+  accountId String @map("account_id")
+  account UltraAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  @@index([accountId])
+  @@map("ultra_recovery_codes")
+}
+model UltraChallenge {
+  digest String @id
+  kind String
+  accountId String? @map("account_id")
+  expiresAt BigInt @map("expires_at")
+  attempts Int @default(0)
+  data Json
+  @@index([expiresAt])
+  @@map("ultra_challenges")
+}

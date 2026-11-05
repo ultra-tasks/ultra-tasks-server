@@ -1,0 +1,52 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+}
+body {
+  margin: 0;
+}
+main {
+  max-width: 48rem;
+  margin: 2rem auto;
+  padding: 1rem;
+}
+section,
+form {
+  margin-block: 1.5rem;
+}
+label {
+  display: block;
+  margin-block: 0.8rem;
+}
+input:not([type='checkbox']) {
+  display: block;
+  width: min(95%, 32rem);
+  padding: 0.65rem;
+}
+button {
+  padding: 0.6rem 1rem;
+  margin: 0.3rem;
+  cursor: pointer;
+}
+pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 1rem;
+  border: 1px solid currentColor;
+}
+[hidden] {
+  display: none !important;
+}
+#status {
+  padding: 1rem;
+  border-inline-start: 0.25rem solid #5078d0;
+}
+@media print {
+  main > :not(#recovery-sheet) {
+    display: none !important;
+  }
+  #recovery-sheet nav,
+  #finish-signup {
+    display: none !important;
+  }
+}

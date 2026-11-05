@@ -675,3 +675,8 @@ limitations do not apply. Process restarts still clear in-memory coordination.
   encrypted with the password your users chose in the app; it is not stored on
   the server, so the task data in a server backup is unreadable without it.
   Each user must keep that password outside the server backups.
+
+## Ultra Tasks account foundation
+
+Native password accounts, recovery keys, and 2FA are opt-in and isolated from
+legacy sync. See [setup, security behavior, API, and tests](docs/ultra-accounts.md).

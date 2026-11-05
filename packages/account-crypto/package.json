@@ -1,0 +1,40 @@
+{
+  "name": "@ultra-tasks/account-crypto",
+  "version": "0.1.0",
+  "private": false,
+  "license": "MIT",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "test": "tsc --noEmit -p tsconfig.spec.json && vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@serenity-kit/opaque": "1.1.0",
+    "@hpke/core": "1.10.0",
+    "hash-wasm": "4.12.0"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "typescript": "^5.0.0 || ^6.0.0",
+    "vitest": "5.0.3"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
+}

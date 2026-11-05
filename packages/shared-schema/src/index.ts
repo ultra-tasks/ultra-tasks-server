@@ -101,3 +101,4 @@ export type {
   SuperSyncCaptureTokenResponse,
   SuperSyncCaptureConnectCodeResponse,
 } from './supersync-http-contract';
+export * from './ultra-account-contract';
