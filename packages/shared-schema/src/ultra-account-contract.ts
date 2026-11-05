@@ -62,7 +62,11 @@ export const UltraRecordHeaderSchema = z
     v: z.literal(2),
     serverId: z.string().uuid(),
     scopeId: z.string().uuid(),
-    entityId: z.string().min(1).max(128),
+    entityId: z
+      .string()
+      .min(1)
+      .max(128)
+      .refine((value) => !['__proto__', 'constructor', 'prototype'].includes(value)),
     entityType: z.string().min(1).max(64),
     actorId: z.string().uuid(),
     deviceId: z.string().uuid(),

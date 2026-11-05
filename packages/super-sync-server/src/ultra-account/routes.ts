@@ -54,6 +54,7 @@ import {
   mfaCodes,
   verifyMfaCode,
 } from './security';
+import { ultraScopeRoutes } from './scope-routes';
 
 export interface UltraRoutesOptions {
   db: UltraDb;
@@ -66,6 +67,7 @@ export interface UltraRoutesOptions {
     kind: 'verify' | 'recover',
     token: string,
   ) => Promise<boolean>;
+  sendInviteMail?: (email: string) => Promise<boolean>;
 }
 const opaqueMessage = z
   .string()
@@ -92,6 +94,7 @@ export const ultraAccountRoutes = async (
   options: UltraRoutesOptions,
 ): Promise<void> => {
   const { db, transaction, config, sendMail } = options;
+  await app.register(ultraScopeRoutes, { ...options, prefix: '/sync' });
   await opaqueReady;
   // Fail at startup if a corrupt setup was supplied, without logging the secret.
   try {
@@ -214,8 +217,8 @@ export const ultraAccountRoutes = async (
         recoveryKeys: true,
         totp: true,
         webauthn: true,
-        scopedSync: false,
-        sharedProjects: false,
+        scopedSync: true,
+        sharedProjects: true,
       },
       requireTermsConsent: options.requireTermsConsent ?? false,
       hasOperatorTerms: options.hasOperatorTerms ?? false,

@@ -9,6 +9,7 @@ import {
   Transport,
   opaqueReady,
   opaqueServer,
+  AccountApiError,
 } from '@ultra-tasks/account-crypto';
 import { ultraAccountRoutes } from '../src/ultra-account/routes';
 import { UltraConfig } from '../src/ultra-account/security';
@@ -31,6 +32,17 @@ export const createHarness = async (
   const database = new PGlite();
   await database.waitReady;
   await database.exec(migration);
+  await database.exec(
+    readFileSync(
+      fileURLToPath(
+        new URL(
+          '../prisma/migrations/20261105010000_ultra_scopes/migration.sql',
+          import.meta.url,
+        ),
+      ),
+      'utf8',
+    ),
+  );
   const db = {
     $queryRaw: async (sql: Prisma.Sql) =>
       (await database.query(sql.text, sql.values)).rows,
@@ -62,7 +74,7 @@ export const createHarness = async (
   };
   const mail: { email: string; kind: 'verify' | 'recover'; token: string }[] = [];
   const app = Fastify();
-  await app.register(rateLimit);
+  await app.register(rateLimit, { global: false });
   await app.register(ultraAccountRoutes, {
     prefix: '/api/v2/accounts',
     db,
@@ -89,7 +101,10 @@ export const createHarness = async (
       headers: accessToken ? { authorization: 'Bearer ' + accessToken } : {},
     });
     if (result.statusCode >= 400)
-      throw new Error(result.json().error ?? String(result.statusCode));
+      throw new AccountApiError(
+        result.statusCode,
+        result.json().error ?? String(result.statusCode),
+      );
     return result.json();
   };
   const client = () => new AccountClient(transport);

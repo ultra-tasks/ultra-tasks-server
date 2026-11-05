@@ -75,6 +75,25 @@ export const sendUltraAccountEmail = async (
   }
 };
 
+/** The verified inbox is the invitation credential; email contains no project content or key. */
+export const sendUltraInviteEmail = async (to: string): Promise<boolean> => {
+  try {
+    const config = loadConfigFromEnv();
+    await (
+      await getTransporter()
+    ).sendMail({
+      from: config.smtp?.from || '"Ultra Tasks" <noreply@example.com>',
+      to,
+      subject: 'An Ultra Tasks project invitation is waiting',
+      text: `Sign in to your Ultra Tasks app with this email address to view your invitation. If you do not have an account, register and verify this address at ${config.publicUrl}/account. Invitations expire after seven days.`,
+    });
+    return true;
+  } catch {
+    Logger.error('Ultra project invitation email delivery failed');
+    return false;
+  }
+};
+
 export const sendVerificationEmail = async (
   to: string,
   token: string,

@@ -34,7 +34,7 @@ import {
 import { testRoutes } from './test-routes';
 import { captureMcpRoutes, captureRoutes } from './capture';
 import { loadUltraConfig, ultraAccountRoutes } from './ultra-account';
-import { sendUltraAccountEmail } from './email';
+import { sendUltraAccountEmail, sendUltraInviteEmail } from './email';
 
 // HTML escape to prevent XSS in generated HTML
 export const escapeHtml = (unsafe: string): string => {
@@ -502,11 +502,13 @@ export const createServer = (
         await fastifyServer.register(ultraAccountRoutes, {
           prefix: '/api/v2/accounts',
           db: prisma,
-          transaction: (run) => prisma.$transaction(run),
+          transaction: (run) =>
+            prisma.$transaction(run, { maxWait: 10000, timeout: 30000 }),
           config: ultraConfig,
           requireTermsConsent: isConsentRequired(fullConfig),
           hasOperatorTerms,
           sendMail: sendUltraAccountEmail,
+          sendInviteMail: sendUltraInviteEmail,
         });
         fastifyServer.get('/account', async (_, reply) =>
           reply

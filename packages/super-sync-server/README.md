@@ -676,7 +676,8 @@ limitations do not apply. Process restarts still clear in-memory coordination.
   the server, so the task data in a server backup is unreadable without it.
   Each user must keep that password outside the server backups.
 
-## Ultra Tasks account foundation
+## Native encrypted accounts and sync
 
-Native password accounts, recovery keys, and 2FA are opt-in and isolated from
-legacy sync. See [setup, security behavior, API, and tests](docs/ultra-accounts.md).
+Native password accounts, recovery keys, 2FA, periodic personal sync, and shared
+projects are opt-in and isolated from legacy sync. See [account setup and security](docs/ultra-accounts.md)
+and the [scope protocol, migration, limits, and tests](docs/native-sync.md).

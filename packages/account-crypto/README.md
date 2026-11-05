@@ -35,3 +35,17 @@ The browser integration test exercises the built bundle, real WebAuthn ceremonie
 with a virtual authenticator, printable recovery material, and cached offline
 unlock. Native Android/iOS background-worker integration and independent security
 review remain required before a public v2 sync/collaboration release.
+
+The package also provides `SyncClient`, encrypted IndexedDB state storage,
+personal model codecs, shared-task field validation, and three-way merging.
+A client persists intents and the exact signed/encrypted in-flight transaction
+before sending it, retries uncertain writes verbatim, and preserves overlapping
+edits as private conflict drafts. The browser host holds one native workspace
+lease while unlocked. The local account/session cache and sync state are bound
+to the account and server; no password or unwrapped key is persisted there.
+
+`personalRecords` covers the complete legacy model inventory, including archives,
+settings, reminders, integrations, and opaque plugin documents. Time accrual and
+corrections use separate device buckets. Shared project records use an explicit
+field allowlist; private overlays remain in the personal scope.
+See [the maintained protocol and limits](../super-sync-server/docs/native-sync.md).

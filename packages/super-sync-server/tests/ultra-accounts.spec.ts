@@ -1,8 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Prisma } from '@prisma/client';
 import { createHarness, password } from './ultra-account.helper';
 import { totp, totpStep, digest } from '../src/ultra-account/security';
 import { unlockBundle, randomKey } from '@ultra-tasks/account-crypto';
+
+// Production-strength Argon2/OPAQUE can exceed the default 5s under parallel suite load.
+vi.setConfig({ testTimeout: 20000, hookTimeout: 30000 });
 
 describe('Ultra accounts: real routes, real PostgreSQL SQL and real client cryptography', () => {
   let h: Awaited<ReturnType<typeof createHarness>>;
@@ -62,8 +65,8 @@ describe('Ultra accounts: real routes, real PostgreSQL SQL and real client crypt
     expect(JSON.stringify(rows.rows)).not.toContain(prepared.recoveryKey);
     expect(JSON.stringify(rows.rows)).not.toContain(client.unlocked!.masterKey);
     const caps = await h.client().init();
-    expect(caps.features.scopedSync).toBe(false);
-    expect(caps.features.sharedProjects).toBe(false);
+    expect(caps.features.scopedSync).toBe(true);
+    expect(caps.features.sharedProjects).toBe(true);
   });
   it('rejects wrong passwords, unknown users, replayed challenges, and legacy bearer tokens', async () => {
     const registered = await h.register();

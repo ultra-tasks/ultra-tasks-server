@@ -328,3 +328,101 @@ model UltraChallenge {
   @@index([expiresAt])
   @@map("ultra_challenges")
 }
+
+
+// The personal owner uniqueness constraint is a partial PostgreSQL index in the migration.
+model UltraScope {
+  id String @id
+  kind String
+  ownerId String @map("owner_id")
+  ownerKey Json @map("owner_key")
+  epoch Int @default(1)
+  generation Int @default(1)
+  controlVersion Int @default(1) @map("control_version")
+  sequence Int @default(0)
+  state String @default("active")
+  migrationDevice String? @map("migration_device")
+  rotation Json?
+  members UltraScopeMember[]
+  invites UltraScopeInvite[]
+  heads UltraRecordHead[]
+  mutations UltraScopeMutation[]
+  receipts UltraScopeReceipt[]
+  checkpoints UltraScopeCheckpoint[]
+  rotationHeads UltraRotationHead[]
+  @@map("ultra_scopes")
+}
+model UltraScopeMember {
+  scopeId String @map("scope_id")
+  accountId String @map("account_id")
+  role String
+  membership Json
+  scope UltraScope @relation(fields: [scopeId], references: [id], onDelete: Cascade)
+  @@id([scopeId, accountId])
+  @@index([accountId])
+  @@map("ultra_scope_members")
+}
+model UltraScopeInvite {
+  id String @id
+  scopeId String @map("scope_id")
+  recipientId String? @map("recipient_id")
+  email String?
+  role String
+  expiresAt BigInt @map("expires_at")
+  membership Json?
+  state String @default("pending")
+  request Json
+  scope UltraScope @relation(fields: [scopeId], references: [id], onDelete: Cascade)
+  @@index([recipientId])
+  @@map("ultra_scope_invites")
+}
+model UltraRecordHead {
+  scopeId String @map("scope_id")
+  entityId String @map("entity_id")
+  revision Int
+  mutationId String @map("mutation_id")
+  deleted Boolean
+  write Json
+  bytes Int
+  scope UltraScope @relation(fields: [scopeId], references: [id], onDelete: Cascade)
+  @@id([scopeId, entityId])
+  @@map("ultra_record_heads")
+}
+model UltraScopeMutation {
+  id String @id
+  scopeId String @map("scope_id")
+  sequence Int
+  manifest Json
+  createdAt BigInt @map("created_at")
+  scope UltraScope @relation(fields: [scopeId], references: [id], onDelete: Cascade)
+  @@unique([scopeId, sequence])
+  @@map("ultra_scope_mutations")
+}
+model UltraScopeReceipt {
+  scopeId String @map("scope_id")
+  deviceId String @map("device_id")
+  counter Int
+  mutationId String @map("mutation_id")
+  digest String
+  sequence Int
+  scope UltraScope @relation(fields: [scopeId], references: [id], onDelete: Cascade)
+  @@id([scopeId, deviceId])
+  @@map("ultra_scope_receipts")
+}
+model UltraScopeCheckpoint {
+  scopeId String @map("scope_id")
+  sequence Int
+  snapshot Json
+  scope UltraScope @relation(fields: [scopeId], references: [id], onDelete: Cascade)
+  @@id([scopeId, sequence])
+  @@map("ultra_scope_checkpoints")
+}
+model UltraRotationHead {
+  scopeId String @map("scope_id")
+  entityId String @map("entity_id")
+  write Json
+  manifest Json
+  scope UltraScope @relation(fields: [scopeId], references: [id], onDelete: Cascade)
+  @@id([scopeId, entityId])
+  @@map("ultra_rotation_heads")
+}

@@ -4,8 +4,10 @@ The opt-in account foundation provides password registration and login, verified
 email, optional usernames, TOTP and WebAuthn second factors, device sessions,
 password changes, and client-side encrypted key vaults. The account portal is
 available at `/account` when enabled. Existing SuperSync accounts and data remain
-separate; this release does not migrate task data or provide v2 project sync.
-Capability discovery reports `scopedSync: false` and `sharedProjects: false`.
+separate. The app can now explicitly migrate personal data and share native
+projects through the [v2 encrypted scope protocol](native-sync.md). Capability
+discovery reports `scopedSync: true` and `sharedProjects: true`. Shared delivery
+is periodic/manual until the near-real-time milestone.
 
 ## Server setup
 
@@ -88,6 +90,8 @@ From the root, after building shared-schema and generating the Prisma client:
 ```sh
 npm run quiet -- account-crypto:test
 npm run quiet -- ultra-accounts:test
+npm run quiet -- ultra-sync:test
+npm run quiet -- ultra-sync:browser
 npm run quiet -- ultra-accounts:browser
 npm run quiet -- ultra-accounts:regression
 npm run quiet -- ultra-accounts:build

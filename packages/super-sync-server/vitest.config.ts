@@ -12,6 +12,7 @@ export default defineConfig({
       '**/node_modules/**',
       '**/dist/**',
       'tests/ultra-accounts.browser.spec.ts',
+      'tests/ultra-sync.browser.spec.ts',
       // Legacy tests that use synchronous SQLite patterns
       // These tests need to be migrated to async Prisma patterns
       'tests/sync.routes.spec.ts',

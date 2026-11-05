@@ -39,6 +39,14 @@ export type Transport = (
   accessToken?: string,
   method?: string,
 ) => Promise<unknown>;
+export class AccountApiError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
 export const httpTransport =
   (baseUrl: string): Transport =>
   async (path, body, accessToken, method = body ? 'POST' : 'GET') => {
@@ -53,7 +61,11 @@ export const httpTransport =
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
     const result = (await response.json()) as { error?: string };
-    if (!response.ok) throw new Error(result.error ?? 'Account request failed');
+    if (!response.ok)
+      throw new AccountApiError(
+        response.status,
+        result.error ?? 'Account request failed',
+      );
     return result;
   };
 
