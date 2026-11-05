@@ -1,6 +1,7 @@
 {
   "name": "@super-productivity/super-sync-server",
   "version": "1.0.0",
+  "license": "AGPL-3.0-only",
   "description": "SuperSync server for Super Productivity",
   "main": "dist/src/index.js",
   "scripts": {

@@ -12,6 +12,21 @@ A custom, high-performance synchronization server for Super Productivity.
 > - [Backup & Disaster Recovery](./docs/backup-and-recovery.md) - Backup setup and recovery procedures
 > - [Production Capacity](./docs/production-capacity.md) - Measured I/O limits of the hosted deployment and what they mean when you write a query
 
+## License (Ultra Tasks distribution)
+
+The SuperSync server package **as distributed by Ultra Tasks** is offered under
+**GNU AGPL-3.0-only**; see [LICENSE](LICENSE). The upstream Super Productivity
+code from which this package derives remains MIT-licensed, and its original
+copyright notice and license terms are preserved in
+[LICENSE-MIT-UPSTREAM](LICENSE-MIT-UPSTREAM). Existing MIT grants are **not**
+revoked. Third-party dependencies retain their own licenses.
+
+When you operate a modified AGPL-covered version as a network service,
+section 13 requires offering the Corresponding Source to remote users. The AGPL
+permits self-hosting and commercial hosting; it does **not** reserve hosting
+rights exclusively for Ultra Tasks. See the repository's
+[licensing policy](../../LICENSING.md) before submitting changes.
+
 ## Architecture
 
 The server uses an **append-on-write retained operation log** backed by **PostgreSQL** (via Prisma):
