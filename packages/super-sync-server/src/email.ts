@@ -45,6 +45,55 @@ const getTransporter = async (): Promise<nodemailer.Transporter> => {
   return transporter;
 };
 
+/** V2 account links contain only short-lived bearer tokens, never vault keys. */
+export const sendUltraAccountEmail = async (
+  to: string,
+  kind: 'verify' | 'recover',
+  token: string,
+): Promise<boolean> => {
+  try {
+    const config = loadConfigFromEnv();
+    const link = `${config.publicUrl}/account?${kind}=${encodeURIComponent(token)}`;
+    await (
+      await getTransporter()
+    ).sendMail({
+      from: config.smtp?.from || '"Ultra Tasks" <noreply@example.com>',
+      to,
+      subject:
+        kind === 'verify'
+          ? 'Verify your Ultra Tasks account'
+          : 'Recover your Ultra Tasks account',
+      text:
+        kind === 'verify'
+          ? `Open this link to verify your email: ${link}\nThis link expires in 24 hours.`
+          : `Open this link to recover your account: ${link}\nYour printed recovery key is also required. This link expires in one hour. Ultra Tasks cannot decrypt your data without your password or recovery key.`,
+    });
+    return true;
+  } catch {
+    Logger.error('Ultra account email delivery failed');
+    return false;
+  }
+};
+
+/** The verified inbox is the invitation credential; email contains no project content or key. */
+export const sendUltraInviteEmail = async (to: string): Promise<boolean> => {
+  try {
+    const config = loadConfigFromEnv();
+    await (
+      await getTransporter()
+    ).sendMail({
+      from: config.smtp?.from || '"Ultra Tasks" <noreply@example.com>',
+      to,
+      subject: 'An Ultra Tasks project invitation is waiting',
+      text: `Sign in to your Ultra Tasks app with this email address to view your invitation. If you do not have an account, register and verify this address at ${config.publicUrl}/account. Invitations expire after seven days.`,
+    });
+    return true;
+  } catch {
+    Logger.error('Ultra project invitation email delivery failed');
+    return false;
+  }
+};
+
 export const sendVerificationEmail = async (
   to: string,
   token: string,

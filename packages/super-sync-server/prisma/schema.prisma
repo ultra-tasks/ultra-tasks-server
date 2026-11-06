@@ -261,3 +261,195 @@ model CaptureAuth {
   @@index([expiresAt])
   @@map("capture_auth")
 }
+
+model UltraAccount {
+  id String @id
+  email String @unique
+  username String? @unique
+  displayName String @default("") @map("display_name")
+  verified Boolean @default(false)
+  registrationRecord String @map("registration_record")
+  bundle Json
+  termsAcceptedAt BigInt? @map("terms_accepted_at")
+  vaultVersion Int @default(1) @map("vault_version")
+  createdAt BigInt @map("created_at")
+  sessions UltraSession[]
+  factors UltraFactor[]
+  recoveryCodes UltraRecoveryCode[]
+  @@map("ultra_accounts")
+}
+model UltraSession {
+  id String @id
+  accountId String @map("account_id")
+  deviceName String @map("device_name")
+  createdAt BigInt @map("created_at")
+  authAt BigInt @map("auth_at")
+  expiresAt BigInt @map("expires_at")
+  idleExpiresAt BigInt @map("idle_expires_at")
+  revoked Boolean @default(false)
+  account UltraAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  tokens UltraRefreshToken[]
+  socketTickets UltraSocketTicket[]
+  @@index([accountId])
+  @@map("ultra_sessions")
+}
+model UltraRefreshToken {
+  digest String @id
+  sessionId String @map("session_id")
+  used Boolean @default(false)
+  session UltraSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  @@index([sessionId])
+  @@map("ultra_refresh_tokens")
+}
+model UltraFactor {
+  id String @id
+  accountId String @map("account_id")
+  kind String
+  enabled Boolean @default(false)
+  data Json
+  lastStep BigInt @default(-1) @map("last_step")
+  account UltraAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  @@index([accountId])
+  @@map("ultra_factors")
+}
+model UltraRecoveryCode {
+  digest String @id
+  accountId String @map("account_id")
+  account UltraAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  @@index([accountId])
+  @@map("ultra_recovery_codes")
+}
+model UltraChallenge {
+  digest String @id
+  kind String
+  accountId String? @map("account_id")
+  expiresAt BigInt @map("expires_at")
+  attempts Int @default(0)
+  data Json
+  @@index([expiresAt])
+  @@map("ultra_challenges")
+}
+
+
+// The personal owner uniqueness constraint is a partial PostgreSQL index in the migration.
+model UltraScope {
+  id String @id
+  kind String
+  ownerId String @map("owner_id")
+  ownerKey Json @map("owner_key")
+  epoch Int @default(1)
+  generation Int @default(1)
+  controlVersion Int @default(1) @map("control_version")
+  sequence Int @default(0)
+  state String @default("active")
+  migrationDevice String? @map("migration_device")
+  rotation Json?
+  ownershipChain Json @default("[]") @map("ownership_chain")
+  members UltraScopeMember[]
+  invites UltraScopeInvite[]
+  heads UltraRecordHead[]
+  mutations UltraScopeMutation[]
+  receipts UltraScopeReceipt[]
+  checkpoints UltraScopeCheckpoint[]
+  rotationHeads UltraRotationHead[]
+  transfers UltraScopeTransfer[]
+  @@map("ultra_scopes")
+}
+model UltraScopeMember {
+  scopeId String @map("scope_id")
+  accountId String @map("account_id")
+  role String
+  membership Json
+  scope UltraScope @relation(fields: [scopeId], references: [id], onDelete: Cascade)
+  @@id([scopeId, accountId])
+  @@index([accountId])
+  @@map("ultra_scope_members")
+}
+model UltraScopeInvite {
+  id String @id
+  scopeId String @map("scope_id")
+  recipientId String? @map("recipient_id")
+  email String?
+  role String
+  expiresAt BigInt @map("expires_at")
+  membership Json?
+  state String @default("pending")
+  request Json
+  scope UltraScope @relation(fields: [scopeId], references: [id], onDelete: Cascade)
+  @@index([recipientId])
+  @@map("ultra_scope_invites")
+}
+model UltraRecordHead {
+  scopeId String @map("scope_id")
+  entityId String @map("entity_id")
+  revision Int
+  mutationId String @map("mutation_id")
+  deleted Boolean
+  write Json
+  bytes Int
+  scope UltraScope @relation(fields: [scopeId], references: [id], onDelete: Cascade)
+  @@id([scopeId, entityId])
+  @@map("ultra_record_heads")
+}
+model UltraScopeMutation {
+  id String @id
+  scopeId String @map("scope_id")
+  sequence Int
+  manifest Json
+  createdAt BigInt @map("created_at")
+  scope UltraScope @relation(fields: [scopeId], references: [id], onDelete: Cascade)
+  @@unique([scopeId, sequence])
+  @@map("ultra_scope_mutations")
+}
+model UltraScopeReceipt {
+  scopeId String @map("scope_id")
+  accountId String @map("account_id")
+  deviceId String @map("device_id")
+  counter Int
+  mutationId String @map("mutation_id")
+  digest String
+  sequence Int
+  scope UltraScope @relation(fields: [scopeId], references: [id], onDelete: Cascade)
+  @@id([scopeId, accountId, deviceId])
+  @@map("ultra_scope_receipts")
+}
+model UltraScopeCheckpoint {
+  scopeId String @map("scope_id")
+  sequence Int
+  snapshot Json
+  scope UltraScope @relation(fields: [scopeId], references: [id], onDelete: Cascade)
+  @@id([scopeId, sequence])
+  @@map("ultra_scope_checkpoints")
+}
+model UltraRotationHead {
+  scopeId String @map("scope_id")
+  entityId String @map("entity_id")
+  write Json
+  manifest Json
+  scope UltraScope @relation(fields: [scopeId], references: [id], onDelete: Cascade)
+  @@id([scopeId, entityId])
+  @@map("ultra_rotation_heads")
+}
+
+model UltraSocketTicket {
+  digest String @id
+  sessionId String @map("session_id")
+  accountId String @map("account_id")
+  scopeIds Json @map("scope_ids")
+  expiresAt BigInt @map("expires_at")
+  session UltraSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  @@index([expiresAt])
+  @@map("ultra_socket_tickets")
+}
+model UltraScopeTransfer {
+  id String @id
+  scopeId String @map("scope_id")
+  recipientId String @map("recipient_id")
+  epoch Int
+  controlVersion Int @map("control_version")
+  expiresAt BigInt @map("expires_at")
+  offer Json
+  scope UltraScope @relation(fields: [scopeId], references: [id], onDelete: Cascade)
+  @@index([recipientId])
+  @@map("ultra_scope_transfers")
+}

@@ -690,3 +690,9 @@ limitations do not apply. Process restarts still clear in-memory coordination.
   encrypted with the password your users chose in the app; it is not stored on
   the server, so the task data in a server backup is unreadable without it.
   Each user must keep that password outside the server backups.
+
+## Native encrypted accounts and sync
+
+Native password accounts, recovery keys, 2FA, periodic personal sync, and shared
+projects are opt-in and isolated from legacy sync. See [account setup and security](docs/ultra-accounts.md)
+and the [scope protocol, migration, limits, and tests](docs/native-sync.md).
