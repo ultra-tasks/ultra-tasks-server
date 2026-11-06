@@ -1,6 +1,7 @@
 {
   "name": "@sp/shared-schema",
   "version": "1.0.0",
+  "license": "AGPL-3.0-only",
   "description": "Shared schema versioning and migrations for Super Productivity sync",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
