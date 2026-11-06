@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { chromium, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import fastifyStatic from '@fastify/static';
 import { fileURLToPath } from 'node:url';
+import { Prisma } from '@prisma/client';
 import { createHarness, password } from './ultra-account.helper';
 
 describe('native sync and sharing through the Angular app in Chromium', () => {
@@ -114,12 +115,29 @@ describe('native sync and sharing through the Angular app in Chromium', () => {
     await bob.getByRole('button', { name: 'Sync now', exact: true }).click();
     await bob.getByRole('button', { name: 'Accept invitation' }).click();
     await bob.getByLabel('Encrypted shared task', { exact: true }).waitFor();
+    await alice.getByText('Project recovery and deletion', { exact: true }).click();
+    await alice.getByRole('button', { name: 'Save restore point', exact: true }).click();
     await bob.getByText('Task details and my private plan', { exact: true }).click();
+    const editedAt = performance.now();
+    await bob
+      .getByLabel('Shared title', { exact: true })
+      .fill('Delivered without Sync now');
+    await bob.getByRole('heading', { name: 'Native shared project' }).click();
+    await alice.getByLabel('Delivered without Sync now', { exact: true }).waitFor();
+    expect(performance.now() - editedAt).toBeLessThan(1000);
+    await alice.getByRole('button', { name: /^Restore version/ }).click();
+    await alice.locator('[e2e=confirmBtn]').click();
+    await alice.getByLabel('Encrypted shared task', { exact: true }).waitFor();
+    await bob.getByLabel('Encrypted shared task', { exact: true }).waitFor();
+    if (!(await bob.getByLabel('My planned day (private)').isVisible()))
+      await bob.getByText('Task details and my private plan', { exact: true }).click();
     await bob.getByLabel('My planned day (private)').fill('2026-11-06');
     await bob.getByLabel('My scratch notes (private)').fill('Bobby private planning');
     await bob.getByRole('heading', { name: 'Native shared project' }).click();
-    await bob.getByRole('button', { name: 'Sync now', exact: true }).click();
-    await alice.getByRole('button', { name: 'Sync now', exact: true }).click();
+    const overlayWrites = await h.db.$queryRaw<{ count: bigint }[]>(
+      Prisma.sql`SELECT count(*) AS count FROM ultra_record_heads h JOIN ultra_scopes s ON s.id=h.scope_id JOIN ultra_accounts a ON a.id=s.owner_id WHERE a.email='bob@example.test' AND s.kind='personal' AND h.write->'record'->'header'->>'entityType'='personal.overlay'`,
+    );
+    expect(Number(overlayWrites[0].count)).toBe(0);
     await alice.getByText('Task details and my private plan', { exact: true }).click();
     expect(await alice.getByLabel('My planned day (private)').inputValue()).toBe('');
     expect(await alice.getByLabel('My scratch notes (private)').inputValue()).toBe('');
@@ -150,14 +168,14 @@ describe('native sync and sharing through the Angular app in Chromium', () => {
       'Offline description survives restart',
     );
     await bob.unroute('**/api/v2/accounts/**');
-    await bob.getByRole('button', { name: 'Sync now', exact: true }).click();
+    await bobContext.setOffline(true);
+    await bobContext.setOffline(false);
     await expect
       .poll(
         () => bob.getByRole('button', { name: 'Sync now', exact: true }).isEnabled(),
         { timeout: 30000 },
       )
       .toBe(true);
-    await alice.getByRole('button', { name: 'Sync now', exact: true }).click();
     await expect
       .poll(() => alice.getByLabel('Shared description').inputValue(), { timeout: 20000 })
       .toBe('Offline description survives restart');
@@ -167,11 +185,78 @@ describe('native sync and sharing through the Angular app in Chromium', () => {
         timeout: 20000,
       })
       .toBe(0);
+    const slow = (
+      await h.db.$queryRaw<{ id: string }[]>(
+        Prisma.sql`SELECT id FROM ultra_scopes WHERE kind='project'`,
+      )
+    )[0].id;
+    await alice.getByLabel('Project title', { exact: true }).fill('Independent project');
+    await alice
+      .getByRole('button', { name: 'Create shared project', exact: true })
+      .click();
+    const fast = (
+      await h.db.$queryRaw<{ id: string }[]>(
+        Prisma.sql`SELECT id FROM ultra_scopes WHERE kind='project' AND id<>${slow}`,
+      )
+    )[0].id;
+    let release: () => void = () => undefined;
+    let intercepted: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      intercepted = resolve;
+    });
+    const pattern = '**/api/v2/accounts/sync/scopes/' + slow + '/changes*';
+    await alice.route(pattern, async (route) => {
+      intercepted();
+      await held;
+      await route.continue();
+    });
+    try {
+      await alice.getByRole('button', { name: 'Sync now', exact: true }).click();
+      await started;
+      await alice.getByLabel('New shared task').fill('Saved while another project waits');
+      await alice.getByRole('button', { name: 'Add task', exact: true }).click();
+      await expect
+        .poll(
+          async () =>
+            Number(
+              (
+                await h.db.$queryRaw<{ count: bigint }[]>(
+                  Prisma.sql`SELECT count(*) AS count FROM ultra_record_heads WHERE scope_id=${fast}`,
+                )
+              )[0].count,
+            ),
+          { timeout: 2000 },
+        )
+        .toBe(2);
+    } finally {
+      release();
+      await alice.unrouteAll({ behavior: 'wait' });
+    }
+    await expect
+      .poll(
+        () => alice.getByRole('button', { name: 'Sync now', exact: true }).isEnabled(),
+        { timeout: 10000 },
+      )
+      .toBe(true);
     const storage = await bob.evaluate(() =>
       JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }),
     );
     expect(storage).not.toContain('Bobby private planning');
     expect(storage).not.toContain('bob has a different password');
+    await alice
+      .getByRole('button', { name: 'Sign out of this device', exact: true })
+      .click();
+    await alice
+      .getByRole('button', { name: 'Sign in and unlock', exact: true })
+      .waitFor();
+    expect(
+      await alice.evaluate(() =>
+        localStorage.getItem('ultra-native-account:' + location.origin),
+      ),
+    ).toBeNull();
     await aliceContext.close();
     await bobContext.close();
   }, 180000);

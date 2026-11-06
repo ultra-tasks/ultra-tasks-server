@@ -55,6 +55,9 @@ import {
   verifyMfaCode,
 } from './security';
 import { ultraScopeRoutes } from './scope-routes';
+import { UltraRealtimeHub, registerUltraRealtime } from './realtime';
+import { deleteUltraAccount } from './account-deletion';
+import { registerBrowserMfa } from './browser-mfa';
 
 export interface UltraRoutesOptions {
   db: UltraDb;
@@ -68,6 +71,7 @@ export interface UltraRoutesOptions {
     token: string,
   ) => Promise<boolean>;
   sendInviteMail?: (email: string) => Promise<boolean>;
+  realtime?: UltraRealtimeHub;
 }
 const opaqueMessage = z
   .string()
@@ -94,7 +98,9 @@ export const ultraAccountRoutes = async (
   options: UltraRoutesOptions,
 ): Promise<void> => {
   const { db, transaction, config, sendMail } = options;
-  await app.register(ultraScopeRoutes, { ...options, prefix: '/sync' });
+  const realtime = options.realtime ?? new UltraRealtimeHub(db);
+  await registerUltraRealtime(app, { db, transaction, config, hub: realtime });
+  await app.register(ultraScopeRoutes, { ...options, realtime, prefix: '/sync' });
   await opaqueReady;
   // Fail at startup if a corrupt setup was supplied, without logging the secret.
   try {
@@ -139,7 +145,9 @@ export const ultraAccountRoutes = async (
           .header('Cache-Control', 'no-store')
           .header('Referrer-Policy', 'no-referrer');
         try {
-          return await handler(req);
+          const result = await handler(req);
+          if (method !== 'GET') await realtime.refresh();
+          return result;
         } catch (error) {
           if (error instanceof ZodError)
             return reply.code(400).send({ error: 'Invalid account request' });
@@ -155,6 +163,7 @@ export const ultraAccountRoutes = async (
     handler: (req: FastifyRequest) => Promise<unknown>,
     max?: number,
   ) => route('POST', url, handler, max);
+  registerBrowserMfa({ db, transaction, config, post });
   const startRegistration = (accountId: string, registrationRequest: string) => {
     try {
       return opaqueServer.createRegistrationResponse({
@@ -219,6 +228,9 @@ export const ultraAccountRoutes = async (
         webauthn: true,
         scopedSync: true,
         sharedProjects: true,
+        sharedRealtime: true,
+        scopeRecovery: true,
+        browserMfa: true,
       },
       requireTermsConsent: options.requireTermsConsent ?? false,
       hasOperatorTerms: options.hasOperatorTerms ?? false,
@@ -600,6 +612,23 @@ export const ultraAccountRoutes = async (
     );
     return { revoked: true };
   });
+  post('/delete', async (req) => {
+    const session = await auth(req);
+    const input = body(
+      req,
+      z
+        .object({
+          vaultVersion: z.number().int().positive(),
+          signature: z.string().regex(/^[A-Za-z0-9_-]{86}$/),
+        })
+        .strict(),
+    );
+    return transaction(async (tx) => {
+      await requireLiveSession(tx, session);
+      const account = await lockAccount(tx, session.account_id);
+      return deleteUltraAccount(tx, config, session, account, input);
+    });
+  });
 
   post('/factors/totp/start', async (req) => {
     const session = await auth(req);
@@ -790,7 +819,7 @@ export const ultraAccountRoutes = async (
       Prisma.sql`UPDATE ultra_sessions SET revoked=true WHERE account_id=${account.id}`,
     );
     await tx.$executeRaw(
-      Prisma.sql`DELETE FROM ultra_challenges WHERE account_id=${account.id} AND kind IN ('login','mfa','webauthn-login','password','recover','recover-bootstrap')`,
+      Prisma.sql`DELETE FROM ultra_challenges WHERE account_id=${account.id} AND kind IN ('login','mfa','mfa-browser','webauthn-login','password','recover','recover-bootstrap')`,
     );
   };
   post('/password/finish', async (req) => {

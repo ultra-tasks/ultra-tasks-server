@@ -1,12 +1,15 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { Prisma } from '@prisma/client';
 import { z, ZodError } from 'zod';
+import { createHmac } from 'node:crypto';
+import type { UltraRealtimeHub } from './realtime';
 import {
   canonical,
   verify,
   type Membership,
   type Mutation,
 } from '@ultra-tasks/account-crypto';
+import { registerScopeRecovery } from './scope-recovery-routes';
 import { UltraMembershipSchema, UltraMutationSchema } from '@sp/shared-schema';
 import { AccountError, authenticateAccount, type UltraConfig } from './security';
 import {
@@ -25,10 +28,8 @@ import {
   snapshot,
   unsigned,
   validateMembership,
-  validateMutation,
   type ScopeRow,
   type MemberRow,
-  type HeadRow,
 } from './scope-store';
 
 interface Options {
@@ -36,6 +37,7 @@ interface Options {
   transaction: UltraTransaction;
   config: UltraConfig;
   sendInviteMail?: (email: string) => Promise<boolean>;
+  realtime: UltraRealtimeHub;
 }
 interface InviteRow {
   id: string;
@@ -56,7 +58,7 @@ const proof = z.string().regex(/^[A-Za-z0-9_-]{86}$/);
 
 export const ultraScopeRoutes = async (
   app: FastifyInstance,
-  { db, transaction, config, sendInviteMail }: Options,
+  { db, transaction, config, sendInviteMail, realtime }: Options,
 ): Promise<void> => {
   const auth = (req: FastifyRequest) =>
     authenticateAccount(db, config, req.headers.authorization);
@@ -69,13 +71,26 @@ export const ultraScopeRoutes = async (
       method,
       url,
       bodyLimit: 8 * 1024 * 1024,
-      config: { rateLimit: { max: 600, timeWindow: '15 minutes' } },
+      config: {
+        rateLimit: {
+          max: 2000,
+          timeWindow: '1 minute',
+          keyGenerator: (req) =>
+            req.ip +
+            ':' +
+            createHmac('sha256', config.authSecret)
+              .update(req.headers.authorization ?? '')
+              .digest('hex'),
+        },
+      },
       handler: async (req, reply) => {
         reply
           .header('Cache-Control', 'no-store')
           .header('Referrer-Policy', 'no-referrer');
         try {
-          return await run(req);
+          const result = await run(req);
+          if (method !== 'GET') await realtime.refresh();
+          return result;
         } catch (error) {
           if (error instanceof ZodError)
             return reply.code(400).send({ error: 'Invalid encrypted sync request' });
@@ -180,17 +195,38 @@ export const ultraScopeRoutes = async (
   route('GET', '/scopes/:scopeId/snapshot', (req) =>
     withScope(req, false, (tx, scope) => snapshot(tx, scope)),
   );
+  route('GET', '/scopes/:scopeId/receipt', (req) =>
+    withScope(req, false, async (tx, scope, member) => {
+      const { deviceId } = z.object({ deviceId: id }).parse(req.query);
+      const row = await one<{ counter: number; mutation_id: string; sequence: number }>(
+        tx,
+        Prisma.sql`SELECT counter,mutation_id,sequence FROM ultra_scope_receipts WHERE scope_id=${scope.id} AND account_id=${member.account_id} AND device_id=${deviceId}`,
+      );
+      return {
+        counter: row?.counter ?? 0,
+        mutationId: row?.mutation_id ?? null,
+        sequence: row?.sequence ?? 0,
+      };
+    }),
+  );
   route('GET', '/scopes/:scopeId/changes', (req) =>
     withScope(req, false, async (tx, scope) => {
-      const { after, generation } = z
+      const { after, generation, controlVersion } = z
         .object({
           after: z.coerce.number().int().nonnegative(),
           generation: z.coerce.number().int().positive(),
+          controlVersion: z.coerce.number().int().positive().optional(),
         })
         .parse(req.query);
+      const compact =
+        controlVersion === scope.control_version && generation === scope.generation;
       if (after === scope.sequence && generation === scope.generation)
-        return { scope: await scopeInfo(tx, scope), unchanged: true };
-      return snapshot(tx, scope);
+        return {
+          scope: await scopeInfo(tx, scope, compact),
+          unchanged: true,
+          ...(compact ? { controlUnchanged: true } : {}),
+        };
+      return snapshot(tx, scope, compact);
     }),
   );
   route('POST', '/scopes/:scopeId/transactions', async (req) => {
@@ -499,160 +535,5 @@ export const ultraScopeRoutes = async (
       return { revoked: true };
     });
   });
-  route('POST', '/scopes/:scopeId/rotation/start', async (req) => {
-    const body = z
-      .object({
-        id,
-        removeId: id,
-        controlVersion: z.number().int().positive(),
-        members: z.array(UltraMembershipSchema).min(1).max(50),
-        signature: proof,
-      })
-      .strict()
-      .parse(req.body);
-    return withScope(req, true, async (tx, scope, member) => {
-      owner(member);
-      if (scope.kind !== 'project' || body.removeId === scope.owner_id)
-        throw new AccountError(400, 'The owner cannot be removed');
-      if (scope.state === 'rotating' && scope.rotation?.id === body.id)
-        return scopeInfo(tx, scope);
-      if (
-        scope.state !== 'active' ||
-        scope.control_version !== body.controlVersion ||
-        !(await verify(
-          scope.owner_key,
-          {
-            action: 'rotate',
-            serverId: config.serverId,
-            scopeId: scope.id,
-            ...unsigned(body),
-          },
-          body.signature,
-        ))
-      )
-        throw new AccountError(409);
-      const previous = await tx.$queryRaw<MemberRow[]>(
-        Prisma.sql`SELECT * FROM ultra_scope_members WHERE scope_id=${scope.id}`,
-      );
-      const remaining = previous.filter((row) => row.account_id !== body.removeId);
-      if (
-        remaining.length === previous.length ||
-        canonical(remaining.map((row) => row.account_id).sort()) !==
-          canonical(body.members.map((row) => row.authorization.accountId).sort())
-      )
-        throw new AccountError(400);
-      for (const next of body.members) {
-        await validateMembership(tx, config, { ...scope, epoch: scope.epoch + 1 }, next);
-        if (
-          next.authorization.role !==
-          remaining.find((row) => row.account_id === next.authorization.accountId)?.role
-        )
-          throw new AccountError(400);
-      }
-      const rotation = { id: body.id, members: body.members };
-      await tx.$executeRaw(
-        Prisma.sql`DELETE FROM ultra_scope_members WHERE scope_id=${scope.id} AND account_id=${body.removeId}`,
-      );
-      await tx.$executeRaw(
-        Prisma.sql`UPDATE ultra_scopes SET state='rotating',control_version=control_version+1,rotation=${JSON.stringify(rotation)}::jsonb WHERE id=${scope.id}`,
-      );
-      // A pending grant uses the retired epoch; require owner provisioning again.
-      await tx.$executeRaw(
-        Prisma.sql`UPDATE ultra_scope_invites SET membership=NULL,state='provisioning' WHERE scope_id=${scope.id} AND state<>'accepted'`,
-      );
-      return scopeInfo(tx, {
-        ...scope,
-        state: 'rotating',
-        control_version: scope.control_version + 1,
-        rotation,
-      });
-    });
-  });
-  route('POST', '/scopes/:scopeId/rotation/stage', async (req) => {
-    const mutation = UltraMutationSchema.parse(req.body) as Mutation;
-    return withScope(req, true, async (tx, scope, member) => {
-      owner(member);
-      if (scope.state !== 'rotating') throw new AccountError(409);
-      await validateMutation(config, scope, member, mutation, true);
-      for (const write of mutation.writes) {
-        const h = write.record.header;
-        const old = await one<HeadRow>(
-          tx,
-          Prisma.sql`SELECT * FROM ultra_record_heads WHERE scope_id=${scope.id} AND entity_id=${h.entityId}`,
-        );
-        if (
-          !old ||
-          h.baseRevision !== old.revision ||
-          old.deleted !== write.deleted ||
-          old.write.record.header.entityType !== h.entityType
-        )
-          throw new AccountError(
-            409,
-            'Rotation must preserve the complete record inventory',
-          );
-        await tx.$executeRaw(
-          Prisma.sql`INSERT INTO ultra_rotation_heads (scope_id,entity_id,write,manifest) VALUES (${scope.id},${h.entityId},${JSON.stringify(write)}::jsonb,${JSON.stringify(mutation)}::jsonb) ON CONFLICT (scope_id,entity_id) DO UPDATE SET write=excluded.write,manifest=excluded.manifest`,
-        );
-      }
-      return { staged: true };
-    });
-  });
-  route('POST', '/scopes/:scopeId/rotation/finish', async (req) => {
-    const body = z.object({ id, signature: proof }).strict().parse(req.body);
-    return withScope(req, true, async (tx, scope, member) => {
-      owner(member);
-      if (
-        scope.state !== 'rotating' ||
-        scope.rotation?.id !== body.id ||
-        !(await verify(
-          scope.owner_key,
-          {
-            action: 'finish-rotation',
-            serverId: config.serverId,
-            scopeId: scope.id,
-            id: body.id,
-          },
-          body.signature,
-        ))
-      )
-        throw new AccountError(409);
-      const oldCount = await one<{ count: bigint }>(
-        tx,
-        Prisma.sql`SELECT count(*) AS count FROM ultra_record_heads WHERE scope_id=${scope.id}`,
-      );
-      const staged = await tx.$queryRaw<
-        { entity_id: string; write: HeadRow['write']; manifest: Mutation }[]
-      >(
-        Prisma.sql`SELECT * FROM ultra_rotation_heads WHERE scope_id=${scope.id} ORDER BY entity_id`,
-      );
-      if (staged.length !== Number(oldCount?.count))
-        throw new AccountError(409, 'Project key update is incomplete');
-      let sequence = scope.sequence;
-      const manifests = new Map(
-        staged.map((row) => [row.manifest.mutationId, row.manifest]),
-      );
-      for (const mutation of manifests.values()) {
-        await tx.$executeRaw(
-          Prisma.sql`INSERT INTO ultra_scope_mutations (id,scope_id,sequence,manifest,created_at) VALUES (${mutation.mutationId},${scope.id},${++sequence},${JSON.stringify(mutation)}::jsonb,${BigInt(Date.now())})`,
-        );
-      }
-      for (const row of staged) {
-        await tx.$executeRaw(
-          Prisma.sql`UPDATE ultra_record_heads SET revision=${row.write.record.header.revision},mutation_id=${row.manifest.mutationId},write=${JSON.stringify(row.write)}::jsonb,bytes=${Buffer.byteLength(JSON.stringify(row.write))} WHERE scope_id=${scope.id} AND entity_id=${row.entity_id}`,
-        );
-      }
-      for (const membership of scope.rotation.members)
-        await putMember(tx, scope.id, membership);
-      await tx.$executeRaw(
-        Prisma.sql`UPDATE ultra_scopes SET state='active',epoch=epoch+1,generation=generation+1,rotation=NULL,sequence=${sequence} WHERE id=${scope.id}`,
-      );
-      await tx.$executeRaw(
-        Prisma.sql`DELETE FROM ultra_rotation_heads WHERE scope_id=${scope.id}`,
-      );
-      await tx.$executeRaw(
-        Prisma.sql`DELETE FROM ultra_scope_checkpoints WHERE scope_id=${scope.id}`,
-      );
-      return { complete: true };
-    });
-  });
+  registerScopeRecovery({ route, withScope, owner, db, config, auth, transaction });
 };

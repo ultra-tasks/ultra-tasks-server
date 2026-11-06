@@ -62,3 +62,27 @@ export const UltraMutationSchema = z
     signature,
   })
   .strict();
+export const UltraOwnershipOfferSchema = z
+  .object({
+    action: z.literal('transfer-ownership'),
+    serverId: id,
+    scopeId: id,
+    id,
+    previousOwnerId: id,
+    previousOwnerKey: UltraPublicKeySchema,
+    recipientId: id,
+    recipientSigningKey: UltraPublicKeySchema,
+    recipientEncryptionKey: UltraPublicKeySchema,
+    epoch: z.number().int().positive(),
+    controlVersion: z.number().int().positive(),
+    expiresAt: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    signature,
+  })
+  .strict();
+export const UltraOwnershipAcceptanceSchema = z
+  .object({
+    offer: UltraOwnershipOfferSchema,
+    members: z.array(UltraMembershipSchema).min(1).max(50),
+    signature,
+  })
+  .strict();

@@ -31,8 +31,8 @@
         <p>Manage your password, encryption keys, and two-factor authentication.</p>
         <p>
           In the Ultra Tasks app, open Sync settings → Native encrypted sync and sharing
-          to connect this account. Personal data and shared projects currently sync every
-          60 seconds while unlocked.
+          to connect this account. Personal data syncs every 60 seconds while unlocked;
+          shared project edits sync as they are saved.
         </p>
       </header>
       <p
@@ -42,6 +42,23 @@
       >
         Loading account encryption…
       </p>
+      <section
+        id="device-approval"
+        hidden
+      >
+        <h2>Approve a device login</h2>
+        <p>
+          Continue only if you just entered your password in the Ultra Tasks app on your
+          own device. This approves that device’s login.
+        </p>
+        <p id="device-name"></p>
+        <button
+          id="device-approve"
+          type="button"
+        >
+          Approve using a security key or passkey
+        </button>
+      </section>
       <section id="auth">
         <form id="login">
           <h2>Sign in</h2>

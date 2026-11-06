@@ -39,7 +39,10 @@
     "test:ultra-accounts:browser": "tsc -p tsconfig.ultra-tests.json && vitest run --config vitest.accounts-browser.config.ts",
     "prebuild": "npm --prefix ../account-crypto run build",
     "test:ultra-sync": "tsc -p tsconfig.ultra-tests.json && vitest run tests/ultra-sync.spec.ts",
-    "test:ultra-sync:browser": "tsc -p tsconfig.ultra-tests.json && vitest run --config vitest.native-browser.config.ts"
+    "test:ultra-sync:browser": "tsc -p tsconfig.ultra-tests.json && vitest run --config vitest.native-browser.config.ts",
+    "test:ultra-realtime": "tsc -p tsconfig.ultra-tests.json && vitest run tests/ultra-realtime.spec.ts",
+    "test:ultra-recovery": "tsc -p tsconfig.ultra-tests.json && vitest run tests/ultra-recovery.spec.ts",
+    "test:ultra-realtime:load": "vitest run --config vitest.native-load.config.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",

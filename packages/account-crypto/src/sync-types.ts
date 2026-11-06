@@ -44,6 +44,34 @@ export interface Mutation {
   writes: SyncWrite[];
   signature: string;
 }
+export interface OwnershipOffer {
+  action: 'transfer-ownership';
+  serverId: string;
+  scopeId: string;
+  id: string;
+  previousOwnerId: string;
+  previousOwnerKey: JsonWebKey;
+  recipientId: string;
+  recipientSigningKey: JsonWebKey;
+  recipientEncryptionKey: JsonWebKey;
+  epoch: number;
+  controlVersion: number;
+  expiresAt: number;
+  signature: string;
+}
+export interface OwnershipAcceptance {
+  offer: OwnershipOffer;
+  members: Membership[];
+  signature: string;
+}
+export interface ScopeRotation {
+  id: string;
+  members: Membership[];
+  kind?: 'remove' | 'transfer' | 'restore' | 'member-left';
+  controllerId?: string;
+  transfer?: OwnershipAcceptance;
+  checkpointSequence?: number;
+}
 export interface ScopeInfo {
   id: string;
   kind: 'personal' | 'project';
@@ -55,9 +83,11 @@ export interface ScopeInfo {
   sequence: number;
   state: 'active' | 'migrating' | 'rotating';
   members: Membership[];
-  rotation?: { id: string; members: Membership[] };
+  rotation?: ScopeRotation;
+  ownershipChain?: OwnershipAcceptance[];
 }
 export interface ScopeSnapshot {
+  controlUnchanged?: boolean;
   scope: ScopeInfo;
   heads: SyncWrite[];
   manifests: Mutation[];
@@ -100,9 +130,10 @@ export interface ConflictDraft {
   entityId: string;
   value: unknown;
   createdAt: number;
-  reason: 'overlap' | 'deleted';
+  reason: 'overlap' | 'deleted' | 'permission';
 }
 export interface LocalScope {
+  revoked?: boolean;
   downloaded?: boolean;
   info: ScopeInfo;
   key: string;

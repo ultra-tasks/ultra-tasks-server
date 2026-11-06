@@ -289,6 +289,7 @@ model UltraSession {
   revoked Boolean @default(false)
   account UltraAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
   tokens UltraRefreshToken[]
+  socketTickets UltraSocketTicket[]
   @@index([accountId])
   @@map("ultra_sessions")
 }
@@ -343,6 +344,7 @@ model UltraScope {
   state String @default("active")
   migrationDevice String? @map("migration_device")
   rotation Json?
+  ownershipChain Json @default("[]") @map("ownership_chain")
   members UltraScopeMember[]
   invites UltraScopeInvite[]
   heads UltraRecordHead[]
@@ -350,6 +352,7 @@ model UltraScope {
   receipts UltraScopeReceipt[]
   checkpoints UltraScopeCheckpoint[]
   rotationHeads UltraRotationHead[]
+  transfers UltraScopeTransfer[]
   @@map("ultra_scopes")
 }
 model UltraScopeMember {
@@ -400,13 +403,14 @@ model UltraScopeMutation {
 }
 model UltraScopeReceipt {
   scopeId String @map("scope_id")
+  accountId String @map("account_id")
   deviceId String @map("device_id")
   counter Int
   mutationId String @map("mutation_id")
   digest String
   sequence Int
   scope UltraScope @relation(fields: [scopeId], references: [id], onDelete: Cascade)
-  @@id([scopeId, deviceId])
+  @@id([scopeId, accountId, deviceId])
   @@map("ultra_scope_receipts")
 }
 model UltraScopeCheckpoint {
@@ -425,4 +429,27 @@ model UltraRotationHead {
   scope UltraScope @relation(fields: [scopeId], references: [id], onDelete: Cascade)
   @@id([scopeId, entityId])
   @@map("ultra_rotation_heads")
+}
+
+model UltraSocketTicket {
+  digest String @id
+  sessionId String @map("session_id")
+  accountId String @map("account_id")
+  scopeIds Json @map("scope_ids")
+  expiresAt BigInt @map("expires_at")
+  session UltraSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  @@index([expiresAt])
+  @@map("ultra_socket_tickets")
+}
+model UltraScopeTransfer {
+  id String @id
+  scopeId String @map("scope_id")
+  recipientId String @map("recipient_id")
+  epoch Int
+  controlVersion Int @map("control_version")
+  expiresAt BigInt @map("expires_at")
+  offer Json
+  scope UltraScope @relation(fields: [scopeId], references: [id], onDelete: Cascade)
+  @@index([recipientId])
+  @@map("ultra_scope_transfers")
 }

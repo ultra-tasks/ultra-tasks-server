@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 import rateLimit from '@fastify/rate-limit';
+import websocket from '@fastify/websocket';
 import {
   AccountClient,
   Transport,
@@ -14,6 +15,7 @@ import {
 import { ultraAccountRoutes } from '../src/ultra-account/routes';
 import { UltraConfig } from '../src/ultra-account/security';
 import { UltraDb, UltraTransaction } from '../src/ultra-account/store';
+import { UltraRealtimeHub } from '../src/ultra-account/realtime';
 
 export const migration = readFileSync(
   fileURLToPath(
@@ -43,18 +45,39 @@ export const createHarness = async (
       'utf8',
     ),
   );
-  const db = {
+  await database.exec(
+    readFileSync(
+      fileURLToPath(
+        new URL(
+          '../prisma/migrations/20261105020000_ultra_recovery_realtime/migration.sql',
+          import.meta.url,
+        ),
+      ),
+      'utf8',
+    ),
+  );
+  const rawDb = {
     $queryRaw: async (sql: Prisma.Sql) =>
       (await database.query(sql.text, sql.values)).rows,
     $executeRaw: async (sql: Prisma.Sql) =>
       (await database.query(sql.text, sql.values)).affectedRows ?? 0,
   } as UltraDb;
   let queue: Promise<unknown> = Promise.resolve();
+  const enqueue = <T>(run: () => Promise<T>): Promise<T> => {
+    const result = queue.then(run);
+    queue = result.catch(() => undefined);
+    return result;
+  };
+  const db = {
+    $queryRaw: (sql: Prisma.Sql) => enqueue(() => rawDb.$queryRaw(sql)),
+    $executeRaw: (sql: Prisma.Sql) => enqueue(() => rawDb.$executeRaw(sql)),
+  } as UltraDb;
+
   const transaction: UltraTransaction = (run) => {
     const result = queue.then(async () => {
       await database.exec('BEGIN');
       try {
-        const value = await run(db);
+        const value = await run(rawDb);
         await database.exec('COMMIT');
         return value;
       } catch (error) {
@@ -74,9 +97,12 @@ export const createHarness = async (
   };
   const mail: { email: string; kind: 'verify' | 'recover'; token: string }[] = [];
   const app = Fastify();
+  const realtime = new UltraRealtimeHub(db);
+  await app.register(websocket, { options: { maxPayload: 1024 } });
   await app.register(rateLimit, { global: false });
   await app.register(ultraAccountRoutes, {
     prefix: '/api/v2/accounts',
+    realtime,
     db,
     transaction,
     config,
@@ -124,6 +150,7 @@ export const createHarness = async (
   };
   return {
     app,
+    realtime,
     db,
     database,
     config,

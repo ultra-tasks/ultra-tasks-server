@@ -3,6 +3,7 @@ import { canonical, fingerprint, randomKey } from './encoding';
 import { decryptRecord, encryptRecord, grantKey, receiveKey } from './sharing';
 import { sign, verify, type VaultSecrets } from './vault';
 import { mergeRecord } from './sync-merge';
+import { verifyOwnershipChain, ownershipAcceptanceData } from './ownership';
 import {
   validateSharedRecord,
   validateSharedHierarchy,
@@ -21,6 +22,8 @@ import type {
   ScopeSnapshot,
   StateStorage,
   SyncState,
+  OwnershipOffer,
+  OwnershipAcceptance,
 } from './sync-types';
 
 const unsigned = <T extends { signature: string }>(value: T): Omit<T, 'signature'> => {
@@ -40,8 +43,11 @@ export interface RecordChange {
 
 /** Durable encrypted records; callers hold one browser account lease while this client is open. */
 export class SyncClient {
+  private readonly localListeners = new Set<(scopeId: string) => void>();
+  private readonly authenticatedMemberships = new Set<string>();
+  private readonly authenticatedCertificates = new Set<string>();
   state!: SyncState;
-  private queue: Promise<unknown> = Promise.resolve();
+  private readonly queues = new Map<string, Promise<unknown>>();
   private persistence: Promise<void> = Promise.resolve();
   private scopeErrors: Record<string, string> = {};
   constructor(
@@ -61,9 +67,13 @@ export class SyncClient {
   private request<T>(path: string, body?: object): Promise<T> {
     return this.account.request<T>('/sync' + path, body);
   }
-  private exclusive<T>(run: () => Promise<T>): Promise<T> {
-    const result = this.queue.then(run);
-    this.queue = result.catch(() => undefined);
+  private exclusive<T>(run: () => Promise<T>, key = 'metadata'): Promise<T> {
+    const result = (this.queues.get(key) ?? Promise.resolve()).then(run);
+    const tail = result.catch(() => undefined);
+    this.queues.set(key, tail);
+    void tail.finally(() => {
+      if (this.queues.get(key) === tail) this.queues.delete(key);
+    });
     return result;
   }
   private save(): Promise<void> {
@@ -71,6 +81,12 @@ export class SyncClient {
     const saved = this.persistence.then(() => this.storage.save(snapshot));
     this.persistence = saved.catch(() => undefined);
     return saved;
+  }
+  subscribeLocal(listener: (scopeId: string) => void): () => void {
+    this.localListeners.add(listener);
+    return () => {
+      this.localListeners.delete(listener);
+    };
   }
 
   async init(): Promise<void> {
@@ -145,6 +161,11 @@ export class SyncClient {
     };
   }
   private async adopt(info: ScopeInfo): Promise<LocalScope> {
+    const previous = this.state.scopes[info.id];
+    if (previous && previous.info.kind !== info.kind)
+      throw new Error('Sync scope type changed');
+    this.assertScopeBoundary(info);
+    await verifyOwnershipChain(this.serverId, info, previous?.info);
     const pinned = this.state.pins[info.ownerId];
     const identity = await fingerprint(info.ownerKey);
     if (pinned && pinned !== identity) throw new Error('Project owner identity changed');
@@ -153,12 +174,13 @@ export class SyncClient {
       !same(info.ownerKey, this.account.bundle!.signingPublicKey)
     )
       throw new Error('Account identity mismatch');
-    for (const membership of info.members) await this.verifyMembership(info, membership);
+    if (info.members !== previous?.info.members)
+      for (const membership of info.members)
+        await this.verifyMembership(info, membership);
     const own = info.members.find(
       (member) => member.authorization.accountId === this.accountId,
     );
     if (!own) throw new Error('Project membership is unavailable');
-    const previous = this.state.scopes[info.id];
     if (
       previous &&
       (info.generation < previous.info.generation ||
@@ -168,16 +190,26 @@ export class SyncClient {
           info.sequence < previous.info.sequence))
     )
       throw new Error('Sync server returned an older project version');
-    const key = await receiveKey(
-      this.secrets.encryptionPrivateKey,
-      own.authorization.grant,
-      {
-        serverId: this.serverId,
-        scopeId: info.id,
-        recipientId: this.accountId,
-        epoch: info.epoch,
-      },
+    const previousOwn = previous?.info.members.find(
+      (m) => m.authorization.accountId === this.accountId,
     );
+    const unchangedGrant =
+      previous &&
+      info.epoch === previous.info.epoch &&
+      info.ownerId === previous.info.ownerId &&
+      same(info.ownerKey, previous.info.ownerKey) &&
+      same(own, previousOwn);
+    const key = unchangedGrant
+      ? previous.key
+      : await receiveKey(this.secrets.encryptionPrivateKey, own.authorization.grant, {
+          serverId: this.serverId,
+          scopeId: info.id,
+          recipientId: this.accountId,
+          epoch: info.epoch,
+        });
+    this.assertScopeBoundary(info, key);
+    if (this.state.pins[info.ownerId] && this.state.pins[info.ownerId] !== identity)
+      throw new Error('Project owner identity changed');
     this.state.pins[info.ownerId] = identity;
     const local = previous ?? {
       info,
@@ -188,11 +220,36 @@ export class SyncClient {
       conflicts: [],
     };
     local.key = key;
+    local.revoked = false;
     // The committed download cursor advances only after all records authenticate.
     if (!previous) this.state.scopes[info.id] = local;
     return local;
   }
+  private assertScopeBoundary(info: ScopeInfo, key?: string): void {
+    if (!['personal', 'project'].includes(info.kind))
+      throw new Error('Unsupported sync scope type');
+    if (
+      info.kind === 'personal' &&
+      (info.ownerId !== this.accountId ||
+        info.members.length !== 1 ||
+        info.members[0].authorization.accountId !== this.accountId ||
+        info.members[0].authorization.role !== 'owner' ||
+        (key !== undefined && key !== this.secrets.personalKey))
+    )
+      throw new Error(
+        'Personal sync must use your own private account key and membership',
+      );
+  }
   private async verifyMembership(scope: ScopeInfo, member: Membership): Promise<void> {
+    const cacheKey = canonical({
+      serverId: this.serverId,
+      scopeId: scope.id,
+      ownerId: scope.ownerId,
+      ownerKey: scope.ownerKey,
+      epoch: scope.epoch,
+      member,
+    });
+    if (this.authenticatedMemberships.has(cacheKey)) return;
     const a = member.authorization;
     if (
       a.serverId !== this.serverId ||
@@ -203,6 +260,26 @@ export class SyncClient {
       !(await verify(scope.ownerKey, a, member.signature))
     )
       throw new Error('Project membership authentication failed');
+    if (this.authenticatedMemberships.size >= 256)
+      this.authenticatedMemberships.delete(
+        this.authenticatedMemberships.values().next().value!,
+      );
+    this.authenticatedMemberships.add(cacheKey);
+  }
+  private async verifyCertificate(
+    certificate: DeviceCertificate,
+    signingKey: JsonWebKey,
+  ): Promise<boolean> {
+    const key = canonical({ certificate, signingKey });
+    if (this.authenticatedCertificates.has(key)) return true;
+    if (!(await verify(signingKey, unsigned(certificate), certificate.signature)))
+      return false;
+    if (this.authenticatedCertificates.size >= 256)
+      this.authenticatedCertificates.delete(
+        this.authenticatedCertificates.values().next().value!,
+      );
+    this.authenticatedCertificates.add(key);
+    return true;
   }
   private async openSnapshot(
     value: ScopeSnapshot,
@@ -225,11 +302,7 @@ export class SyncClient {
         c.accountId !== m.membership.authorization.accountId ||
         c.deviceId !== m.deviceId ||
         c.serverId !== this.serverId ||
-        !(await verify(
-          m.membership.authorization.signingPublicKey,
-          unsigned(c),
-          c.signature,
-        )) ||
+        !(await this.verifyCertificate(c, m.membership.authorization.signingPublicKey)) ||
         !(await verify(c.publicKey, unsigned(m), m.signature))
       )
         throw new Error('Transaction authentication failed');
@@ -291,20 +364,45 @@ export class SyncClient {
 
   async refreshScopes(): Promise<ScopeInfo[]> {
     return this.exclusive(async () => {
+      const before = Object.fromEntries(
+        Object.entries(this.state.scopes).map(([id, scope]) => [id, scope.info]),
+      );
       const { scopes } = await this.request<{ scopes: ScopeInfo[] }>('/scopes');
-      const valid: ScopeInfo[] = [];
+      const known = new Set(scopes.map((scope) => scope.id));
       this.scopeErrors = {};
-      for (const scope of scopes) {
-        try {
-          await this.adopt(scope);
-          valid.push(scope);
-        } catch (error) {
-          this.scopeErrors[scope.id] =
-            error instanceof Error ? error.message : 'Scope authentication failed';
-        }
-      }
+      const valid = await Promise.all(
+        scopes.map((scope) =>
+          this.exclusive(async () => {
+            try {
+              const current = this.state.scopes[scope.id];
+              // The list request may precede a concurrently completed scope download.
+              // Keep that authenticated newer result; never apply stale control to it.
+              if (
+                current &&
+                current.info !== before[scope.id] &&
+                (scope.epoch < current.info.epoch ||
+                  scope.controlVersion < current.info.controlVersion ||
+                  scope.generation < current.info.generation ||
+                  scope.sequence < current.info.sequence)
+              )
+                return current.info;
+              await this.adopt(scope);
+              return scope;
+            } catch (error) {
+              this.scopeErrors[scope.id] =
+                error instanceof Error ? error.message : 'Scope authentication failed';
+              return null;
+            }
+          }, scope.id),
+        ),
+      );
+      await Promise.all(
+        Object.values(this.state.scopes)
+          .filter((scope) => !known.has(scope.info.id))
+          .map((scope) => this.markRevoked(scope.info.id)),
+      );
       await this.save();
-      return valid;
+      return valid.filter((scope): scope is ScopeInfo => scope !== null);
     });
   }
   async createScope(kind: 'personal' | 'project', migrating = false): Promise<string> {
@@ -327,6 +425,11 @@ export class SyncClient {
     return this.exclusive(async () => {
       const scope = this.state.scopes[scopeId];
       if (!scope) throw new Error('Download the project first');
+      this.assertScopeBoundary(scope.info, scope.key);
+      if (scope.revoked)
+        throw new Error(
+          'Project access was revoked; export private drafts before discarding them',
+        );
       const role = scope.info.members.find(
         (m) => m.authorization.accountId === this.accountId,
       )?.authorization.role;
@@ -364,7 +467,8 @@ export class SyncClient {
         })),
       });
       await this.save();
-    });
+      for (const listener of this.localListeners) listener(scopeId);
+    }, 'local');
   }
   records(scopeId: string, includeDeleted = false): Record<string, PlainHead> {
     const scope = this.state.scopes[scopeId];
@@ -385,8 +489,19 @@ export class SyncClient {
   async dismissDrafts(scopeId: string): Promise<void> {
     return this.exclusive(async () => {
       this.state.scopes[scopeId].conflicts = [];
+      if (this.state.scopes[scopeId].revoked) {
+        this.state.scopes[scopeId].intents = [];
+        delete this.state.scopes[scopeId].uncertain;
+        delete this.state.scopes[scopeId].uncertainKey;
+      }
       await this.save();
-    });
+    }, scopeId);
+  }
+  async markRevoked(scopeId: string): Promise<void> {
+    return this.exclusive(async () => {
+      if (this.state.scopes[scopeId]) this.state.scopes[scopeId].revoked = true;
+      await this.save();
+    }, scopeId);
   }
   record(scopeId: string, entityId: string): PlainHead | undefined {
     const scope = this.state.scopes[scopeId];
@@ -409,7 +524,7 @@ export class SyncClient {
     key = scope.key,
     info = scope.info,
   ): Promise<Mutation> {
-    if (info.kind === 'project') {
+    if (info.kind === 'project' && info.state !== 'rotating') {
       const projected = {
         ...scope.heads,
         ...Object.fromEntries(changes.map((c) => [c.entityId, c])),
@@ -506,7 +621,7 @@ export class SyncClient {
     scope: LocalScope,
     entityId: string,
     value: unknown,
-    reason: 'deleted' | 'overlap',
+    reason: 'deleted' | 'overlap' | 'permission',
   ): void {
     if (scope.conflicts.filter((d) => d.entityId === entityId).length >= 20)
       throw new Error('Export and resolve conflict drafts before syncing this record');
@@ -518,12 +633,14 @@ export class SyncClient {
       createdAt: Date.now(),
     });
   }
-  private async acknowledge(scope: LocalScope): Promise<void> {
+  private async acknowledge(scope: LocalScope, alreadyCommitted = false): Promise<void> {
     const mutation = scope.uncertain!;
-    const receipt = await this.request<{ sequence: number }>(
-      `/scopes/${scope.info.id}/transactions`,
-      mutation,
-    );
+    const receipt = alreadyCommitted
+      ? undefined
+      : await this.request<{ sequence: number }>(
+          `/scopes/${scope.info.id}/transactions`,
+          mutation,
+        );
     for (const write of mutation.writes) {
       const h = write.record.header;
       const payload = (await decryptRecord(
@@ -548,30 +665,58 @@ export class SyncClient {
     await this.save();
   }
   async syncScope(scopeId: string): Promise<void> {
-    return this.exclusive(() => this.sync(scopeId));
+    return this.exclusive(() => this.sync(scopeId), scopeId);
+  }
+  private async resolveRejectedAttempt(scope: LocalScope, error: unknown): Promise<void> {
+    if (![403, 409].includes((error as { status?: number }).status ?? 0)) throw error;
+    const receipt = await this.request<{ counter: number; mutationId: string | null }>(
+      `/scopes/${scope.info.id}/receipt?deviceId=${this.state.device.id}`,
+    );
+    if (
+      receipt.mutationId === scope.uncertain!.mutationId &&
+      receipt.counter === scope.uncertain!.counter
+    ) {
+      await this.acknowledge(scope, true);
+      return;
+    }
+    scope.counter = receipt.counter;
+    delete scope.uncertain;
+    delete scope.uncertainKey;
+    await this.save();
   }
   private async sync(scopeId: string): Promise<void> {
     let scope = this.state.scopes[scopeId];
     if (!scope) throw new Error('Unknown sync scope');
+    this.assertScopeBoundary(scope.info, scope.key);
     for (let attempt = 0; attempt < 3; attempt++) {
       if (scope.uncertain) {
         try {
           await this.acknowledge(scope);
         } catch (error) {
-          if ((error as { status?: number }).status !== 409) throw error;
-          delete scope.uncertain;
-          delete scope.uncertainKey;
-          await this.save();
+          await this.resolveRejectedAttempt(scope, error);
         }
       }
       const response = await this.request<
-        ScopeSnapshot | { scope: ScopeInfo; unchanged: true }
+        ScopeSnapshot | { scope: ScopeInfo; unchanged: true; controlUnchanged?: boolean }
       >(
         scope.downloaded
-          ? `/scopes/${scopeId}/changes?after=${scope.info.sequence}&generation=${scope.info.generation}`
+          ? `/scopes/${scopeId}/changes?after=${scope.info.sequence}&generation=${scope.info.generation}&controlVersion=${scope.info.controlVersion}`
           : `/scopes/${scopeId}/snapshot`,
       );
       const previous = scope.info;
+      if (response.controlUnchanged) {
+        const next = response.scope;
+        if (
+          next.controlVersion !== previous.controlVersion ||
+          next.epoch !== previous.epoch ||
+          next.generation !== previous.generation ||
+          next.ownerId !== previous.ownerId ||
+          !same(next.ownerKey, previous.ownerKey) ||
+          !same(next.ownershipChain ?? [], previous.ownershipChain ?? [])
+        )
+          throw new Error('Compact control does not match the authenticated project');
+        response.scope.members = previous.members;
+      }
       scope = await this.adopt(response.scope);
       if ('heads' in response) {
         const remote = await this.openSnapshot(response, scope.key);
@@ -580,9 +725,21 @@ export class SyncClient {
       } else if (previous.epoch !== response.scope.epoch)
         throw new Error('Key update requires a complete snapshot');
       scope.info = response.scope;
+      if (
+        scope.info.kind === 'project' &&
+        scope.info.members.find((m) => m.authorization.accountId === this.accountId)
+          ?.authorization.role === 'viewer'
+      ) {
+        for (const intent of scope.intents)
+          for (const change of intent.changes)
+            this.draft(scope, change.entityId, change.value, 'permission');
+        scope.intents = [];
+      }
       await this.save();
       if (scope.info.state === 'rotating') {
-        if (scope.info.ownerId === this.accountId) {
+        if (
+          (scope.info.rotation?.controllerId ?? scope.info.ownerId) === this.accountId
+        ) {
           await this.resumeRotation(scope);
           continue;
         }
@@ -597,10 +754,7 @@ export class SyncClient {
         try {
           await this.acknowledge(scope);
         } catch (error) {
-          if ((error as { status?: number }).status !== 409) throw error;
-          delete scope.uncertain;
-          delete scope.uncertainKey;
-          await this.save();
+          await this.resolveRejectedAttempt(scope, error);
           break;
         }
       }
@@ -833,11 +987,186 @@ export class SyncClient {
       await this.save();
       await this.resumeRotation(scope);
       await this.sync(scopeId);
+    }, scopeId);
+  }
+  private nextMembers(
+    scope: LocalScope,
+    key: string,
+    nextOwner = scope.info.ownerId,
+  ): Promise<Membership[]> {
+    return Promise.all(
+      scope.info.members.map((m) =>
+        this.membership(
+          scope.info.id,
+          {
+            id: m.authorization.accountId,
+            username: null,
+            encryptionPublicKey: m.authorization.encryptionPublicKey,
+            signingPublicKey: m.authorization.signingPublicKey,
+          },
+          m.authorization.accountId === nextOwner
+            ? 'owner'
+            : m.authorization.role === 'owner'
+              ? 'editor'
+              : m.authorization.role,
+          key,
+          scope.info.epoch + 1,
+        ),
+      ),
+    );
+  }
+  async offerOwnership(scopeId: string, recipientId: string): Promise<void> {
+    await this.syncScope(scopeId);
+    const scope = this.state.scopes[scopeId];
+    const member = scope.info.members.find(
+      (m) => m.authorization.accountId === recipientId,
+    );
+    if (
+      scope.info.ownerId !== this.accountId ||
+      !member ||
+      recipientId === this.accountId
+    )
+      throw new Error('Choose another existing member');
+    const offerLifetime = 7 * 86400000;
+    const offer = {
+      action: 'transfer-ownership' as const,
+      serverId: this.serverId,
+      scopeId,
+      id: crypto.randomUUID(),
+      previousOwnerId: this.accountId,
+      previousOwnerKey: scope.info.ownerKey,
+      recipientId,
+      recipientSigningKey: member.authorization.signingPublicKey,
+      recipientEncryptionKey: member.authorization.encryptionPublicKey,
+      epoch: scope.info.epoch,
+      controlVersion: scope.info.controlVersion,
+      expiresAt: Date.now() + offerLifetime - 1000,
+    };
+    await this.request(`/scopes/${scopeId}/ownership/offer`, {
+      ...offer,
+      signature: await sign(this.secrets.signingPrivateKey, offer),
     });
   }
+  async ownershipOffers(): Promise<OwnershipOffer[]> {
+    return (await this.request<{ offers: OwnershipOffer[] }>('/ownership/offers')).offers;
+  }
+  async acceptOwnership(offer: OwnershipOffer): Promise<void> {
+    await this.syncScope(offer.scopeId);
+    return this.exclusive(async () => {
+      const scope = this.state.scopes[offer.scopeId];
+      if (
+        offer.recipientId !== this.accountId ||
+        offer.previousOwnerId !== scope.info.ownerId ||
+        !same(offer.previousOwnerKey, scope.info.ownerKey) ||
+        !same(offer.recipientSigningKey, this.account.bundle!.signingPublicKey) ||
+        !same(offer.recipientEncryptionKey, this.account.bundle!.encryptionPublicKey) ||
+        offer.serverId !== this.serverId ||
+        offer.epoch !== scope.info.epoch ||
+        offer.controlVersion !== scope.info.controlVersion ||
+        offer.expiresAt <= Date.now() ||
+        !(await verify(scope.info.ownerKey, unsigned(offer), offer.signature))
+      )
+        throw new Error('Ownership offer authentication failed');
+      const data = {
+        offer,
+        members: await this.nextMembers(scope, randomKey(), this.accountId),
+      };
+      const acceptance: OwnershipAcceptance = {
+        ...data,
+        signature: await sign(
+          this.secrets.signingPrivateKey,
+          ownershipAcceptanceData(data),
+        ),
+      };
+      scope.info = await this.request<ScopeInfo>(
+        `/scopes/${offer.scopeId}/ownership/accept`,
+        acceptance,
+      );
+      await this.save();
+      await this.sync(offer.scopeId);
+    }, offer.scopeId);
+  }
+  async checkpoint(scopeId: string): Promise<number> {
+    await this.syncScope(scopeId);
+    return (await this.request<{ sequence: number }>(`/scopes/${scopeId}/checkpoint`, {}))
+      .sequence;
+  }
+  async checkpoints(scopeId: string): Promise<number[]> {
+    return (
+      await this.request<{ checkpoints: { sequence: number }[] }>(
+        `/scopes/${scopeId}/checkpoints`,
+      )
+    ).checkpoints.map((c) => c.sequence);
+  }
+  async restoreProject(scopeId: string, sequence: number): Promise<void> {
+    await this.syncScope(scopeId);
+    return this.exclusive(async () => {
+      const scope = this.state.scopes[scopeId];
+      if (scope.info.ownerId !== this.accountId)
+        throw new Error('Only the owner can restore a project');
+      const data = {
+        id: crypto.randomUUID(),
+        sequence,
+        controlVersion: scope.info.controlVersion,
+        members: await this.nextMembers(scope, randomKey()),
+      };
+      scope.info = await this.request<ScopeInfo>(`/scopes/${scopeId}/restore/start`, {
+        ...data,
+        signature: await sign(this.secrets.signingPrivateKey, {
+          action: 'restore-project',
+          serverId: this.serverId,
+          scopeId,
+          ...data,
+        }),
+      });
+      await this.save();
+      await this.sync(scopeId);
+    }, scopeId);
+  }
+  async deleteProject(scopeId: string): Promise<void> {
+    await this.syncScope(scopeId);
+    return this.exclusive(async () => {
+      const scope = this.state.scopes[scopeId];
+      if (scope.info.ownerId !== this.accountId)
+        throw new Error('Only the owner can delete a project');
+      const controlVersion = scope.info.controlVersion;
+      await this.request(`/scopes/${scopeId}/delete`, {
+        controlVersion,
+        signature: await sign(this.secrets.signingPrivateKey, {
+          action: 'delete-project',
+          serverId: this.serverId,
+          scopeId,
+          controlVersion,
+        }),
+      });
+      scope.revoked = true;
+      await this.save();
+    }, scopeId);
+  }
   private async resumeRotation(scope: LocalScope): Promise<void> {
-    const rotation = scope.info.rotation;
+    let rotation = scope.info.rotation;
     if (!rotation) throw new Error('Missing project key update');
+    if (rotation.kind === 'member-left' && !rotation.members.length) {
+      const data = {
+        id: rotation.id,
+        controlVersion: scope.info.controlVersion,
+        members: await this.nextMembers(scope, randomKey()),
+      };
+      scope.info = await this.request<ScopeInfo>(
+        `/scopes/${scope.info.id}/rotation/provision`,
+        {
+          ...data,
+          signature: await sign(this.secrets.signingPrivateKey, {
+            action: 'provision-rotation',
+            serverId: this.serverId,
+            scopeId: scope.info.id,
+            ...data,
+          }),
+        },
+      );
+      rotation = scope.info.rotation!;
+      await this.save();
+    }
     const member = rotation.members.find(
       (m) => m.authorization.accountId === this.accountId,
     )!;
@@ -853,12 +1182,43 @@ export class SyncClient {
     );
     const info = {
       ...scope.info,
+      ...(rotation.transfer
+        ? {
+            ownerId: rotation.transfer.offer.recipientId,
+            ownerKey: rotation.transfer.offer.recipientSigningKey,
+            ownershipChain: [...(scope.info.ownershipChain ?? []), rotation.transfer],
+          }
+        : {}),
       epoch: scope.info.epoch + 1,
       generation: scope.info.generation + 1,
       members: rotation.members,
     };
+    await verifyOwnershipChain(this.serverId, info, scope.info);
     for (const m of info.members) await this.verifyMembership(info, m);
-    const heads = Object.values(scope.heads);
+    let target = scope.heads;
+    if (rotation.kind === 'restore') {
+      const source = await this.request<ScopeSnapshot>(
+        `/scopes/${scope.info.id}/restore/source`,
+      );
+      if (
+        source.scope.id !== scope.info.id ||
+        source.scope.epoch !== scope.info.epoch ||
+        source.scope.ownerId !== scope.info.ownerId ||
+        source.scope.sequence !== rotation.checkpointSequence
+      )
+        throw new Error('Restore checkpoint context changed');
+      target = await this.openSnapshot(source, scope.key);
+    }
+    const heads = Object.values(scope.heads).map(
+      (head) => target[head.entityId] ?? { ...head, deleted: true, value: null },
+    );
+    validateSharedHierarchy(
+      Object.fromEntries(
+        heads
+          .filter((h) => !h.deleted && h.entityType === 'shared.task')
+          .map((h) => [h.entityId, h.value as SharedTask]),
+      ),
+    );
     for (let offset = 0; offset < heads.length; offset += 100) {
       const mutation = await this.mutation(
         scope,

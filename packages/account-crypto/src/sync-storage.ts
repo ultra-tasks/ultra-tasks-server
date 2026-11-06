@@ -60,4 +60,18 @@ export class EncryptedSyncStorage implements StateStorage {
       db.close();
     }
   }
+  async clear(): Promise<void> {
+    const db = await this.db();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction('accounts', 'readwrite');
+        tx.objectStore('accounts').delete(this.identity());
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error ?? new Error('Sync storage aborted'));
+      });
+    } finally {
+      db.close();
+    }
+  }
 }

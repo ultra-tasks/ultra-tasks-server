@@ -6,8 +6,9 @@ password changes, and client-side encrypted key vaults. The account portal is
 available at `/account` when enabled. Existing SuperSync accounts and data remain
 separate. The app can now explicitly migrate personal data and share native
 projects through the [v2 encrypted scope protocol](native-sync.md). Capability
-discovery reports `scopedSync: true` and `sharedProjects: true`. Shared delivery
-is periodic/manual until the near-real-time milestone.
+discovery reports `scopedSync`, `sharedProjects`, `sharedRealtime`, `scopeRecovery`,
+and `browserMfa`. Personal sync is periodic; shared delivery uses near-real-time
+notifications with HTTP fallback.
 
 ## Server setup
 
@@ -81,7 +82,8 @@ Routes are mounted under `/api/v2/accounts`. The executable contract is
 [routes.ts](../src/ultra-account/routes.ts); cryptographic envelope/schema contracts
 live in [shared-schema](../../shared-schema/src/ultra-account-contract.ts).
 Capability discovery, registration, verification, OPAQUE login, MFA completion,
-session refresh/revocation, profile, password changes, and recovery are covered by
+session refresh/revocation, browser passkey approval, account deletion, profile,
+password changes, and recovery are covered by
 real-client tests using the shipped PostgreSQL migration with PGlite. No real
 emails are sent during tests.
 
@@ -91,6 +93,9 @@ From the root, after building shared-schema and generating the Prisma client:
 npm run quiet -- account-crypto:test
 npm run quiet -- ultra-accounts:test
 npm run quiet -- ultra-sync:test
+npm run quiet -- ultra-realtime:test
+npm run quiet -- ultra-recovery:test
+npm run quiet -- ultra-realtime:load
 npm run quiet -- ultra-sync:browser
 npm run quiet -- ultra-accounts:browser
 npm run quiet -- ultra-accounts:regression
@@ -104,7 +109,9 @@ offline cached unlock. It is separate from the default server suite; omitting it
 does not validate browser/WebAuthn behavior. Existing PostgreSQL-dependent tests
 still require their documented database setup.
 
-Security review and native background-worker compatibility remain release gates
-for the subsequent v2 sync rollout. This implementation does not claim to solve
+Production PostgreSQL restore/load drills, physical-device performance, and an
+independent security review remain release gates. The native contract documents
+Android reminder scheduling and key-epoch handoff, iOS suspension limits, and
+the dedicated shared-view differences. This implementation does not claim to solve
 active malicious-client attacks, public-key directory transparency, or local
 task database encryption.

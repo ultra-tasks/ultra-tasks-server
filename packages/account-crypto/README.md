@@ -24,17 +24,19 @@ keys or invalidating the existing recovery key. Root keys exist only in client
 memory while unlocked. The portal caches wrapped vaults and encrypted refresh
 credentials in IndexedDB, scoped by origin, server ID, and account ID.
 
-These are cryptographic primitives, not the complete sharing protocol. Project
-membership authorization, owner-signed control history, trusted public-key
-distribution, device certification, transactional write manifests, automatic
-membership rekeying, and record delivery belong to the following milestones.
-Do not accept an arbitrary public key or AEAD ciphertext as proof of project
-membership or permission to edit.
+The package also authenticates owner-signed membership grants, account-certified
+devices, complete transaction manifests, and ownership-transfer proof chains.
+`RealtimeSync` schedules durable shared intents independently of periodic personal
+sync, uses scoped one-use socket tickets, and falls back to HTTP. Identical
+verified control values use bounded caches; new values are always verified.
 
-The browser integration test exercises the built bundle, real WebAuthn ceremonies
-with a virtual authenticator, printable recovery material, and cached offline
-unlock. Native Android/iOS background-worker integration and independent security
-review remain required before a public v2 sync/collaboration release.
+The browser suite exercises real virtual WebAuthn, printable recovery, cached
+offline unlock, and custom-origin/native browser approval with device-only proof.
+`nativeScopeCredentials` emits a narrow read-only key profile for the Android
+reminder worker; no password, master key, or account private key leaves the vault.
+Native session refresh has one owner shared with foreground/background callers.
+Native interoperability fixtures come from this package's real encryption and
+signing functions. Production platform/security acceptance remains a release gate.
 
 The package also provides `SyncClient`, encrypted IndexedDB state storage,
 personal model codecs, shared-task field validation, and three-way merging.

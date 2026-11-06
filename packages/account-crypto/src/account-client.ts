@@ -1,4 +1,5 @@
 import { client as opaque, ready } from '@serenity-kit/opaque';
+import { randomKey, encode, utf8 } from './encoding';
 import {
   AccountBundle,
   VaultContext,
@@ -48,25 +49,39 @@ export class AccountApiError extends Error {
   }
 }
 export const httpTransport =
-  (baseUrl: string): Transport =>
+  (baseUrl: string, timeoutMs = 30000): Transport =>
   async (path, body, accessToken, method = body ? 'POST' : 'GET') => {
     const headers = new Headers();
     if (body) headers.set('Content-Type', 'application/json');
     if (accessToken) headers.set('Authorization', 'Bearer ' + accessToken);
-    const response = await fetch(baseUrl.replace(/\/$/, '') + '/api/v2/accounts' + path, {
-      method,
-      cache: 'no-store',
-      credentials: 'omit',
-      headers,
-      ...(body ? { body: JSON.stringify(body) } : {}),
-    });
-    const result = (await response.json()) as { error?: string };
-    if (!response.ok)
-      throw new AccountApiError(
-        response.status,
-        result.error ?? 'Account request failed',
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(
+        baseUrl.replace(/\/$/, '') + '/api/v2/accounts' + path,
+        {
+          method,
+          cache: 'no-store',
+          credentials: 'omit',
+          headers,
+          signal: controller.signal,
+          ...(body ? { body: JSON.stringify(body) } : {}),
+        },
       );
-    return result;
+      const result = (await response.json()) as { error?: string };
+      if (!response.ok)
+        throw new AccountApiError(
+          response.status,
+          result.error ?? 'Account request failed',
+        );
+      return result;
+    } catch (error) {
+      if (controller.signal.aborted)
+        throw new TypeError('Account server request timed out');
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
   };
 
 /** Passwords and unwrapped keys exist only in this client's memory, never in HTTP bodies. */
@@ -82,7 +97,9 @@ export class AccountClient {
   onTokensChanged?: () => Promise<void>;
   adoptTokens(tokens: Tokens): void {
     this.tokens = tokens;
-    this.refreshAt = Date.now() + 540000;
+    const earlyRefreshSeconds = Math.max(0, Math.min(600, tokens.expiresIn) - 60);
+    const earlyRefreshMs = earlyRefreshSeconds * 1000;
+    this.refreshAt = Date.now() + earlyRefreshMs;
   }
   constructor(readonly transport: Transport) {}
   async init(): Promise<Capabilities> {
@@ -230,6 +247,32 @@ export class AccountClient {
     })) as Tokens;
     await this.finishLogin(result, password);
   }
+  async startBrowserMfa(): Promise<{
+    url: string;
+    ticket: string;
+    deviceSecret: string;
+  }> {
+    if (!this.pending) throw new Error('Sign in first');
+    const deviceSecret = randomKey();
+    const proofHash = encode(await crypto.subtle.digest('SHA-256', utf8(deviceSecret)));
+    const result = (await this.transport('/mfa/browser/start', {
+      mfaToken: this.pending.mfaToken,
+      proofHash,
+    })) as { ticket: string; url: string };
+    return { ...result, deviceSecret };
+  }
+  async pollBrowserMfa(flow: { ticket: string; deviceSecret: string }): Promise<boolean> {
+    const pending = this.pending;
+    if (!pending) throw new Error('Sign in first');
+    const result = (await this.transport('/mfa/browser/poll', {
+      ticket: flow.ticket,
+      deviceSecret: flow.deviceSecret,
+    })) as Tokens | { pending: true };
+    if (this.pending !== pending) throw new Error('Login was cancelled');
+    if ('pending' in result) return false;
+    await this.finishLogin(result, pending.password);
+    return true;
+  }
   async request<T>(path: string, data?: object, method?: string): Promise<T> {
     if (!this.tokens) throw new Error('Sign in first');
     if (Date.now() >= this.refreshAt) {
@@ -246,6 +289,19 @@ export class AccountClient {
       await this.refreshing;
     }
     return this.transport(path, data, this.tokens.accessToken, method) as Promise<T>;
+  }
+  async deleteAccount(): Promise<void> {
+    if (!this.unlocked || !this.account) throw new Error('Unlock the account first');
+    const data = {
+      action: 'delete-account',
+      ...this.identity(),
+      vaultVersion: this.account.vaultVersion,
+    };
+    await this.request('/delete', {
+      vaultVersion: data.vaultVersion,
+      signature: await sign(this.unlocked.secrets.signingPrivateKey, data),
+    });
+    this.lock();
   }
   async changePassword(password: string): Promise<void> {
     if (!this.unlocked || !this.bundle) throw new Error('Unlock the account first');

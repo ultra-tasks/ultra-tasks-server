@@ -3,6 +3,7 @@ import { chromium, Browser } from '@playwright/test';
 import fastifyStatic from '@fastify/static';
 import { fileURLToPath } from 'node:url';
 import { readFile } from 'node:fs/promises';
+import { randomKey } from '@ultra-tasks/account-crypto';
 import { createHarness, password } from './ultra-account.helper';
 
 describe('encrypted account portal in Chromium with a real virtual WebAuthn authenticator', () => {
@@ -155,4 +156,65 @@ describe('encrypted account portal in Chromium with a real virtual WebAuthn auth
     expect(errors).toEqual([]);
     await context.close();
   });
+  it('approves a native or custom-origin login on the server origin and requires the device-only proof to redeem it', async () => {
+    const registered = await h.register('nativepasskey@example.test', 'nativepasskey');
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('WebAuthn.enable');
+    await cdp.send('WebAuthn.addVirtualAuthenticator', {
+      options: {
+        protocol: 'ctap2',
+        transport: 'internal',
+        hasResidentKey: true,
+        hasUserVerification: true,
+        isUserVerified: true,
+        automaticPresenceSimulation: true,
+      },
+    });
+    await page.goto(origin + '/account');
+    await page.locator('#login-id').fill('nativepasskey');
+    await page.locator('#login-password').fill(password);
+    await page.locator('#login button:not([type])').click();
+    await expect
+      .poll(() => page.locator('#status').textContent())
+      .toContain('Signed in.');
+    await page.locator('#webauthn-enroll').click();
+    await expect
+      .poll(() => page.locator('#recovery-material').textContent())
+      .toContain('UTMFA-');
+    const native = h.client();
+    const result = await native.login('nativepasskey', password, 'My native phone');
+    expect(result.mfaToken).toBeTruthy();
+    expect(native.tokens).toBeUndefined();
+    const flow = await native.startBrowserMfa();
+    expect(flow.url).not.toContain(flow.deviceSecret);
+    expect(await native.pollBrowserMfa(flow)).toBe(false);
+    await expect(
+      h.transport('/mfa/browser/poll', {
+        ticket: flow.ticket,
+        deviceSecret: randomKey(),
+      }),
+    ).rejects.toMatchObject({ status: 401 });
+    await page.goto(flow.url);
+    await page.locator('#device-approve').click();
+    await expect
+      .poll(() => page.locator('#status').textContent())
+      .toContain('Device login approved');
+    expect(page.url()).toBe(origin + '/account');
+    expect(await native.pollBrowserMfa(flow)).toBe(true);
+    expect(native.unlocked?.masterKey).toBe(registered.client.unlocked!.masterKey);
+    await expect(
+      native.transport('/mfa/browser/poll', {
+        ticket: flow.ticket,
+        deviceSecret: flow.deviceSecret,
+      }),
+    ).rejects.toMatchObject({ status: 401 });
+    const stale = h.client();
+    await stale.login('nativepasskey', password);
+    const obsolete = await stale.startBrowserMfa();
+    await native.changePassword('changed password invalidates pending native login');
+    await expect(stale.pollBrowserMfa(obsolete)).rejects.toMatchObject({ status: 401 });
+    await context.close();
+  }, 90000);
 });

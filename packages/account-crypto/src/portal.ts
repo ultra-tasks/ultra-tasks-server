@@ -10,6 +10,8 @@ declare global {
   }
 }
 const client = new AccountClient(httpTransport(location.origin));
+const params = new URLSearchParams(location.search);
+history.replaceState(null, '', location.pathname);
 const element = <T extends HTMLElement = HTMLElement>(id: string): T => {
   const result = document.getElementById(id);
   if (!result) throw new Error('Missing account element');
@@ -201,6 +203,20 @@ on('webauthn-login', async () => {
   });
   await client.completeWebauthn(response.credentialToken, credential);
   await signedIn();
+});
+on('device-approve', async () => {
+  const ticket = params.get('device');
+  if (!ticket) throw new Error('The device approval link is missing');
+  const { options, deviceName } = (await client.transport('/mfa/browser/options', {
+    ticket,
+  })) as { options: object; deviceName: string };
+  element('device-name').textContent = deviceName;
+  const credential = await window.SimpleWebAuthnBrowser.startAuthentication({
+    optionsJSON: options,
+  });
+  await client.transport('/mfa/browser/approve', { ticket, credential });
+  show('device-approval', false);
+  status('Device login approved. Return to the Ultra Tasks app.');
 });
 on('offline-unlock', async () => {
   const name = value('login-id').trim().toLowerCase();
@@ -404,14 +420,16 @@ on('logout', async () => {
   logout();
 });
 
-const params = new URLSearchParams(location.search);
 if (params.has('verify'))
   element<HTMLInputElement>('verify-token').value = params.get('verify')!;
 if (params.has('recover')) {
   recoveryMailToken = params.get('recover')!;
   show('recover-finish');
 }
-history.replaceState(null, '', location.pathname);
+if (params.has('device')) {
+  show('auth', false);
+  show('device-approval');
+}
 void client
   .init()
   .then((capabilities) => {

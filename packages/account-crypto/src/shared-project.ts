@@ -15,6 +15,7 @@ export interface TaskOverlay {
   label: string;
   dueDay?: string | null;
   dueWithTime?: number | null;
+  remindAt?: number | null;
   priority?: number | string | null;
   tagIds?: string[];
   timeSpentOnDay?: Record<string, number>;

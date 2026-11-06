@@ -8,6 +8,9 @@ export * from './sync-merge';
 export * from './sync-client';
 export * from './personal-records';
 export * from './shared-project';
+export * from './realtime';
+export * from './ownership';
+export * from './native-profile';
 export {
   client as opaqueClient,
   server as opaqueServer,

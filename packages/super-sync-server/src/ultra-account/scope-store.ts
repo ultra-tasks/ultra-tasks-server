@@ -7,6 +7,8 @@ import {
   type ScopeInfo,
   type ScopeSnapshot,
   type SyncWrite,
+  type OwnershipAcceptance,
+  type ScopeRotation,
 } from '@ultra-tasks/account-crypto';
 import { AccountError, digest, type UltraConfig } from './security';
 import { accountById, one, type UltraDb, type SessionRow } from './store';
@@ -22,7 +24,8 @@ export interface ScopeRow {
   sequence: number;
   state: 'active' | 'migrating' | 'rotating';
   migration_device: string | null;
-  rotation: { id: string; members: Membership[] } | null;
+  rotation: ScopeRotation | null;
+  ownership_chain?: OwnershipAcceptance[];
 }
 export interface MemberRow {
   account_id: string;
@@ -73,7 +76,11 @@ export const lockScope = async (
     throw new AccountError(403, 'Viewers cannot change shared content');
   return { scope, member };
 };
-export const scopeInfo = async (db: UltraDb, scope: ScopeRow): Promise<ScopeInfo> => ({
+export const scopeInfo = async (
+  db: UltraDb,
+  scope: ScopeRow,
+  compact = false,
+): Promise<ScopeInfo> => ({
   id: scope.id,
   kind: scope.kind,
   ownerId: scope.owner_id,
@@ -83,15 +90,23 @@ export const scopeInfo = async (db: UltraDb, scope: ScopeRow): Promise<ScopeInfo
   controlVersion: scope.control_version,
   sequence: scope.sequence,
   state: scope.state,
-  members: (
-    await db.$queryRaw<MemberRow[]>(
-      Prisma.sql`SELECT * FROM ultra_scope_members WHERE scope_id=${scope.id} ORDER BY account_id`,
-    )
-  ).map((row) => row.membership),
+  members: compact
+    ? []
+    : (
+        await db.$queryRaw<MemberRow[]>(
+          Prisma.sql`SELECT * FROM ultra_scope_members WHERE scope_id=${scope.id} ORDER BY account_id`,
+        )
+      ).map((row) => row.membership),
   ...(scope.rotation ? { rotation: scope.rotation } : {}),
+  ownershipChain: scope.ownership_chain ?? [],
 });
-export const snapshot = async (db: UltraDb, scope: ScopeRow): Promise<ScopeSnapshot> => ({
-  scope: await scopeInfo(db, scope),
+export const snapshot = async (
+  db: UltraDb,
+  scope: ScopeRow,
+  compact = false,
+): Promise<ScopeSnapshot> => ({
+  ...(compact ? { controlUnchanged: true } : {}),
+  scope: await scopeInfo(db, scope, compact),
   heads: (
     await db.$queryRaw<HeadRow[]>(
       Prisma.sql`SELECT * FROM ultra_record_heads WHERE scope_id=${scope.id} ORDER BY entity_id`,
@@ -210,7 +225,7 @@ export const commitMutation = async (
     sequence: number;
   }>(
     db,
-    Prisma.sql`SELECT * FROM ultra_scope_receipts WHERE scope_id=${scope.id} AND device_id=${mutation.deviceId}`,
+    Prisma.sql`SELECT * FROM ultra_scope_receipts WHERE scope_id=${scope.id} AND account_id=${member.account_id} AND device_id=${mutation.deviceId}`,
   );
   if (receipt && mutation.counter <= receipt.counter) {
     if (
@@ -293,7 +308,7 @@ export const commitMutation = async (
     Prisma.sql`UPDATE ultra_scopes SET sequence=${sequence} WHERE id=${scope.id}`,
   );
   await db.$executeRaw(
-    Prisma.sql`INSERT INTO ultra_scope_receipts (scope_id,device_id,counter,mutation_id,digest,sequence) VALUES (${scope.id},${mutation.deviceId},${mutation.counter},${mutation.mutationId},${hash},${sequence}) ON CONFLICT (scope_id,device_id) DO UPDATE SET counter=excluded.counter,mutation_id=excluded.mutation_id,digest=excluded.digest,sequence=excluded.sequence`,
+    Prisma.sql`INSERT INTO ultra_scope_receipts (scope_id,account_id,device_id,counter,mutation_id,digest,sequence) VALUES (${scope.id},${member.account_id},${mutation.deviceId},${mutation.counter},${mutation.mutationId},${hash},${sequence}) ON CONFLICT (scope_id,account_id,device_id) DO UPDATE SET counter=excluded.counter,mutation_id=excluded.mutation_id,digest=excluded.digest,sequence=excluded.sequence`,
   );
   // Keep 30 days of catch-up history plus every manifest authenticating a current head.
   await db.$executeRaw(
