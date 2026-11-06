@@ -18,22 +18,27 @@ RUN apk add --no-cache openssl libc6-compat
 COPY package.json package-lock.json ./
 COPY packages/sync-core/package.json ./packages/sync-core/
 COPY packages/shared-schema/package.json ./packages/shared-schema/
+COPY packages/account-crypto/package.json ./packages/account-crypto/
 COPY packages/super-sync-server/package.json ./packages/super-sync-server/
 
 # Install dependencies (ignore scripts to skip husky/prepare from root)
 # Using npm install instead of npm ci due to workspace lock file sync issues
-RUN npm install --workspace=packages/sync-core --workspace=packages/shared-schema --workspace=packages/super-sync-server --ignore-scripts
+RUN npm install --workspace=packages/sync-core --workspace=packages/shared-schema --workspace=packages/account-crypto --workspace=packages/super-sync-server --ignore-scripts
 
 # Copy source files
 COPY packages/sync-core/ ./packages/sync-core/
 COPY packages/shared-schema/ ./packages/shared-schema/
+COPY packages/account-crypto/ ./packages/account-crypto/
 COPY packages/super-sync-server/ ./packages/super-sync-server/
 
-# Build sync-core first, then shared-schema
+# Build sync-core first, then shared-schema, then account-crypto
 WORKDIR /app/packages/sync-core
 RUN npm run build
 
 WORKDIR /app/packages/shared-schema
+RUN npm run build
+
+WORKDIR /app/packages/account-crypto
 RUN npm run build
 
 # Build super-sync-server

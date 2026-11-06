@@ -1,13 +1,14 @@
 {
   "name": "@super-productivity/super-sync-server",
   "version": "1.0.0",
+  "license": "AGPL-3.0-only",
   "description": "SuperSync server for Super Productivity",
   "main": "dist/src/index.js",
   "scripts": {
     "build": "tsc",
     "start": "node dist/src/index.js",
     "dev": "nodemon --watch src --ext ts --exec ts-node src/index.ts",
-    "pretest": "prisma generate",
+    "pretest": "npm --prefix ../account-crypto run build && prisma generate",
     "test": "vitest run",
     "test:integration:postgres": "vitest run --config vitest.integration.config.ts --maxWorkers=1 tests/integration/registration-races.integration.spec.ts tests/integration/clean-slate-atomicity-sql.integration.spec.ts tests/integration/device-touch-upload-race.integration.spec.ts tests/integration/conflict-detection-sql.integration.spec.ts tests/integration/batch-conflict-plan.integration.spec.ts tests/integration/snapshot-vector-clock-sql.integration.spec.ts tests/integration/repair-causality.integration.spec.ts tests/integration/health-alert-db-probe.integration.spec.ts tests/integration/migrate-deploy-db-timeout.integration.spec.ts tests/integration/migrate-deploy-lock-retry.integration.spec.ts tests/integration/migrate-deploy-orphan-cleanup.integration.spec.ts tests/integration/old-ops-sweep.integration.spec.ts tests/integration/old-ops-probe-plan.integration.spec.ts tests/integration/download-full-state-plan.integration.spec.ts tests/integration/old-ops-boundary-plan.integration.spec.ts tests/integration/old-ops-delete-plan.integration.spec.ts tests/integration/operations-autovacuum-reloptions.integration.spec.ts tests/integration/state-replacement-guard.integration.spec.ts tests/integration/capture-claim-race.integration.spec.ts",
     "docker:build": "./scripts/build-and-push.sh",
@@ -33,7 +34,16 @@
     "migrate-payload-bytes": "node dist/scripts/migrate-payload-bytes.js",
     "migrate-payload-bytes:dev": "ts-node scripts/migrate-payload-bytes.ts",
     "dry-run-old-ops-sweep": "node dist/scripts/dry-run-old-ops-sweep.js",
-    "dry-run-old-ops-sweep:dev": "tsx scripts/dry-run-old-ops-sweep.ts"
+    "dry-run-old-ops-sweep:dev": "tsx scripts/dry-run-old-ops-sweep.ts",
+    "test:ultra-accounts": "tsc -p tsconfig.ultra-tests.json && vitest run tests/ultra-accounts.spec.ts",
+    "test:regression": "vitest run",
+    "test:ultra-accounts:browser": "tsc -p tsconfig.ultra-tests.json && vitest run --config vitest.accounts-browser.config.ts",
+    "prebuild": "npm --prefix ../account-crypto run build",
+    "test:ultra-sync": "tsc -p tsconfig.ultra-tests.json && vitest run tests/ultra-sync.spec.ts",
+    "test:ultra-sync:browser": "tsc -p tsconfig.ultra-tests.json && vitest run --config vitest.native-browser.config.ts",
+    "test:ultra-realtime": "tsc -p tsconfig.ultra-tests.json && vitest run tests/ultra-realtime.spec.ts",
+    "test:ultra-recovery": "tsc -p tsconfig.ultra-tests.json && vitest run tests/ultra-recovery.spec.ts",
+    "test:ultra-realtime:load": "vitest run --config vitest.native-load.config.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",
@@ -52,7 +62,8 @@
     "jsonwebtoken": "^9.0.2",
     "nodemailer": "^10.1.0",
     "uuidv7": "^1.1.0",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "@ultra-tasks/account-crypto": "*"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.3",
