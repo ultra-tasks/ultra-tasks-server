@@ -1,6 +1,7 @@
 {
   "name": "@sp/sync-core",
   "version": "1.0.0",
+  "license": "AGPL-3.0-only",
   "description": "Framework-agnostic core types and utilities for Super Productivity sync",
   "main": "dist/index.js",
   "module": "dist/index.mjs",

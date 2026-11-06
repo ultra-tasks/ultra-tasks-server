@@ -1,48 +1,47 @@
-# Ultra Tasks licensing policy
+# Ultra Tasks licensing and provenance
 
-Ultra Tasks is an open-source fork of [Super Productivity](https://github.com/super-productivity/super-productivity). It uses **scoped licenses**, rather than replacing the original MIT license with a repository-wide copyleft license.
+Ultra Tasks is an open-source fork of [Super Productivity](https://github.com/super-productivity/super-productivity). The **current Ultra Tasks combined distribution uses GNU AGPL-3.0-only**, except where specific licenses and existing rights apply. This policy **does not revoke** MIT rights in inherited code or prior MIT-licensed releases of Ultra Tasks.
 
 ## License map
 
-| Scope | License for the Ultra Tasks distribution | Where to read it |
-| --- | --- | --- |
-| Client application, Electron/mobile clients, shared packages and other files not covered by a more specific license | MIT | [LICENSE](LICENSE) |
-| `packages/super-sync-server/` — the Ultra Tasks distribution of the hosted synchronization server and future collaboration functionality within that package | GNU AGPL-3.0-only | [packages/super-sync-server/LICENSE](packages/super-sync-server/LICENSE) |
-| Original Super Productivity code incorporated in either area | Original MIT permissions and notices remain in force | [LICENSE](LICENSE) and [server upstream MIT notice](packages/super-sync-server/LICENSE-MIT-UPSTREAM) |
-| Third-party dependencies, bundled assets, plugins and content with their own notices | Their respective licenses | See each component's notices and licenses |
+| Material | Terms |
+| --- | --- |
+| Current combined Ultra Tasks client, server and project-owned packages | [AGPL-3.0-only](LICENSE) to the extent Ultra Tasks has the necessary rights |
+| Original Ultra Tasks code and improvements contributed after adoption | AGPL-3.0-only by default unless an explicit exception applies |
+| Original Super Productivity code and older MIT-licensed contributions | Original **MIT permissions remain valid**, including in files also carrying AGPL-covered modifications; [upstream MIT text](LICENSES/MIT-UPSTREAM.txt) |
+| Independently deployed SuperSync server | Combined server distribution under [AGPL-3.0-only](packages/super-sync-server/LICENSE); [original MIT notice](packages/super-sync-server/LICENSE-MIT-UPSTREAM) remains |
+| Third-party dependencies, independently licensed plugins, assets and material | Their separate notices and applicable licenses |
 
-The root `package.json` remains `MIT`; the server's `package.json` declares `AGPL-3.0-only`. These markers describe the licensing of the respective distributed packages, not a retroactive withdrawal of rights to inherited code.
+The AGPL declaration in a package manifest identifies the license for **that package as distributed here**, not an exclusive copyright claim over inherited material. An individual file can include separately MIT-licensed material and AGPL-covered improvements. Retain file-specific and third-party copyright notices.
 
-## Inherited code and prior grants
+## Original MIT rights remain
 
-- The original Super Productivity authors and other contributors retain their copyrights. Their MIT-licensed code remains available under MIT, including from the upstream project.
-- The server's AGPL-3.0-only terms apply to the combined server version distributed by Ultra Tasks to the extent licensing rights permit. MIT-licensed portions **do not cease to be MIT-licensed**; their existing grants cannot be revoked by this change.
-- Preserve the complete upstream MIT text and notices when redistributing any substantial portions of inherited MIT code. The server retains a standalone copy because it can be built and deployed separately.
-- Previously obtained MIT-licensed versions of Ultra Tasks remain available under their original grants.
+The original Super Productivity authors retain their copyrights. Their MIT code can still be used under the original MIT grant; the entire original [MIT license and copyright notice](LICENSES/MIT-UPSTREAM.txt) are preserved verbatim. The existing server also retains a standalone copy.
 
-## What AGPL does and does not do
+**Previously obtained MIT-licensed Ultra Tasks releases remain MIT-licensed under their existing grants.** Neither the new root license nor updated npm package metadata can retroactively revoke rights granted in those versions. Downstream users may independently use the original upstream code under MIT, but distribution of the *current Ultra Tasks combined application* must also satisfy the AGPL terms for its AGPL-covered contributions.
 
-AGPL-3.0-only is an OSI-approved open-source license. It allows using, modifying, redistributing, self-hosting, and **commercially hosting** AGPL-covered software. It does not give Ultra Tasks an exclusive right to operate a hosted service.
+## What AGPL means for a cloud business
 
-A party operating a **modified** AGPL-covered network service must comply with applicable section 13 obligations, including offering its Corresponding Source to remote users. Other AGPL obligations may apply to redistribution. See the actual [server license](packages/super-sync-server/LICENSE), not this summary, for controlling terms.
+AGPLv3 permits commercial operation, redistribution, self-hosting and forking, subject to its terms. It does not confer exclusive commercial hosting rights on Ultra Tasks. Section 13 can require an offer of Corresponding Source to users interacting remotely with a modified AGPL-covered network program.
 
-The official Ultra Tasks Cloud subscription, billing, quotas, branding, support, and uptime commitments are **service offerings**, not extra restrictions imposed on the AGPL-covered software. Self-hosted server deployments should not be artificially feature-gated to reproduce hosted subscription tiers.
+Ultra Tasks Cloud subscriptions pay for a managed service (hosting, storage, availability, billing and support), **not** permission to use the open-source program. Self-hosted collaboration should not be disabled by hosted-plan entitlements.
 
-## New development and contributions
+## Contributions: outbound license and inbound grant
 
-- New changes **within** `packages/super-sync-server/` should be submitted for distribution under AGPL-3.0-only and include attribution for third-party contributions where required.
-- Reusable client and shared-library code elsewhere remains MIT unless a separately reviewed, clearly scoped licensing decision changes it.
-- New server packages must explicitly document their license; do not assume that all future services are automatically AGPL-covered by this file.
-- For code copied or ported from upstream, verify licensing and preserve original notices. Do not claim exclusive ownership of upstream contributions.
-- Contributors keep their copyright. Any future contributor agreement or dual-license proposal would require a separate, explicit review.
+Accepted original contributions are normally distributed to the public as **AGPL-3.0-only**. Separately, the project requests an **explicit broad non-exclusive inbound license** from each contributor of original work, so the maintainer may use, modify, distribute, sublicense and **relicense** that contributor's own work under AGPL, other open-source licenses, or commercial licenses.
 
-## Review before merge
+The separate inbound grant is described in [CONTRIBUTOR_LICENSE_AGREEMENT.md](CONTRIBUTOR_LICENSE_AGREEMENT.md) and is **not a copyright assignment**. Contributors retain ownership and may continue to use and license their work elsewhere.
 
-This proposal affects the license of the **distributed existing SuperSync server**, even though the planned multi-user collaboration system has not been implemented. Before merging:
+The grant **requires affirmative assent** via the PR template's dedicated checkbox or an equivalent explicit acceptance statement in the PR. It is **not implied by merely submitting code**, and no prior contributor is retroactively bound. Maintainers should verify assent before merging new original contributions. Third-party or upstream MIT material may be included only on the terms of its own valid license; contributors cannot license rights they do not hold.
 
-1. Review whether all incorporated server files, bundled dependencies, generated code, and distribution artifacts are compatible with AGPL-3.0-only and retain required notices.
-2. Check binary packaging, Docker image source-availability and notice paths, and any marketplace/store obligations.
-3. Verify the server-side network source-offer obligations for a future modified hosted deployment.
-4. Obtain legal review if this project will offer a paid commercial hosting service or receive material third-party contributions.
+When offering an AGPL-only contribution back to the upstream MIT project, the relevant copyright holder must separately authorize distribution under MIT; the public AGPL license alone does not provide that permission.
 
-This page is an explanatory repository policy; it is not a replacement for the license texts or legal advice.
+## Review before merging this policy
+
+1. Audit provenance and license compatibility of inherited and contributor-written source, generated files, vendored dependencies, bundled plugins and assets.
+2. Check the plugin API and independently published libraries for compatibility; consider documented exceptions where beneficial.
+3. Check Electron, mobile stores, Docker/binary release notices and hosted-service source-offer procedures.
+4. Obtain qualified legal review of the CLA's recipient, grants, patent provisions and assent mechanism.
+5. Keep an attribution inventory as new work is incorporated.
+
+This explanatory policy does not supersede individual license texts or grant rights the project does not possess.
