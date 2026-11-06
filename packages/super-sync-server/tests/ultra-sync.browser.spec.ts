@@ -260,6 +260,70 @@ describe('native sync and sharing through the Angular app in Chromium', () => {
     await aliceContext.close();
     await bobContext.close();
   }, 180000);
+  it('withholds native background content keys until the personal dataset is explicitly linked', async () => {
+    await h.register('native-keys@example.test', 'nativekeys');
+    const source = await browser.newContext();
+    try {
+      await login(await pageFor(source), 'nativekeys', password);
+    } finally {
+      await source.close();
+    }
+    const context = await browser.newContext();
+    try {
+      const page = await pageFor(context);
+      // Attach after app startup: exercise the real platform RPC and account
+      // flow without pretending Chromium supplies the other Android APIs.
+      await page.evaluate(() => {
+        const host = window as unknown as {
+          nativeScopeHandoffs: number[];
+          SUPAndroid: {
+            nativeAccountCall(id: string, method: string, payload: string): void;
+          };
+        };
+        host.nativeScopeHandoffs = [];
+        let tokens: unknown;
+        host.SUPAndroid = {
+          nativeAccountCall(requestId, method, payload) {
+            const input = JSON.parse(payload);
+            if (Array.isArray(input.scopes))
+              host.nativeScopeHandoffs.push(input.scopes.length);
+            if (method === 'configure') tokens = input.tokens;
+            const data =
+              method === 'current' || method === 'detach'
+                ? tokens
+                : method === 'reminder-barrier'
+                  ? { version: 0 }
+                  : {};
+            window.dispatchEvent(
+              new CustomEvent('ultra-native-account', {
+                detail: { requestId, ok: true, data },
+              }),
+            );
+          },
+        };
+      });
+      await page.getByLabel('Ultra Tasks server URL').fill(origin);
+      await page.getByLabel('Email or username').fill('nativekeys');
+      await page.getByLabel('Password', { exact: true }).fill(password);
+      await page.getByRole('button', { name: 'Sign in and unlock' }).click();
+      await page.getByText('Connect personal data', { exact: true }).waitFor();
+      const handoffs = () =>
+        page.evaluate(
+          () =>
+            (window as unknown as { nativeScopeHandoffs: number[] }).nativeScopeHandoffs,
+        );
+      expect((await handoffs()).length).toBeGreaterThan(0);
+      expect((await handoffs()).every((count) => count === 0)).toBe(true);
+      await page.getByLabel('I have backed up my data').check();
+      await page.getByRole('button', { name: 'Use the account’s existing data' }).click();
+      await page.getByRole('heading', { name: 'Shared projects' }).waitFor();
+      await expect
+        .poll(async () => (await handoffs()).some((count) => count > 0))
+        .toBe(true);
+    } finally {
+      await context.close();
+    }
+  }, 60000);
   it('syncs an ordinary task through the personal bridge into a fresh second app device', async () => {
     await h.register('personal@example.test', 'personaltest');
     const firstContext = await browser.newContext();

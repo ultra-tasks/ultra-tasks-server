@@ -209,6 +209,10 @@ refresh so foreground and background cannot consume the same token. There is
 no plaintext storage fallback. iOS stores its session in device-only Keychain
 storage and uses the same serialized refresh rule.
 
+Signing in binds session refresh only. Content keys and reminder projections
+reach the native worker after the explicit personal-data link choice; reopening
+an unlinked account removes previously managed reminders immediately.
+
 The Android worker verifies owner membership, account-certified device keys,
 transaction/record signatures, inventory, and AES-GCM context before reading
 reminder fields. It applies alarm changes before committing cursors. Locally
