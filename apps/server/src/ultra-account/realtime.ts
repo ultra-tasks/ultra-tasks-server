@@ -51,7 +51,10 @@ export class UltraRealtimeHub {
   private readonly peers = new Set<Peer>();
   private queue: Promise<void> = Promise.resolve();
   private heartbeat?: ReturnType<typeof setInterval>;
-  constructor(private readonly db: UltraDb) {}
+  constructor(
+    private readonly db: UltraDb,
+    private readonly privateOnly = false,
+  ) {}
   get size(): number {
     return this.peers.size;
   }
@@ -112,7 +115,7 @@ export class UltraRealtimeHub {
             control_version: number;
           }[]
         >(
-          Prisma.sql`SELECT s.id,m.account_id,s.sequence,s.generation,s.epoch,s.control_version FROM ultra_scopes s JOIN ultra_scope_members m ON m.scope_id=s.id WHERE s.kind='project' AND s.id IN (${Prisma.join(scopeIds)}) AND m.account_id IN (${Prisma.join([...new Set(peers.map((p) => p.accountId))])})`,
+          Prisma.sql`SELECT s.id,m.account_id,s.sequence,s.generation,s.epoch,s.control_version FROM ultra_scopes s JOIN ultra_scope_members m ON m.scope_id=s.id WHERE s.kind=${this.privateOnly ? 'personal' : 'project'} AND s.id IN (${Prisma.join(scopeIds)}) AND m.account_id IN (${Prisma.join([...new Set(peers.map((p) => p.accountId))])})`,
         )
       : [];
     const authorized = new Map(
@@ -164,7 +167,6 @@ export const registerUltraRealtime = async (
   },
 ): Promise<void> => {
   const { db, transaction, config, hub } = options;
-  if (config.privateOnly) return;
   const tickets = new WeakMap<FastifyRequest, Ticket>();
   app.post(
     '/sync/socket-ticket',
@@ -182,10 +184,10 @@ export const registerUltraRealtime = async (
           await liveSession(tx, session);
           for (const id of [...new Set(scopes)].sort()) {
             const { scope } = await lockScope(tx, id, session.account_id);
-            if (scope.kind !== 'project')
+            if (scope.kind !== (config.privateOnly ? 'personal' : 'project'))
               throw new AccountError(
                 403,
-                'Personal scopes do not support live subscriptions',
+                'This scope does not support live subscriptions',
               );
           }
           await tx.$executeRaw(
@@ -232,8 +234,11 @@ export const registerUltraRealtime = async (
               Prisma.sql`DELETE FROM ultra_socket_tickets WHERE digest=${digest(ticket)} AND expires_at>${BigInt(Date.now())}`,
             );
             if (consumed !== 1) throw new AccountError(401);
-            for (const id of [...row.scope_ids].sort())
-              await lockScope(tx, id, row.account_id);
+            for (const id of [...row.scope_ids].sort()) {
+              const { scope } = await lockScope(tx, id, row.account_id);
+              if (scope.kind !== (config.privateOnly ? 'personal' : 'project'))
+                throw new AccountError(403);
+            }
             return row;
           });
           tickets.set(req, record);

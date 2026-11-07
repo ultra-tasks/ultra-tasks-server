@@ -17,7 +17,7 @@ import {
   UltraMutationSchema,
   UltraOwnershipOfferSchema,
   UltraOwnershipAcceptanceSchema,
-} from '@sp/shared-schema';
+} from '@ultra-tasks/sync-contract';
 import { AccountError, DAY, type UltraConfig } from './security';
 import {
   accountById,

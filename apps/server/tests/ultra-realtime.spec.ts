@@ -55,6 +55,73 @@ describe('native realtime: real sockets, encrypted transactions, scoped access',
     await expect.poll(() => messages.length).toBeGreaterThan(0);
     return { socket, messages };
   };
+  it('delivers private personal wakeups only to the owning account and revokes a signed-out device', async () => {
+    h = await createHarness({ privateOnly: true });
+    const account = (await h.register()).client;
+    const client = await device(account);
+    const personal = await client.createScope('personal');
+    const url = await listen();
+    const { socket, messages } = await connect(account, url, [personal]);
+    const other = (await h.register('other@example.test', 'otheruser')).client;
+    await expect(
+      other.request('/sync/socket-ticket', { scopes: [personal] }),
+    ).rejects.toThrow();
+    await client.edit(personal, [
+      {
+        entityId: 'private-title',
+        entityType: 'personal.task',
+        value: { title: 'Never disclose this task over the socket' },
+      },
+    ]);
+    await client.syncScope(personal);
+    await expect.poll(() => messages.length).toBeGreaterThan(1);
+    const wire = messages.join('');
+    expect(wire).not.toContain('Never disclose');
+    expect(wire).not.toContain(account.tokens!.accessToken);
+    expect(wire).not.toContain('alice@example.test');
+    const sessions =
+      await account.request<{ id: string; current: boolean }[]>('/sessions');
+    const closed = new Promise<number>((resolve) => socket.once('close', resolve));
+    await account.request('/sessions/revoke', {
+      sessionId: sessions.find((session) => session.current)!.id,
+    });
+    expect(await closed).toBe(4001);
+  }, 60000);
+  it('automatically uploads and pulls private encrypted edits through the opted-in scheduler', async () => {
+    h = await createHarness({ privateOnly: true });
+    const account = (await h.register()).client;
+    const first = await device(account);
+    const personal = await first.createScope('personal');
+    const secondAccount = h.client();
+    await secondAccount.login(
+      'alice@example.test',
+      'test password for encrypted accounts',
+    );
+    const second = await device(secondAccount);
+    const url = await listen();
+    for (const client of [first, second]) {
+      const realtime = new RealtimeSync(client, {
+        includePersonal: true,
+        includeShared: false,
+        socket: (ticket) => createRealtimeSocket(url + '?ticket=' + ticket),
+        syncScope: (scopeId) => client.syncScope(scopeId),
+        updated: () => undefined,
+      });
+      live.push(realtime);
+      realtime.start();
+    }
+    await expect.poll(() => live.every((client) => client.isConnected)).toBe(true);
+    await first.edit(personal, [
+      {
+        entityId: 'automatic',
+        entityType: 'personal.task',
+        value: { title: 'Automatic private edit' },
+      },
+    ]);
+    await expect
+      .poll(() => second.records(personal).automatic?.value, { timeout: 5000 })
+      .toEqual({ title: 'Automatic private edit' });
+  }, 60000);
   it('uses single-use tickets, refuses personal scopes, and sends no task content', async () => {
     h = await createHarness();
     const account = (await h.register()).client;

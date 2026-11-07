@@ -10,7 +10,7 @@ import {
   type Mutation,
 } from '@ultra-tasks/account-crypto';
 import { registerScopeRecovery } from './scope-recovery-routes';
-import { UltraMembershipSchema, UltraMutationSchema } from '@sp/shared-schema';
+import { UltraMembershipSchema, UltraMutationSchema } from '@ultra-tasks/sync-contract';
 import { AccountError, authenticateAccount, type UltraConfig } from './security';
 import {
   accountById,

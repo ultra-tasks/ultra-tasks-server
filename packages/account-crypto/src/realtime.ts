@@ -16,6 +16,9 @@ export interface RealtimeOptions {
   batchMs?: number;
   maximumWaitMs?: number;
   fallbackMs?: number;
+  includePersonal?: boolean;
+  includeShared?: boolean;
+  syncScope?: (scopeId: string) => Promise<void>;
   now?: () => number;
 }
 interface Pending {
@@ -39,7 +42,7 @@ export const createRealtimeSocket = (url: string): RealtimeSocket => {
   return adapter;
 };
 
-/** Shared scopes only. Personal captures/uploads stay on their independent schedule. */
+/** Metadata wakeups and HTTP fallback; personal hosts supply their durable bridge pipeline. */
 export class RealtimeSync {
   private readonly pending = new Map<string, Pending>();
   private readonly scopes = new Set<string>();
@@ -74,7 +77,12 @@ export class RealtimeSync {
   updateScopes(): void {
     if (!this.active) return;
     const current = Object.values(this.client.state.scopes)
-      .filter((s) => s.info.kind === 'project' && !s.revoked)
+      .filter(
+        (s) =>
+          !s.revoked &&
+          ((s.info.kind === 'project' && this.options.includeShared !== false) ||
+            (s.info.kind === 'personal' && this.options.includePersonal === true)),
+      )
       .map((s) => s.info.id);
     const same =
       current.length === this.scopes.size && current.every((id) => this.scopes.has(id));
@@ -133,7 +141,8 @@ export class RealtimeSync {
   }
   private async runScope(id: string, pending: Pending): Promise<void> {
     try {
-      await this.client.syncScope(id);
+      if (this.options.syncScope) await this.options.syncScope(id);
+      else await this.client.syncScope(id);
       this.options.updated(id);
     } catch (error) {
       if ((error as { status?: number }).status === 404) this.revoke(id);

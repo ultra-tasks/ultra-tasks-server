@@ -22,7 +22,7 @@ import {
   UltraBundleSchema,
   UltraUsernameSchema,
   ULTRA_OPAQUE_KSF,
-} from '@sp/shared-schema';
+} from '@ultra-tasks/sync-contract';
 import {
   accountById,
   accountByIdentifier,
@@ -98,7 +98,7 @@ export const ultraAccountRoutes = async (
   options: UltraRoutesOptions,
 ): Promise<void> => {
   const { db, transaction, config, sendMail } = options;
-  const realtime = options.realtime ?? new UltraRealtimeHub(db);
+  const realtime = options.realtime ?? new UltraRealtimeHub(db, !!config.privateOnly);
   await registerUltraRealtime(app, { db, transaction, config, hub: realtime });
   await app.register(ultraScopeRoutes, { ...options, realtime, prefix: '/sync' });
   await opaqueReady;
@@ -229,6 +229,7 @@ export const ultraAccountRoutes = async (
         scopedSync: true,
         sharedProjects: !config.privateOnly,
         sharedRealtime: !config.privateOnly,
+        personalRealtime: !!config.privateOnly,
         scopeRecovery: true,
         browserMfa: true,
       },

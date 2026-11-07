@@ -3,9 +3,8 @@ WORKDIR /repo
 RUN apk add --no-cache openssl libc6-compat
 
 COPY package.json package-lock.json ./
-COPY packages/sync-core/package.json ./packages/sync-core/
 COPY packages/account-crypto/package.json ./packages/account-crypto/
-COPY packages/shared-schema/package.json ./packages/shared-schema/
+COPY packages/sync-contract/package.json ./packages/sync-contract/
 COPY apps/server/package.json ./apps/server/
 COPY apps/account/package.json ./apps/account/
 RUN npm ci --ignore-scripts
@@ -16,7 +15,7 @@ COPY scripts/ ./scripts/
 RUN npm exec -w @ultra-tasks/server -- prisma generate
 RUN npm run build
 
-FROM node:24-alpine AS production
+FROM node:24-alpine AS runtime
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.revision=$VCS_REF
 LABEL org.opencontainers.image.source=https://github.com/ultra-tasks/ultra-tasks-server
@@ -30,10 +29,8 @@ WORKDIR /repo
 # Preserve workspace paths so runtime uses the same lock as development.
 COPY --chown=ultra:nodejs package.json package-lock.json LICENSE LICENSING.md SOURCE.md ./
 COPY --chown=ultra:nodejs LICENSES/ ./LICENSES/
-COPY --from=builder --chown=ultra:nodejs /repo/packages/sync-core/package.json ./packages/sync-core/
-COPY --from=builder --chown=ultra:nodejs /repo/packages/sync-core/dist ./packages/sync-core/dist
-COPY --from=builder --chown=ultra:nodejs /repo/packages/shared-schema/package.json ./packages/shared-schema/
-COPY --from=builder --chown=ultra:nodejs /repo/packages/shared-schema/dist ./packages/shared-schema/dist
+COPY --from=builder --chown=ultra:nodejs /repo/packages/sync-contract/package.json ./packages/sync-contract/
+COPY --from=builder --chown=ultra:nodejs /repo/packages/sync-contract/dist ./packages/sync-contract/dist
 COPY --from=builder --chown=ultra:nodejs /repo/packages/account-crypto/package.json ./packages/account-crypto/
 COPY --from=builder --chown=ultra:nodejs /repo/packages/account-crypto/dist ./packages/account-crypto/dist
 COPY --from=builder --chown=ultra:nodejs /repo/apps/account/package.json ./apps/account/
@@ -58,3 +55,11 @@ ENV ULTRA_REVISION=$VCS_REF
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD wget -q --spider http://127.0.0.1:${PORT}/health || exit 1
 CMD ["sh", "-c", "if [ \"${RUN_MIGRATIONS_ON_STARTUP:-false}\" = \"true\" ]; then sh scripts/migrate-deploy.sh || exit 1; fi; exec node dist/src/index.js"]
+
+# Explicit test target. The default final image remains private-only.
+FROM runtime AS legacy-e2e
+COPY --from=builder --chown=ultra:nodejs /repo/apps/server/public ./public
+COPY --from=builder --chown=ultra:nodejs /repo/apps/server/templates ./templates
+CMD ["sh", "-c", "sh scripts/migrate-deploy.sh && exec node dist/src/legacy-index.js"]
+
+FROM runtime AS production

@@ -102,7 +102,7 @@ export const createHarness = async (
   };
   const mail: { email: string; kind: 'verify' | 'recover'; token: string }[] = [];
   const app = Fastify();
-  const realtime = new UltraRealtimeHub(db);
+  const realtime = new UltraRealtimeHub(db, !!settings.privateOnly);
   await app.register(websocket, { options: { maxPayload: 1024 } });
   await app.register(rateLimit, { global: false });
   await app.register(ultraAccountRoutes, {

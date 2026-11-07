@@ -1,6 +1,6 @@
 {
   "name": "@ultra-tasks/account-crypto",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "license": "AGPL-3.0-only",
   "main": "dist/index.js",
@@ -35,6 +35,12 @@
   },
   "files": [
     "dist",
-    "README.md"
-  ]
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ultra-tasks/ultra-tasks-server.git",
+    "directory": "packages/account-crypto"
+  }
 }

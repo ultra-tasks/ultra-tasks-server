@@ -55,8 +55,8 @@
     "prisma": "5.22.0",
     "@simplewebauthn/server": "^13.3.2",
     "@simplewebauthn/types": "^12.0.0",
-    "@sp/shared-schema": "*",
-    "@sp/sync-core": "*",
+    "@sp/shared-schema": "https://github.com/ultra-tasks/ultra-tasks-server/releases/download/legacy-compat-535576e/sp-shared-schema-1.0.0.tgz",
+    "@sp/sync-core": "https://github.com/ultra-tasks/ultra-tasks-server/releases/download/legacy-compat-535576e/sp-sync-core-1.0.0.tgz",
     "bcryptjs": "^3.0.3",
     "dotenv": "^17.2.3",
     "fastify": "^5.12.7",
@@ -64,7 +64,8 @@
     "nodemailer": "^10.1.0",
     "uuidv7": "^1.1.0",
     "zod": "^4.4.3",
-    "@ultra-tasks/account-crypto": "*"
+    "@ultra-tasks/account-crypto": "0.1.1",
+    "@ultra-tasks/sync-contract": "0.1.0"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.3",

@@ -16,7 +16,7 @@
   ],
   "scripts": {
     "quiet": "node tools/quiet.js",
-    "build:packages": "npm run build -w @sp/sync-core && npm run build -w @sp/shared-schema && npm run build -w @ultra-tasks/account-crypto",
+    "build:packages": "npm run build -w @ultra-tasks/sync-contract && npm run build -w @ultra-tasks/account-crypto",
     "build:dashboard": "npm run build -w @ultra-tasks/account-dashboard",
     "build": "npm run build:packages && npm run build:dashboard && npm run build -w @ultra-tasks/server",
     "db:generate": "npm exec -w @ultra-tasks/server -- prisma generate",
@@ -30,6 +30,7 @@
     "start": "npm start -w @ultra-tasks/server",
     "prettier:file": "prettier --write",
     "checkFile": "prettier --check",
-    "typecheck": "npm run typecheck -w @ultra-tasks/account-dashboard"
+    "typecheck": "npm run typecheck -w @ultra-tasks/account-dashboard",
+    "test:private:browser": "npm exec -w @ultra-tasks/server -- vitest run --config vitest.private-browser.config.ts"
   }
 }
