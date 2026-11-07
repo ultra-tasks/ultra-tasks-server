@@ -5,10 +5,10 @@ vault wrappers, HPKE project-key delivery, and signed v2 record primitives.
 This package contains no Angular imports or database access. Its server-side
 OPAQUE export must not be exposed as an unauthenticated application API.
 
-Build from the repository root with `npm run account-crypto:build`; test with
-`npm run quiet -- account-crypto:test`. The build also creates the account portal
-bundle under the server's generated `public/ultra-account/` directory. Do not
-edit or commit that generated bundle.
+Build from the repository root with `npm run quiet -- build:packages`; test with
+`npm run quiet -- test:crypto`. The account dashboard is a separate workspace
+under `apps/account`, built with `npm run quiet -- build:dashboard`; its generated
+assets are not part of this SDK package.
 
 - OPAQUE: `@serenity-kit/opaque` 1.1.0, RFC 9807, fixed memory-constrained KSF.
 - Vault unlock: Argon2id, 64 MiB, three iterations, parallelism one, random salt.
@@ -50,4 +50,5 @@ to the account and server; no password or unwrapped key is persisted there.
 settings, reminders, integrations, and opaque plugin documents. Time accrual and
 corrections use separate device buckets. Shared project records use an explicit
 field allowlist; private overlays remain in the personal scope.
-See [the maintained protocol and limits](../super-sync-server/docs/native-sync.md).
+See [the private v1 profile](../../docs/v1-sync-model.md) and
+[the protocol and limits](../../apps/server/docs/native-sync.md).

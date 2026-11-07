@@ -1,0 +1,14 @@
+node_modules/
+**/dist/
+.tmp/
+**/.env
+**/.env.*
+!**/.env.example
+**/data/
+**/backups/
+**/secrets/
+*.tsbuildinfo
+apps/server/public/ultra-account/
+apps/server/public/ultra-account.html
+apps/server/public/ultra-account.css
+apps/server/account-public/

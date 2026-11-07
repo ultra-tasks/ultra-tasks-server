@@ -1,0 +1,91 @@
+name: ultra-tasks-server
+
+x-server-environment: &server-environment
+  NODE_ENV: ${NODE_ENV:-production}
+  HOST: 0.0.0.0
+  PORT: 1900
+  PUBLIC_URL: ${PUBLIC_URL:?Configure PUBLIC_URL}
+  DATABASE_URL: postgresql://ultra:${POSTGRES_PASSWORD:?Configure POSTGRES_PASSWORD}@postgres:5432/ultra?connection_limit=20&pool_timeout=10
+  REQUIRE_DATABASE_POOL_LIMITS: 'true'
+  RUN_MIGRATIONS_ON_STARTUP: 'false'
+  ULTRA_ACCOUNTS_ENABLED: 'true'
+  ULTRA_SERVER_ID: ${ULTRA_SERVER_ID:?Generate a stable server ID}
+  ULTRA_OPAQUE_SETUP: ${ULTRA_OPAQUE_SETUP:?Generate persistent OPAQUE setup}
+  ULTRA_AUTH_SECRET: ${ULTRA_AUTH_SECRET:?Generate a persistent authentication secret}
+  CORS_ORIGINS: ${CORS_ORIGINS:-}
+  TRUST_PROXY: uniquelocal
+  SMTP_HOST: ${SMTP_HOST:?Configure SMTP_HOST}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_SECURE: ${SMTP_SECURE:-false}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASS: ${SMTP_PASS:-}
+  SMTP_FROM: ${SMTP_FROM:?Configure SMTP_FROM}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    init: true
+    environment:
+      POSTGRES_USER: ultra
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ultra
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'pg_isready -U ultra -d ultra && psql -U ultra -d ultra -c "SELECT 1" >/dev/null',
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    mem_limit: 1536m
+    logging: &logging
+      driver: json-file
+      options: { max-size: 10m, max-file: '3' }
+
+  migrate:
+    image: ${SERVER_IMAGE:?Choose a tested server image}
+    environment: *server-environment
+    entrypoint: ['sh', 'scripts/migrate-deploy.sh']
+    depends_on:
+      postgres: { condition: service_healthy }
+    logging: *logging
+
+  server:
+    image: ${SERVER_IMAGE}
+    restart: unless-stopped
+    init: true
+    environment: *server-environment
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '--spider', 'http://127.0.0.1:1900/health']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    security_opt: ['no-new-privileges:true']
+    cap_drop: ['ALL']
+    mem_limit: 768m
+    logging: *logging
+
+  caddy:
+    image: caddy:2.11-alpine
+    restart: unless-stopped
+    ports: ['80:80', '443:443']
+    environment:
+      DOMAIN: ${DOMAIN:?Configure DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      server: { condition: service_healthy }
+    logging: *logging
+
+volumes:
+  postgres-data:
+  caddy-data:
+  caddy-config:

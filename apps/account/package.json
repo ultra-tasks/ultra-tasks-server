@@ -1,0 +1,17 @@
+{
+  "name": "@ultra-tasks/account-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "scripts": {
+    "build": "tsup && node ../../scripts/install-dashboard.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ultra-tasks/account-crypto": "0.1.0"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "typescript": "^5.0.0 || ^6.0.0"
+  }
+}

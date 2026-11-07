@@ -1,0 +1,82 @@
+name: Server checks and development image
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: server-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run quiet -- db:generate
+      - run: npm run quiet -- build
+      - run: npm run quiet -- typecheck
+      - run: npm run quiet -- test
+      - name: Install isolated test browser
+        run: npx playwright install --with-deps chromium
+      - name: Account browser acceptance
+        run: npm run quiet -- test:accounts:browser
+      - name: Build development installation
+        run: docker build -f apps/server/Dockerfile -t ultra-tasks-server:dev .
+      - name: Start and verify fresh PostgreSQL installation
+        run: |
+          sh scripts/dev.sh
+          sh scripts/smoke.sh
+      - name: Stop test installation
+        if: always()
+        run: |
+          if [ -f deploy/.env ]; then
+            docker compose --env-file deploy/.env -f deploy/compose.yaml -f deploy/compose.dev.yaml down
+          fi
+
+  image:
+    needs: checks
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish checked development revision
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        with:
+          context: .
+          file: apps/server/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ghcr.io/ultra-tasks/ultra-tasks-server:sha-${{ github.sha }}
+          build-args: VCS_REF=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

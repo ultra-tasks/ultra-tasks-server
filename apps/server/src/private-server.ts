@@ -1,0 +1,93 @@
+import Fastify, { type FastifyError, type FastifyInstance } from 'fastify';
+import cors from '@fastify/cors';
+import helmet from '@fastify/helmet';
+import rateLimit from '@fastify/rate-limit';
+import fastifyStatic from '@fastify/static';
+import websocket from '@fastify/websocket';
+import { resolve } from 'node:path';
+import { loadConfigFromEnv, type ServerConfig } from './config';
+import { prisma } from './db';
+import { sendUltraAccountEmail } from './email';
+import { loadUltraConfig, ultraAccountRoutes } from './ultra-account';
+
+/** The v1 entry point exposes accounts and personal sync, independently of legacy routes. */
+export const createServer = (overrides: Partial<ServerConfig> = {}) => {
+  const config = loadConfigFromEnv(overrides);
+  if (!process.env.CORS_ORIGINS && !overrides.cors)
+    config.cors.allowedOrigins = [new URL(config.publicUrl).origin];
+  const accountConfig = loadUltraConfig(config.publicUrl);
+  if (!accountConfig)
+    throw new Error('Ultra Tasks server requires ULTRA_ACCOUNTS_ENABLED=true');
+  let app: FastifyInstance | undefined;
+
+  return {
+    get fastifyServer(): FastifyInstance | undefined {
+      return app;
+    },
+    async start(): Promise<string> {
+      app = Fastify({
+        logger: false,
+        bodyLimit: 8 * 1024 * 1024,
+        requestTimeout: 80000,
+        connectionTimeout: 90000,
+        trustProxy: config.trustProxy,
+      });
+      app.setErrorHandler((error: FastifyError, _request, reply) => {
+        const status = error.statusCode ?? 500;
+        return reply.code(status).send({
+          error: status >= 500 ? 'Internal server error' : 'Request rejected',
+        });
+      });
+      await app.register(helmet, {
+        contentSecurityPolicy: {
+          directives: {
+            defaultSrc: ["'self'"],
+            scriptSrc: ["'self'", "'wasm-unsafe-eval'"],
+            styleSrc: ["'self'"],
+            frameAncestors: ["'none'"],
+            baseUri: ["'none'"],
+            formAction: ["'self'"],
+          },
+        },
+        referrerPolicy: { policy: 'no-referrer' },
+      });
+      await app.register(rateLimit, { max: 500, timeWindow: '15 minutes' });
+      await app.register(cors, {
+        origin: config.cors.enabled ? config.cors.allowedOrigins : false,
+        methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+        allowedHeaders: ['Authorization', 'Content-Type'],
+      });
+      await app.register(websocket);
+      await app.register(fastifyStatic, {
+        root: resolve(process.cwd(), 'account-public'),
+        index: false,
+        cacheControl: false,
+      });
+      await app.register(ultraAccountRoutes, {
+        prefix: '/api/v2/accounts',
+        db: prisma,
+        transaction: (run) =>
+          prisma.$transaction(run, { maxWait: 10000, timeout: 30000 }),
+        config: { ...accountConfig, privateOnly: true },
+        sendMail: sendUltraAccountEmail,
+      });
+      app.get('/', async (_request, reply) => reply.redirect('/account'));
+      app.get('/account', async (_request, reply) =>
+        reply.header('Cache-Control', 'no-store').sendFile('ultra-account.html'),
+      );
+      app.get('/live', { config: { rateLimit: false } }, async () => ({ status: 'ok' }));
+      app.get('/health', { config: { rateLimit: false } }, async (_request, reply) => {
+        try {
+          await prisma.$queryRaw`SELECT 1`;
+          return { status: 'ok' };
+        } catch {
+          return reply.code(503).send({ status: 'unavailable' });
+        }
+      });
+      return app.listen({ host: config.host, port: config.port });
+    },
+    async stop(): Promise<void> {
+      await app?.close();
+    },
+  };
+};

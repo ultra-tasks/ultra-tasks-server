@@ -1,0 +1,9 @@
+{$DOMAIN} {
+    reverse_proxy server:1900
+    header {
+        Referrer-Policy no-referrer
+        X-Content-Type-Options nosniff
+        -Server
+    }
+    # Account recovery and login URLs contain one-use credentials. Do not log them.
+}
