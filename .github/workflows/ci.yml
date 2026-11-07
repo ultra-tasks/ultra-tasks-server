@@ -118,3 +118,32 @@ jobs:
           name: compose-${{ github.sha }}
           path: .tmp/releases/*
           if-no-files-found: error
+
+  published-installation:
+    needs: image
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run quiet -- build:packages
+      - name: Pull the published image without registry credentials
+        run: |
+          export DOCKER_CONFIG="$(mktemp -d)"
+          docker pull ghcr.io/ultra-tasks/ultra-tasks-server:sha-${{ github.sha }}
+          docker tag ghcr.io/ultra-tasks/ultra-tasks-server:sha-${{ github.sha }} ultra-tasks-server:dev
+      - name: Published image installs, syncs, and restores on its native architecture
+        env:
+          ULTRA_LOAD_DEVICES: '2'
+          ULTRA_LOAD_RECORDS: '10'
+        run: sh scripts/test-installation.sh

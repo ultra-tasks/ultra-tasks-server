@@ -17,5 +17,5 @@ mv "$temporary/deploy/env.example.pinned" "$temporary/deploy/env.example"
 printf '%s\n' "$revision" > "$temporary/REVISION"
 target=".tmp/releases/ultra-tasks-server-compose-$revision.tar.gz"
 tar -czf "$target" -C "$temporary" .
-sha256sum "$target" > "$target.sha256"
+(cd .tmp/releases && sha256sum "${target##*/}") > "$target.sha256"
 printf '%s\n' "Installation bundle: $target"

@@ -4,7 +4,7 @@ Docker Engine with Compose is required. A published image needs no source checko
 
 ## Production setup
 
-Download the versioned Compose bundle, select its tested immutable image tag or digest, and authenticate to the registry if the package is private. Public GHCR packages are currently disabled by the organization; building from public source is also supported. Do not use an untested `latest` tag.
+Download the versioned Compose bundle, select its tested immutable image tag or digest, and pull the public GHCR image without authentication. Building from public source is also supported. Do not use an untested `latest` tag.
 
 ```sh
 sh scripts/setup.sh https://accounts.example.com ghcr.io/ultra-tasks/ultra-tasks-server:sha-FULL_COMMIT

@@ -24,7 +24,7 @@ Capacity measurements are workload observations, not a hosted-user guarantee. Ch
 1. Run the final revision's AMD64/ARM64 CI and native desktop/mobile checks, then record published image digests. A workflow definition alone is not a pass.
 2. Complete independent authentication/cryptography/browser review and physical-device acceptance, including suspension, credential storage, and reminders.
 3. Verify the full migration inventory and retired-provider/device procedure on representative existing user data. Never silently merge an account with unrelated local data.
-4. Choose container visibility/distribution. The organization's current policy prevents public GHCR packages; source builds work without private dependency credentials.
+4. The container package is public; verify anonymous pulls and the final published-image acceptance results before selecting a release image.
 5. Configure Oracle, HTTPS origin, SMTP, operator documents, off-machine backups, and actionable host monitoring. Enable the website/client account origin only after staging works.
 6. Run a limited beta and an off-machine recovery/upgrade exercise before tagging stable `1.0.0`.
 

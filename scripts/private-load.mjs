@@ -265,5 +265,10 @@ try {
     'Real PostgreSQL private-sync capacity acceptance passed: ' + JSON.stringify(metrics),
   );
 } finally {
-  monitor.kill('SIGTERM');
+  monitor.kill('SIGKILL');
+  monitor.stdout.destroy();
+  monitor.unref();
 }
+// All assertions and synchronous measurement writes have completed. Fetch and
+// WebSocket keep-alive resources must not keep this one-shot CLI alive.
+process.exit(0);

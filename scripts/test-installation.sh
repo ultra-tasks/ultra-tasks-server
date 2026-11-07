@@ -31,8 +31,10 @@ test "$(sh scripts/compose.sh exec -T server wget -qO- http://localhost:1900/pri
 sh scripts/compose.sh exec -T server node scripts/smoke-dev.cjs --save-fixture
 sh scripts/compose.sh exec -T server cat /tmp/ultra-restore-fixture.json > "$fixture"
 node scripts/private-load.mjs < "$fixture"
+printf '%s\n' 'Starting protected PostgreSQL backup'
 backup=$(sh scripts/backup.sh | sed -n 's/^Backup bundle: //p')
 test -n "$backup"
+printf '%s\n' 'Backup completed; restoring into a fresh installation'
 sh scripts/compose.sh down
 rm "$legal/privacy.html"
 export COMPOSE_PROJECT_NAME="$restored"
