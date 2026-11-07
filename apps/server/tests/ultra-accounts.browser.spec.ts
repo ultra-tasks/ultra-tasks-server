@@ -41,6 +41,30 @@ describe('encrypted account portal in Chromium with a real virtual WebAuthn auth
     await browser?.close();
     await h?.close();
   });
+  it('requires an explicit confirmation before deleting an account and clears its cached profile', async () => {
+    await h.register('delete-dashboard@example.test', 'deletedashboard');
+    const context = await browser.newContext();
+    try {
+      const page = await context.newPage();
+      await page.goto(origin + '/account');
+      await page.locator('#status').filter({ hasText: 'Ready.' }).waitFor();
+      await page.locator('#login-id').fill('deletedashboard');
+      await page.locator('#login-password').fill(password);
+      await page.locator('#login button:not([type])').click();
+      await page.locator('#status').filter({ hasText: 'Signed in.' }).waitFor();
+      await page.getByText('Delete account', { exact: true }).click();
+      await page.locator('#delete-confirm-email').fill('delete-dashboard@example.test');
+      await page.locator('#delete-confirm').check();
+      await page.getByRole('button', { name: 'Permanently delete account' }).click();
+      await page
+        .locator('#status')
+        .filter({ hasText: 'Account and personal encrypted server data deleted.' })
+        .waitFor();
+      await expect(h.client().login('deletedashboard', password)).rejects.toThrow();
+    } finally {
+      await context.close();
+    }
+  }, 60000);
   it('registers with saved recovery material, verifies email, uses WebAuthn 2FA, recovers the password, and unlocks offline', async () => {
     const context = await browser.newContext({ acceptDownloads: true });
     const page = await context.newPage();
@@ -94,6 +118,16 @@ describe('encrypted account portal in Chromium with a real virtual WebAuthn auth
     await page.locator('#login-password').fill(password);
     await page.locator('#login button[type=submit], #login button:not([type])').click();
     await wait('Signed in.');
+    expect(await page.locator('#personal-state').textContent()).toBe(
+      'No data linked yet',
+    );
+    expect(await page.locator('#server-address').textContent()).toBe(origin);
+    await page.screenshot({
+      path: fileURLToPath(
+        new URL('../../../.tmp/account-dashboard.png', import.meta.url),
+      ),
+      fullPage: true,
+    });
     await page.locator('#webauthn-enroll').click();
     await wait('Signed in.');
     const mfaCodes = (await page.locator('#recovery-material').textContent())!.split(

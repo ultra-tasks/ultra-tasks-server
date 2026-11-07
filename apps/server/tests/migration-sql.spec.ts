@@ -360,7 +360,7 @@ describe('performance migrations', () => {
       'utf8',
     );
     const dockerWorkflow = readFileSync(
-      join(currentDir, '../../../.github/workflows/supersync-docker.yml'),
+      join(currentDir, '../../../.github/workflows/ci.yml'),
       'utf8',
     );
     const migrationCommand = 'sh scripts/migrate-deploy.sh';
@@ -448,29 +448,13 @@ describe('performance migrations', () => {
     expect(buildAndPushScript).toContain('.dockerignore');
     expect(buildAndPushScript).toContain('git -C "$REPO_ROOT" ls-files --others');
     expect(buildAndPushScript).toContain('--build-arg "VCS_REF=$VCS_REF"');
-    expect(dockerWorkflow).toContain('push:');
-    expect(dockerWorkflow).toContain('branches:');
-    expect(dockerWorkflow).toContain('- master');
-    expect(dockerWorkflow).toContain('fetch-depth: 0');
-    expect(dockerWorkflow).toContain('.dockerignore');
-    expect(dockerWorkflow).toContain('packages/super-sync-server/**');
-    expect(dockerWorkflow).toContain('Resolve image source revision');
-    expect(dockerWorkflow).toContain('Could not resolve SuperSync image source revision');
-    expect(dockerWorkflow).toContain('revision=$revision');
-    expect(dockerWorkflow).toContain('VCS_REF=${{ steps.source-ref.outputs.revision }}');
-    expect(dockerWorkflow).not.toContain('labels: ${{ steps.meta.outputs.labels }}');
-    // Release images: a vX.Y.Z tag built from the tag's tree, never `latest`, never pruned.
-    expect(dockerWorkflow).toContain('types: [published]');
-    expect(dockerWorkflow).toContain('!github.event.release.prerelease');
-    expect(dockerWorkflow).toContain('ref: refs/tags/${{ steps.tag.outputs.tag }}');
-    expect(dockerWorkflow).toContain('^v[0-9]+\\.[0-9]+\\.[0-9]+$');
+    expect(dockerWorkflow).toContain('branches: [main]');
+    expect(dockerWorkflow).toContain('needs: [checks, installation]');
+    expect(dockerWorkflow).toContain('platforms: linux/amd64,linux/arm64');
+    expect(dockerWorkflow).toContain('VCS_REF=${{ github.sha }}');
     expect(dockerWorkflow).toContain(
-      'tags: ghcr.io/super-productivity/supersync:${{ steps.tag.outputs.tag }}',
+      'tags: ghcr.io/ultra-tasks/ultra-tasks-server:sha-${{ github.sha }}',
     );
-    expect(
-      dockerWorkflow.match(/VCS_REF=\$\{\{ steps\.source-ref\.outputs\.revision \}\}/g),
-    ).toHaveLength(2);
-    expect(dockerWorkflow).toContain('exclude-tags: v*');
     expect(helmDeployment).toContain('sh scripts/migrate-deploy.sh');
     expect(
       helmDeployment.match(/include "supersync\.postgresqlConnectionLimit" \./g),

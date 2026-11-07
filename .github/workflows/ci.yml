@@ -31,25 +31,56 @@ jobs:
       - run: npm run quiet -- build
       - run: npm run quiet -- typecheck
       - run: npm run quiet -- test
+      - run: npm run quiet -- test:server
+      - run: npm audit --omit=dev --audit-level=high
       - name: Install isolated test browser
         run: npx playwright install --with-deps chromium
       - name: Account browser acceptance
         run: npm run quiet -- test:accounts:browser
-      - name: Build development installation
-        run: docker build -f apps/server/Dockerfile -t ultra-tasks-server:dev .
-      - name: Start and verify fresh PostgreSQL installation
-        run: |
-          sh scripts/dev.sh
-          sh scripts/smoke.sh
-      - name: Stop test installation
+
+  installation:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run quiet -- build:packages
+      - name: Build candidate on its native architecture
+        run: docker build -f apps/server/Dockerfile --build-arg VCS_REF=${{ github.sha }} -t ultra-tasks-server:dev -t ultra-tasks-server:sha-${{ github.sha }} .
+      - name: Fresh install, concurrency, quota, restart, and restore
+        env:
+          ULTRA_LOAD_QUOTA: 'true'
+        run: sh scripts/test-installation.sh
+      - name: Check out initial private server for upgrade acceptance
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          ref: c8e2a39474477e2a57ebc73a6fad4ce57cef960d
+          path: .tmp/upgrade-baseline
+          persist-credentials: false
+      - name: Build baseline from public source
+        run: docker build -f .tmp/upgrade-baseline/apps/server/Dockerfile -t ultra-tasks-server:baseline .tmp/upgrade-baseline
+      - name: Upgrade preserves authentication and encrypted data
+        run: sh scripts/test-update.sh ultra-tasks-server:baseline ultra-tasks-server:sha-${{ github.sha }}
+      - name: Preserve non-sensitive capacity measurements
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
-        run: |
-          if [ -f deploy/.env ]; then
-            docker compose --env-file deploy/.env -f deploy/compose.yaml -f deploy/compose.dev.yaml down
-          fi
+        with:
+          name: capacity-${{ matrix.runner }}
+          path: .tmp/private-load.json
+          if-no-files-found: error
 
   image:
-    needs: checks
+    needs: [checks, installation]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -80,3 +111,10 @@ jobs:
           build-args: VCS_REF=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Package the matching operator bundle
+        run: sh scripts/package-release.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: compose-${{ github.sha }}
+          path: .tmp/releases/*
+          if-no-files-found: error

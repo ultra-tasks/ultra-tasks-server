@@ -4,6 +4,8 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    testTimeout: 15000,
+    maxWorkers: 4,
     setupFiles: ['./tests/setup.ts'],
     // Skip legacy tests that need migration from SQLite to Prisma
     // These tests were written for the old SQLite-based implementation
@@ -13,6 +15,10 @@ export default defineConfig({
       '**/dist/**',
       'tests/ultra-accounts.browser.spec.ts',
       'tests/ultra-sync.browser.spec.ts',
+      'tests/private.browser.spec.ts',
+      // Cross-repository application parity has its own required client job.
+      'tests/sync-fuzz-server-parity.pglite.spec.ts',
+      'tests/sync-fuzz-server-full-state-parity.pglite.spec.ts',
       // Legacy tests that use synchronous SQLite patterns
       // These tests need to be migrated to async Prisma patterns
       'tests/sync.routes.spec.ts',

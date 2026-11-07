@@ -31,6 +31,7 @@ export const createHarness = async (
   settings: {
     requireTermsConsent?: boolean;
     hasOperatorTerms?: boolean;
+    registrationOpen?: boolean;
     privateOnly?: boolean;
   } = {},
 ) => {

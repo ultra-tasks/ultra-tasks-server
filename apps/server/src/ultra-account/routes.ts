@@ -58,6 +58,7 @@ import { ultraScopeRoutes } from './scope-routes';
 import { UltraRealtimeHub, registerUltraRealtime } from './realtime';
 import { deleteUltraAccount } from './account-deletion';
 import { registerBrowserMfa } from './browser-mfa';
+import { registerAccountOverview } from './overview-routes';
 
 export interface UltraRoutesOptions {
   db: UltraDb;
@@ -65,6 +66,7 @@ export interface UltraRoutesOptions {
   config: UltraConfig;
   requireTermsConsent?: boolean;
   hasOperatorTerms?: boolean;
+  registrationOpen?: boolean;
   sendMail: (
     email: string,
     kind: 'verify' | 'recover',
@@ -101,6 +103,7 @@ export const ultraAccountRoutes = async (
   const realtime = options.realtime ?? new UltraRealtimeHub(db, !!config.privateOnly);
   await registerUltraRealtime(app, { db, transaction, config, hub: realtime });
   await app.register(ultraScopeRoutes, { ...options, realtime, prefix: '/sync' });
+  await registerAccountOverview(app, options);
   await opaqueReady;
   // Fail at startup if a corrupt setup was supplied, without logging the secret.
   try {
@@ -230,6 +233,7 @@ export const ultraAccountRoutes = async (
         sharedProjects: !config.privateOnly,
         sharedRealtime: !config.privateOnly,
         personalRealtime: !!config.privateOnly,
+        registrationOpen: options.registrationOpen !== false,
         scopeRecovery: true,
         browserMfa: true,
       },
@@ -240,6 +244,8 @@ export const ultraAccountRoutes = async (
   );
 
   post('/register/start', async (req) => {
+    if (options.registrationOpen === false)
+      throw new AccountError(403, 'Account registration is closed on this server');
     const input = body(
       req,
       z
@@ -279,6 +285,8 @@ export const ultraAccountRoutes = async (
     };
   });
   post('/register/finish', async (req) => {
+    if (options.registrationOpen === false)
+      throw new AccountError(403, 'Account registration is closed on this server');
     const input = body(
       req,
       z

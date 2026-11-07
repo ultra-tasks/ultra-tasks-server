@@ -5,6 +5,7 @@ import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import websocket from '@fastify/websocket';
 import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
 import { loadConfigFromEnv, type ServerConfig } from './config';
 import { prisma } from './db';
 import { sendUltraAccountEmail } from './email';
@@ -19,6 +20,19 @@ export const createServer = (overrides: Partial<ServerConfig> = {}) => {
   if (!accountConfig)
     throw new Error('Ultra Tasks server requires ULTRA_ACCOUNTS_ENABLED=true');
   let app: FastifyInstance | undefined;
+  const production = process.env.NODE_ENV === 'production';
+  const registrationOpen =
+    process.env.ULTRA_REGISTRATION_OPEN === 'true' ||
+    (!production && process.env.ULTRA_REGISTRATION_OPEN !== 'false');
+  const legalDir = resolve(process.env.ULTRA_LEGAL_DIR || 'operator/legal');
+  const hasPrivacy = existsSync(resolve(legalDir, 'privacy.html'));
+  const hasTerms = existsSync(resolve(legalDir, 'terms.html'));
+  const requireConsent =
+    process.env.ULTRA_REQUIRE_TERMS_CONSENT === undefined
+      ? production
+      : process.env.ULTRA_REQUIRE_TERMS_CONSENT === 'true';
+  if (registrationOpen && requireConsent && !hasPrivacy)
+    throw new Error('Provide operator/legal/privacy.html before opening registration');
 
   return {
     get fastifyServer(): FastifyInstance | undefined {
@@ -69,9 +83,21 @@ export const createServer = (overrides: Partial<ServerConfig> = {}) => {
         transaction: (run) =>
           prisma.$transaction(run, { maxWait: 10000, timeout: 30000 }),
         config: { ...accountConfig, privateOnly: true },
+        registrationOpen,
+        requireTermsConsent: requireConsent,
+        hasOperatorTerms: hasTerms,
         sendMail: sendUltraAccountEmail,
       });
       app.get('/', async (_request, reply) => reply.redirect('/account'));
+      for (const [name, available] of [
+        ['privacy', hasPrivacy],
+        ['terms', hasTerms],
+      ] as const) {
+        if (available)
+          app.get('/' + name + '.html', async (_request, reply) =>
+            reply.header('Cache-Control', 'no-store').sendFile(name + '.html', legalDir),
+          );
+      }
       app.get('/account', async (_request, reply) =>
         reply.header('Cache-Control', 'no-store').sendFile('ultra-account.html'),
       );

@@ -31,6 +31,8 @@
     "prettier:file": "prettier --write",
     "checkFile": "prettier --check",
     "typecheck": "npm run typecheck -w @ultra-tasks/account-dashboard",
-    "test:private:browser": "npm exec -w @ultra-tasks/server -- vitest run --config vitest.private-browser.config.ts"
+    "test:private:browser": "npm exec -w @ultra-tasks/server -- vitest run --config vitest.private-browser.config.ts",
+    "test:realtime:load": "npm exec -w @ultra-tasks/server -- vitest run --config vitest.native-load.config.ts",
+    "test:parity": "npm exec -w @ultra-tasks/server -- vitest run --config vitest.parity.config.ts"
   }
 }

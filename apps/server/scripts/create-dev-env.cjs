@@ -8,6 +8,8 @@ opaqueReady.then(() => {
     PUBLIC_URL: 'http://localhost:1900',
     CORS_ORIGINS: 'http://localhost:1900',
     NODE_ENV: 'development',
+    ULTRA_REGISTRATION_OPEN: 'true',
+    ULTRA_REQUIRE_TERMS_CONSENT: 'false',
     POSTGRES_PASSWORD: randomBytes(24).toString('hex'),
     ULTRA_SERVER_ID: randomUUID(),
     ULTRA_OPAQUE_SETUP: opaqueServer.createSetup(),

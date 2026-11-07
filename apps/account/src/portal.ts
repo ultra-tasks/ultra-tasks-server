@@ -118,6 +118,8 @@ const signedIn = async (): Promise<void> => {
   }
   element<HTMLInputElement>('profile-username').value = client.account?.username ?? '';
   element<HTMLInputElement>('profile-name').value = client.account?.displayName ?? '';
+  await refreshOverview();
+  await refreshDevices();
   status('Signed in. Your encrypted account keys are unlocked on this device.');
 };
 client.onTokensChanged = cache;
@@ -222,7 +224,7 @@ on('device-approve', async () => {
   const { options, deviceName } = (await client.transport('/mfa/browser/options', {
     ticket,
   })) as { options: object; deviceName: string };
-  element('device-name').textContent = deviceName;
+  element('approval-device-name').textContent = deviceName;
   const credential = await window.SimpleWebAuthnBrowser.startAuthentication({
     optionsJSON: options,
   });
@@ -372,7 +374,7 @@ on('profile', async () => {
   );
   status('Profile saved. Email changes require verification at the new address.');
 });
-on('sessions-refresh', async () => {
+const refreshDevices = async (): Promise<void> => {
   const sessions =
     await client.request<
       { id: string; deviceName: string; revoked: boolean; current: boolean }[]
@@ -401,7 +403,47 @@ on('sessions-refresh', async () => {
     }
     element('sessions').append(row);
   }
+};
+on('sessions-refresh', async () => {
+  await refreshDevices();
   status('Device sessions loaded.');
+});
+const refreshOverview = async (): Promise<void> => {
+  const overview = await client.request<{
+    server: { url: string };
+    personal: null | {
+      state: string;
+      records: number;
+      encryptedBytes: number;
+      historyBytes: number;
+    };
+    limits: { encryptedBytes: number; historyBytes: number };
+  }>('/overview');
+  const mib = (bytes: number): string => (bytes / (1024 * 1024)).toFixed(2) + ' MiB';
+  element('server-address').textContent = overview.server.url;
+  element('personal-state').textContent = overview.personal
+    ? overview.personal.state
+    : 'No data linked yet';
+  element('storage-usage').textContent =
+    `${overview.personal?.records ?? 0} records · ${mib(overview.personal?.encryptedBytes ?? 0)} of ${mib(overview.limits.encryptedBytes)}`;
+  element('history-usage').textContent =
+    `${mib(overview.personal?.historyBytes ?? 0)} of ${mib(overview.limits.historyBytes)}`;
+};
+on('overview-refresh', refreshOverview);
+on('delete-account', async () => {
+  if (
+    value('delete-confirm-email').trim().toLowerCase() !== client.account?.email ||
+    !element<HTMLInputElement>('delete-confirm').checked
+  )
+    throw new Error('Confirm your account email and the deletion warning.');
+  const identity = client.identity();
+  await client.deleteAccount();
+  await profiles(
+    (store) => store.delete([location.origin, identity.serverId, identity.accountId]),
+    true,
+  );
+  logout();
+  status('Account and personal encrypted server data deleted.');
 });
 const logout = (): void => {
   client.lock();
@@ -445,6 +487,9 @@ if (params.has('device')) {
 void client
   .init()
   .then((capabilities) => {
+    show('signup', capabilities.features['registrationOpen'] !== false);
+    show('registration-closed', capabilities.features['registrationOpen'] === false);
+    if (params.get('view') === 'signup') element('signup').scrollIntoView();
     show('signup-consent', !!capabilities.requireTermsConsent);
     element<HTMLInputElement>('signup-consent-accepted').required =
       !!capabilities.requireTermsConsent;

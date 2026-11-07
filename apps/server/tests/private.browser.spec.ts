@@ -1,5 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { chromium, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import {
+  chromium,
+  expect as browserExpect,
+  type Browser,
+  type BrowserContext,
+  type Page,
+} from '@playwright/test';
 import fastifyStatic from '@fastify/static';
 import { resolve } from 'node:path';
 import { createHarness, password } from './ultra-account.helper';
@@ -52,22 +58,31 @@ describe('private v1 sync through two real Angular clients', () => {
     await page.goto(origin + '/#/native-sync');
     return page;
   };
-  const login = async (page: Page, importLocal: boolean): Promise<void> => {
+  const login = async (
+    page: Page,
+    importLocal: boolean,
+    alreadyLinked = false,
+  ): Promise<void> => {
     await page.getByLabel('Ultra Tasks server URL').fill(origin);
     await page.getByLabel('Email or username').fill('alice');
     await page.getByLabel('Password', { exact: true }).fill(password);
     await page.getByRole('button', { name: 'Sign in and unlock' }).click();
+    if (!alreadyLinked) {
+      await page
+        .getByText('Connect personal data', { exact: true })
+        .waitFor({ timeout: 30000 });
+      await page.getByLabel('I have backed up my data').check();
+      await page
+        .getByRole('button', {
+          name: importLocal
+            ? 'Import this device’s data'
+            : 'Use the account’s existing data',
+        })
+        .click();
+    }
     await page
-      .getByText('Connect personal data', { exact: true })
+      .getByRole('button', { name: 'Sync now', exact: true })
       .waitFor({ timeout: 30000 });
-    await page.getByLabel('I have backed up my data').check();
-    await page
-      .getByRole('button', {
-        name: importLocal
-          ? 'Import this device’s data'
-          : 'Use the account’s existing data',
-      })
-      .click();
     await expect
       .poll(
         async () => ({
@@ -77,7 +92,9 @@ describe('private v1 sync through two real Angular clients', () => {
         { timeout: 30000 },
       )
       .toEqual({ connect: 0, error: [] });
-    await expect(page.getByRole('heading', { name: 'Shared projects' })).toHaveCount(0);
+    await browserExpect(
+      page.getByRole('heading', { name: 'Shared projects' }),
+    ).toHaveCount(0);
   };
   it('connects private accounts and propagates ordinary offline/concurrent edits without manual sync or sharing endpoints', async () => {
     const firstContext = await browser.newContext();
@@ -88,40 +105,44 @@ describe('private v1 sync through two real Angular clients', () => {
       await login(first, true);
       await login(second, false);
       const add = async (page: Page, title: string): Promise<void> => {
-        await page.goto(origin + '/#/tag/TODAY/tasks');
+        if (!page.url().endsWith('/#/tag/TODAY/tasks'))
+          await page.goto(origin + '/#/tag/TODAY/tasks');
         await page.locator('task-list').first().waitFor();
-        await page.locator('.tour-addBtn').click();
+        await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+        await page.keyboard.press('Shift+A');
         await page.locator('add-task-bar.global .main-input').fill(title);
         await page.locator('.e2e-add-task-submit').click();
         await page.keyboard.press('Escape');
       };
       await add(first, 'Private first-device task');
       await second.goto(origin + '/#/tag/TODAY/tasks');
-      await expect(
+      await browserExpect(
         second.locator('task').filter({ hasText: 'Private first-device task' }),
       ).toHaveCount(1, { timeout: 15000 });
       await secondContext.setOffline(true);
       await add(second, 'Private offline second-device task');
       await add(first, 'Private concurrent first-device task');
       await secondContext.setOffline(false);
-      await expect(
+      await browserExpect(
         first.locator('task').filter({ hasText: 'Private offline second-device task' }),
       ).toHaveCount(1, { timeout: 20000 });
-      await expect(
+      await browserExpect(
         second
           .locator('task')
           .filter({ hasText: 'Private concurrent first-device task' }),
       ).toHaveCount(1, { timeout: 20000 });
       await second.reload();
       await second.goto(origin + '/#/native-sync');
-      await login(second, false);
+      await login(second, false, true);
       await second.goto(origin + '/#/tag/TODAY/tasks');
       for (const title of [
         'Private first-device task',
         'Private offline second-device task',
         'Private concurrent first-device task',
       ])
-        await expect(second.locator('task').filter({ hasText: title })).toHaveCount(1, {
+        await browserExpect(
+          second.locator('task').filter({ hasText: title }),
+        ).toHaveCount(1, {
           timeout: 15000,
         });
     } finally {

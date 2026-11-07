@@ -12,6 +12,8 @@ x-server-environment: &server-environment
   ULTRA_SERVER_ID: ${ULTRA_SERVER_ID:?Generate a stable server ID}
   ULTRA_OPAQUE_SETUP: ${ULTRA_OPAQUE_SETUP:?Generate persistent OPAQUE setup}
   ULTRA_AUTH_SECRET: ${ULTRA_AUTH_SECRET:?Generate a persistent authentication secret}
+  ULTRA_REGISTRATION_OPEN: ${ULTRA_REGISTRATION_OPEN:-false}
+  ULTRA_REQUIRE_TERMS_CONSENT: ${ULTRA_REQUIRE_TERMS_CONSENT:-true}
   CORS_ORIGINS: ${CORS_ORIGINS:-}
   TRUST_PROXY: uniquelocal
   SMTP_HOST: ${SMTP_HOST:?Configure SMTP_HOST}
@@ -58,6 +60,8 @@ services:
     image: ${SERVER_IMAGE}
     restart: unless-stopped
     init: true
+    volumes:
+      - ${ULTRA_LEGAL_DIRECTORY:-./legal}:/repo/apps/server/operator/legal:ro
     environment: *server-environment
     depends_on:
       migrate: { condition: service_completed_successfully }

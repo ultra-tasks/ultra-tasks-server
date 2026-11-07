@@ -4,7 +4,7 @@ import { Prisma } from '@prisma/client';
 import { SyncService } from '../src/sync/sync.service';
 import { OperationDownloadService } from '../src/sync/services/operation-download.service';
 import type { Operation, UploadResult, VectorClock } from '../src/sync/sync.types';
-import * as port from '../../../src/app/op-log/testing/integration/sync-fuzz/fake-super-sync-server';
+import * as port from '@ultra-tasks/client-test-port';
 
 /**
  * Parity of the sync fuzz port's full-state paths with the real server code

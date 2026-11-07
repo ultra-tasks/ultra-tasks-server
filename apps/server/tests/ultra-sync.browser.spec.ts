@@ -336,7 +336,8 @@ describe('native sync and sharing through the Angular app in Chromium', () => {
     await login(first, 'personaltest', password);
     await first.goto(origin + '/#/tag/TODAY/tasks');
     await first.locator('task-list').first().waitFor();
-    await first.locator('.tour-addBtn').click();
+    await first.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await first.keyboard.press('Shift+A');
     await first
       .locator('add-task-bar.global .main-input')
       .fill('Personal v2 task survives the bridge');

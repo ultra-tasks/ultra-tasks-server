@@ -1,27 +1,31 @@
-# Server extraction status
+# Private server v1 status
 
-Target: private account sync and the account dashboard for server 1.0.0. Current release: 0.1.0 development.
+Target: private account sync and the account dashboard. This is a development release; server `1.0.0` has not been declared production ready. Oracle deployment is last.
 
-## Initial extraction
+## Implemented
 
-- Retained relevant source history and license notices.
-- Separated the server and dashboard entry points into their own workspaces.
-- Added independent dependency installation, build, and native test commands.
-- Added a private-only production entry point and real encrypted two-device tests. Sharing and legacy endpoints are absent from that runtime.
-- Moved browser account assets into their own build workspace. The existing dashboard supports signup, verification, login, recovery, second factors, and device sessions.
-- Added a standalone multi-stage image, PostgreSQL/migration/server/Caddy Compose bundle, isolated development mail, secret generation, and a database backup command.
-- Replaced upstream publishing workflows with checks and development images under `ultra-tasks/ultra-tasks-server`.
-- Retained legacy dependencies and shared-project implementation for behavior comparison during extraction. These do not establish production readiness or the v1 public feature set.
+- Independent server repository with 765 retained historical commits and license notices. The application no longer contains the server or SDK source.
+- Published SDK `0.1.1` and native contract `0.1.0`. The application consumes exact release artifacts through its existing provider/schema packages. Frozen legacy compatibility artifacts replace duplicate source forks.
+- Private production entry point: accounts, encrypted personal scopes, account dashboard, metadata notifications, and health endpoints. Sharing and legacy routes are absent; retained shared data is not deleted.
+- Durable foreground capture after local edits, authorized personal wakeups, HTTP fallback, offline/reconnect/restart behavior, and explicit initial upload/download choices. No encrypted format, persisted task model, or protocol version change.
+- Dashboard navigation, encrypted storage usage, profile, password/recovery/MFA, device revocation, and confirmed account deletion. Website links are enabled only when its public account origin is configured.
+- Native enrollment policy and operator-provided privacy/terms pages. Production enrollment defaults to closed.
+- Docker setup/install/update/backup/restore/diagnostics scripts, paired database/configuration/legal-document backups, fresh-database restore refusal, migration-before-readiness, bounded pools/resources, and log rotation.
+- CI for native API/SDK/account browser checks, native AMD64/ARM64 PostgreSQL lifecycle acceptance, and revision-tagged images. Client CI owns the independently built Angular integration test.
 
-## Next gates
+## Acceptance evidence and limits
 
-1. Publish versioned shared packages and switch the client before removing its retained source snapshot.
-2. Complete the dashboard navigation and website sign-in integration; the existing account/security forms are the foundation.
-3. Validate native registration policy, personal realtime, and migration/write fencing.
-4. Complete Docker install/update/backup/restore automation and image acceptance.
-5. Pass real PostgreSQL concurrency/load/restore, supported-device checks, and independent security review.
-6. Configure Oracle, domain, and SMTP last, then perform staging and limited beta before tagging 1.0.0.
+The maintained [security and recovery record](security-and-recovery.md) distinguishes automated checks from release gates. The client integration covers two independent Angular clients, automatic delivery, offline concurrent changes, and reopening encrypted state. The Docker capacity fixture uses independent account sessions and real PostgreSQL connections; it also verifies that quota refusal retains pending encrypted intents across reopening.
 
-The full maintainer plan is retained in the client repository at docs/plans/2026-11-07-server-extraction-and-v1-launch.md.
+Capacity measurements are workload observations, not a hosted-user guarantee. Changed scopes still download consistent complete heads. Local client storage is not automatically encrypted by server E2EE. This release supports one application process; distributed notification/rate-limit/revocation coordination is future work.
 
-The current [sync model](v1-sync-model.md) distinguishes shipped behavior from the scheduling and migration work still required.
+## Remaining release gates
+
+1. Run the final revision's AMD64/ARM64 CI and native desktop/mobile checks, then record published image digests. A workflow definition alone is not a pass.
+2. Complete independent authentication/cryptography/browser review and physical-device acceptance, including suspension, credential storage, and reminders.
+3. Verify the full migration inventory and retired-provider/device procedure on representative existing user data. Never silently merge an account with unrelated local data.
+4. Choose container visibility/distribution. The organization's current policy prevents public GHCR packages; source builds work without private dependency credentials.
+5. Configure Oracle, HTTPS origin, SMTP, operator documents, off-machine backups, and actionable host monitoring. Enable the website/client account origin only after staging works.
+6. Run a limited beta and an off-machine recovery/upgrade exercise before tagging stable `1.0.0`.
+
+The maintainer plan is in the application repository, `docs/plans/2026-11-07-server-extraction-and-v1-launch.md`.

@@ -22,6 +22,24 @@ const storage = (): StateStorage => {
 describe('private account production profile', () => {
   let harness: Awaited<ReturnType<typeof createHarness>>;
   afterEach(async () => harness?.close());
+  it('respects closed registration before creating authentication state', async () => {
+    harness = await createHarness({ privateOnly: true, registrationOpen: false });
+    await expect(
+      harness
+        .client()
+        .prepareRegistration(
+          { email: 'closed@example.test', displayName: 'Closed' },
+          'a password with enough length',
+        ),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(
+      (
+        await harness.database.query<{ count: number }>(
+          'SELECT count(*)::int AS count FROM ultra_accounts',
+        )
+      ).rows[0].count,
+    ).toBe(0);
+  }, 60000);
 
   it('advertises private sync and refuses project creation and sharing routes', async () => {
     harness = await createHarness({ privateOnly: true });
@@ -74,6 +92,16 @@ describe('private account production profile', () => {
     });
 
     const other = await harness.register('bob@example.test', 'bobby');
+    const overview = await account.request<{
+      personal: { scopeId: string; records: number; encryptedBytes: number };
+    }>('/overview');
+    expect(overview.personal.scopeId).toBe(scopeId);
+    expect(overview.personal.records).toBe(1);
+    expect(overview.personal.encryptedBytes).toBeGreaterThan(0);
+    expect(JSON.stringify(overview)).not.toContain('Only my devices');
+    expect(
+      (await other.client.request<{ personal: null }>('/overview')).personal,
+    ).toBeNull();
     await expect(
       harness.transport(
         '/sync/scopes/' + scopeId + '/snapshot',

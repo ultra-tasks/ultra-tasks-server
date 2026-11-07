@@ -19,7 +19,7 @@ import {
   type UploadResult,
   type VectorClock,
 } from '../src/sync/sync.types';
-import * as port from '../../../src/app/op-log/testing/integration/sync-fuzz/fake-super-sync-server';
+import * as port from '@ultra-tasks/client-test-port';
 
 /**
  * Parity for the in-memory SuperSync port the app's sync fuzz harness runs

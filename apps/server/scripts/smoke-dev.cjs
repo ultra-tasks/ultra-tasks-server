@@ -1,6 +1,7 @@
 // Acceptance for the isolated development Compose stack only. No real mail is sent.
 const assert = require('node:assert/strict');
 const { randomBytes } = require('node:crypto');
+const fs = require('node:fs');
 const {
   AccountClient,
   SyncClient,
@@ -42,13 +43,31 @@ async function main() {
   const capabilities = await transport('/capabilities');
   assert.equal(capabilities.features.sharedProjects, false);
   assert.equal(capabilities.features.sharedRealtime, false);
+  if (process.argv.includes('--verify-fixture')) {
+    const fixture = JSON.parse(fs.readFileSync(0, 'utf8'));
+    assert.equal(capabilities.serverId, fixture.serverId);
+    const account = new AccountClient(transport);
+    await account.login(fixture.email, fixture.password);
+    const client = new SyncClient(account, storage());
+    await client.init();
+    await client.refreshScopes();
+    await client.syncScope(fixture.scope);
+    assert.equal(
+      client.records(fixture.scope)['docker-task'].value.title,
+      'Private Docker acceptance record',
+    );
+    console.log(
+      'Restored account identity, password login, and encrypted personal content verified',
+    );
+    return;
+  }
 
   const username = 'smoke' + randomBytes(6).toString('hex');
   const email = username + '@example.test';
   const password = randomBytes(32).toString('hex');
   const firstAccount = new AccountClient(transport);
   const prepared = await firstAccount.prepareRegistration(
-    { email, username, displayName: 'Docker acceptance' },
+    { email, username, displayName: 'Docker acceptance', termsAccepted: true },
     password,
   );
   await firstAccount.register(prepared);
@@ -90,6 +109,12 @@ async function main() {
     'Private Docker acceptance record',
   );
   await assert.rejects(first.createScope('project'), (error) => error.status === 403);
+  if (process.argv.includes('--save-fixture'))
+    fs.writeFileSync(
+      '/tmp/ultra-restore-fixture.json',
+      JSON.stringify({ email, password, scope, serverId: capabilities.serverId }),
+      { mode: 0o600 },
+    );
   // Do not print credentials, email links, recovery material, or user records.
   console.log(
     'Docker acceptance passed: PostgreSQL, migration, dashboard, email verification, two encrypted clients, private-only API',

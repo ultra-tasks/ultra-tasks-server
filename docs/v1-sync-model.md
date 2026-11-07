@@ -16,10 +16,14 @@ Each account uses its personal encrypted scope. Clients persist pending encrypte
 
 The published server always enables the private profile. Capability discovery reports `scopedSync: true`, `sharedProjects: false`, and `sharedRealtime: false`. It rejects project creation, omits invitations/recipient lookup/ownership transfer/shared sockets, and hides existing non-personal scopes without deleting their stored data. Legacy SuperSync routes are absent. The database migration and encrypted wire format have not changed for extraction.
 
-Personal delivery currently polls every 60 seconds while the client is unlocked. Faster foreground upload/pull scheduling and personal wakeup notifications remain v1 work; the server must remain the source of durable ordering, and notifications must contain no task content. Background mobile behavior must respect each platform's suspension limits.
+While unlocked, persistent local actions schedule a capture within a 500 ms batch window. The application flushes its operation writes before capturing and persists SDK intents before sending. An edit arriving during an upload schedules another pass. Authorized personal-scope notifications trigger the same capture/decrypt/apply pipeline, with no task content in notifications. The application sets a 60-second HTTP safety fallback; resume and reconnect trigger immediate catch-up. Mobile suspension remains subject to platform limits.
+
+Socket tickets are short-lived, single-use, and bound to the live device session. Only the account owner can subscribe to a personal scope. Revoking that device closes its socket. Capability negotiation keeps periodic HTTP behavior with older servers. This does not provide multi-process notification distribution.
 
 ## Compatibility boundary
 
-Server and native SDK development belong in this repository. The application still uses its retained SDK source until versioned artifacts and compatibility checks are in place. The extracted legacy shared-schema and sync-core packages are frozen bootstrap snapshots, not new independently maintained forks. Existing data requires an explicit migration and write-fencing decision; users must never accidentally write the same dataset through two competing protocols.
+Server, native SDK, and native contract development belong in this repository. The application consumes SDK `0.1.1` and contract `0.1.0` through exact GitHub release URLs. Legacy shared-schema and sync-core are frozen compatibility tarballs; their source ownership remains with the application. See [source provenance](../SOURCE.md) for revisions.
+
+Initial linking offers uploading this device to an empty account or explicitly using existing account data. The bridge refuses linking while a legacy live provider is enabled, flushes durable local operations before import, and retains the existing migration journal/recovery-point behavior. Operators still need to retire old-device writers and unrelated legacy targets: this server cannot fence an external provider. Installation identities are distinct; reusing an email on another server does not transfer encrypted data.
 
 See [implementation status](implementation-status.md) for the remaining release gates, and [source provenance](../SOURCE.md) for the extraction baseline.

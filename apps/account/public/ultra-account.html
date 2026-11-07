@@ -31,8 +31,8 @@
         <p>Manage your password, encryption keys, and two-factor authentication.</p>
         <p>
           Connect your Ultra Tasks clients to this server to sync your private data.
-          Personal data currently syncs every 60 seconds while the client is unlocked.
-          Manage your account and connected devices here.
+          Changes sync automatically while your clients are unlocked, including after
+          reconnecting. Manage your account and connected devices here.
         </p>
       </header>
       <p
@@ -51,7 +51,7 @@
           Continue only if you just entered your password in the Ultra Tasks app on your
           own device. This approves that device’s login.
         </p>
-        <p id="device-name"></p>
+        <p id="approval-device-name"></p>
         <button
           id="device-approve"
           type="button"
@@ -60,6 +60,12 @@
         </button>
       </section>
       <section id="auth">
+        <p
+          id="registration-closed"
+          hidden
+        >
+          New accounts are not available on this server.
+        </p>
         <form id="login">
           <h2>Sign in</h2>
           <label
@@ -308,6 +314,43 @@
         hidden
       >
         <h2 id="who">Account</h2>
+        <nav aria-label="Account navigation">
+          <a href="#account-overview">Overview</a>
+          <a href="#account-security">Security</a>
+          <a href="#profile">Profile</a>
+          <a href="#account-devices">Devices</a>
+        </nav>
+        <section
+          id="account-overview"
+          aria-labelledby="overview-heading"
+        >
+          <h3 id="overview-heading">Private sync</h3>
+          <p>
+            Sign in to this server from Ultra Tasks on each device. Your task content is
+            encrypted before it leaves your device.
+          </p>
+          <dl>
+            <dt>Server address</dt>
+            <dd id="server-address"></dd>
+            <dt>Personal data</dt>
+            <dd id="personal-state"></dd>
+            <dt>Encrypted records</dt>
+            <dd id="storage-usage"></dd>
+            <dt>Encrypted history</dt>
+            <dd id="history-usage"></dd>
+          </dl>
+          <button
+            type="button"
+            id="overview-refresh"
+          >
+            Refresh sync information
+          </button>
+          <a
+            href="https://ultratasks.app/#download"
+            rel="noreferrer noopener"
+            >Get Ultra Tasks</a
+          >
+        </section>
         <button
           id="lock"
           type="button"
@@ -319,7 +362,7 @@
         >
           Sign out and revoke this session
         </button>
-        <h3>Two-factor authentication</h3>
+        <h3 id="account-security">Two-factor authentication</h3>
         <ul id="factors"></ul>
         <button
           id="totp-start"
@@ -409,7 +452,7 @@
               autocomplete="email" /></label
           ><button>Save profile</button>
         </form>
-        <h3>Device sessions</h3>
+        <h3 id="account-devices">Device sessions</h3>
         <button
           id="sessions-refresh"
           type="button"
@@ -417,6 +460,32 @@
           Refresh devices
         </button>
         <ul id="sessions"></ul>
+        <details>
+          <summary>Delete account</summary>
+          <p>
+            This permanently deletes your account and its personal encrypted data from the
+            live server. Export a backup from Ultra Tasks first. Offline copies on your
+            devices are not erased remotely. Server backups may retain encrypted copies
+            until the operator's retention period expires.
+          </p>
+          <form id="delete-account">
+            <label
+              >Type your account email to confirm<input
+                id="delete-confirm-email"
+                type="email"
+                autocomplete="off"
+                required
+            /></label>
+            <label
+              ><input
+                id="delete-confirm"
+                type="checkbox"
+                required
+              />I understand this cannot be undone.</label
+            >
+            <button type="submit">Permanently delete account</button>
+          </form>
+        </details>
       </section>
     </main>
   </body>
