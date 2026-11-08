@@ -8,6 +8,12 @@ compatible with existing account vaults and the direct password/MFA APIs.
 This package contains no Angular imports or database access. Its server-side
 OPAQUE export must not be exposed as an unauthenticated application API.
 
+Applications can import `@ultra-tasks/account-crypto/client` for the account,
+vault, and sync APIs without eagerly loading OPAQUE WASM. OPAQUE loads when
+account initialization or password authentication runs. The original entry remains
+compatible and also exports `opaqueClient`, `opaqueServer`, and `opaqueReady`;
+those raw OPAQUE exports initialize its WASM when the entry is loaded.
+
 Build from the repository root with `npm run quiet -- build:packages`; test with
 `npm run quiet -- test:crypto`. The account dashboard is a separate workspace
 under `apps/account`, built with `npm run quiet -- build:dashboard`; its generated

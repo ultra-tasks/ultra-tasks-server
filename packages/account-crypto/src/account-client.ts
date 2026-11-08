@@ -1,5 +1,11 @@
-import { client as opaque, ready } from '@serenity-kit/opaque';
 import { randomKey, encode, utf8, canonical, fingerprint } from './encoding';
+
+// Keep optional password WASM out of an application's initial module graph.
+const opaqueClient = async () => {
+  const { client, ready } = await import('@serenity-kit/opaque');
+  await ready;
+  return client;
+};
 import {
   newBrowserLogin,
   validatePendingBrowserLogin,
@@ -114,7 +120,7 @@ export class AccountClient {
   }
   constructor(readonly transport: Transport) {}
   async init(): Promise<Capabilities> {
-    await ready;
+    await opaqueClient();
     const capabilities = (await this.transport('/capabilities')) as Capabilities;
     if (capabilities.protocol !== 2 || !/^[0-9a-f-]{36}$/i.test(capabilities.serverId))
       throw new Error('Unsupported account server');
@@ -275,6 +281,7 @@ export class AccountClient {
     };
   }> {
     if (!this.capabilities) await this.init();
+    const opaque = await opaqueClient();
     const start = opaque.startRegistration({ password });
     const response = (await this.transport('/register/start', {
       ...details,
@@ -319,6 +326,7 @@ export class AccountClient {
   ): Promise<LoginResult> {
     this.lock();
     if (!this.capabilities) await this.init();
+    const opaque = await opaqueClient();
     const started = opaque.startLogin({ password });
     const response = (await this.transport('/login/start', {
       identifier,
@@ -449,6 +457,7 @@ export class AccountClient {
   }
   async changePassword(password: string): Promise<void> {
     if (!this.unlocked || !this.bundle) throw new Error('Unlock the account first');
+    const opaque = await opaqueClient();
     const started = opaque.startRegistration({ password });
     const response = await this.request<{
       registrationResponse: string;
@@ -489,6 +498,7 @@ export class AccountClient {
     code?: string,
   ): Promise<void> {
     if (!this.capabilities) await this.init();
+    const opaque = await opaqueClient();
     const started = opaque.startRegistration({ password });
     const response = (await this.transport('/recovery/start', {
       token: mailToken,

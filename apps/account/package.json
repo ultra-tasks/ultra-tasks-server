@@ -8,7 +8,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ultra-tasks/account-crypto": "0.1.2"
+    "@ultra-tasks/account-crypto": "0.1.3"
   },
   "devDependencies": {
     "tsup": "^8.0.0",
