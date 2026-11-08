@@ -175,7 +175,7 @@ describe('website-to-app encrypted login on independent server origins', () => {
             env: { ...process.env, NODE_ENV: 'production' },
           });
           await app.evaluate(({ shell }) => {
-            shell.openExternal = async (url) => {
+            shell.openExternal = async (url: string) => {
               (globalThis as unknown as { loginUrl: string }).loginUrl = url;
             };
           });
