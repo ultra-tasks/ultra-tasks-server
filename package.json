@@ -24,6 +24,8 @@
     "test:native": "npm run test:native -w @ultra-tasks/server",
     "test:server": "npm test -w @ultra-tasks/server",
     "test:accounts:browser": "npm run test:ultra-accounts:browser -w @ultra-tasks/server",
+    "test:better-auth:browser": "npm run test:better-auth:browser -w @ultra-tasks/server",
+    "test:better-auth:postgres": "npm run test:better-auth:postgres -w @ultra-tasks/server",
     "test:client:browser": "npm run test:ultra-sync:browser -w @ultra-tasks/server",
     "test:postgres": "npm run test:integration:postgres -w @ultra-tasks/server",
     "test": "npm run test:crypto && npm run test:native",

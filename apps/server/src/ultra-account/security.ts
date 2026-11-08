@@ -3,6 +3,11 @@ import { Prisma } from '@prisma/client';
 import * as jwt from 'jsonwebtoken';
 import { canonical, open, seal } from '@ultra-tasks/account-crypto';
 import { SessionRow, UltraDb, one } from './store';
+import {
+  authenticateBetterAuth,
+  BETTER_AUTH_TOKEN_PREFIX,
+  issueBetterAuthAccess,
+} from './better-auth';
 
 export interface UltraConfig {
   serverId: string;
@@ -12,6 +17,8 @@ export interface UltraConfig {
   rpId: string;
   /** V1 production exposes personal scopes only; full mode is retained for compatibility tests. */
   privateOnly?: boolean;
+  /** Opt-in compatibility prototype; the native engine remains the runtime default. */
+  authEngine?: 'native' | 'better-auth';
 }
 export const digest = (value: string): string =>
   createHash('sha256').update(value).digest('hex');
@@ -116,13 +123,16 @@ export const issueTokens = async (
   await db.$executeRaw(
     Prisma.sql`INSERT INTO ultra_refresh_tokens(digest,session_id) VALUES (${digest(refreshToken)},${session.id})`,
   );
-  const accessToken = jwt.sign({ sid: session.id }, config.authSecret, {
-    subject: session.account_id,
-    audience: 'ultra-account-v2',
-    issuer: config.serverId,
-    expiresIn: '10m',
-    algorithm: 'HS256',
-  });
+  const accessToken =
+    config.authEngine === 'better-auth'
+      ? await issueBetterAuthAccess(db, config, session)
+      : jwt.sign({ sid: session.id }, config.authSecret, {
+          subject: session.account_id,
+          audience: 'ultra-account-v2',
+          issuer: config.serverId,
+          expiresIn: '10m',
+          algorithm: 'HS256',
+        });
   return { accessToken, refreshToken, expiresIn: 600 };
 };
 export const authenticateAccount = async (
@@ -132,6 +142,12 @@ export const authenticateAccount = async (
 ): Promise<SessionRow> => {
   try {
     if (!authorization?.startsWith('Bearer ')) throw new Error();
+    if (authorization.slice(7).startsWith(BETTER_AUTH_TOKEN_PREFIX)) {
+      if (config.authEngine !== 'better-auth') throw new Error();
+      const session = await authenticateBetterAuth(db, config, authorization.slice(7));
+      if (!session) throw new Error();
+      return session;
+    }
     const decoded = jwt.verify(authorization.slice(7), config.authSecret, {
       algorithms: ['HS256'],
       audience: 'ultra-account-v2',

@@ -18,6 +18,17 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      auth-postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: auth_test
+          POSTGRES_PASSWORD: isolated_auth_test
+          POSTGRES_DB: auth_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U auth_test -d auth_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
@@ -31,11 +42,23 @@ jobs:
       - run: npm run quiet -- build
       - run: npm run quiet -- typecheck
       - run: npm run quiet -- test
+      - name: Better Auth compatibility, MFA, recovery, and private sync
+        env:
+          ULTRA_TEST_AUTH_ENGINE: better-auth
+        run: npm run quiet -- test:native
+      - name: Better Auth PostgreSQL refresh/security lock-order regression
+        env:
+          ULTRA_AUTH_TEST_DATABASE_URL: postgresql://auth_test:isolated_auth_test@localhost:5432/auth_test
+        run: npm run quiet -- test:better-auth:postgres
       - run: npm run quiet -- test:server
       - run: npm audit --omit=dev --audit-level=high
       - name: Install isolated test browser
         run: npx playwright install --with-deps chromium
       - name: Account browser acceptance
+        run: npm run quiet -- test:accounts:browser
+      - name: Better Auth account browser acceptance
+        env:
+          ULTRA_TEST_AUTH_ENGINE: better-auth
         run: npm run quiet -- test:accounts:browser
 
   installation:

@@ -32,6 +32,8 @@ After checks and native AMD64/ARM64 lifecycle acceptance pass on `main`, CI publ
 
 ## Validation
 
+An opt-in [Better Auth + OPAQUE prototype](docs/better-auth-prototype.md) preserves existing accounts and encrypted vaults while exercising framework-managed access sessions. It is disabled by default and is not the completed 0.3.0 authentication migration.
+
 `npm test` runs the account SDK and native account/sync/realtime/recovery suites. `npm run test:server` runs the inherited server regression suite. Browser and real PostgreSQL checks are separate. The browser client integration requires `ULTRA_CLIENT_DIST` pointing to an independently built Ultra Tasks browser bundle.
 
 `ULTRA_LOAD_QUOTA=true sh scripts/test-installation.sh` exercises real PostgreSQL, personal realtime, concurrent devices, quota preservation, paired backup/restore, and restart. `scripts/test-update.sh` exercises an actual image upgrade. See [security and recovery evidence](docs/security-and-recovery.md) for the remaining stable-release gates.

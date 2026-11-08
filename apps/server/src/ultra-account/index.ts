@@ -6,6 +6,9 @@ export const loadUltraConfig = (publicUrl: string): UltraConfig | undefined => {
   const serverId = process.env.ULTRA_SERVER_ID ?? '';
   const opaqueSetup = process.env.ULTRA_OPAQUE_SETUP ?? '';
   const authSecret = process.env.ULTRA_AUTH_SECRET ?? '';
+  const authEngine = process.env.ULTRA_AUTH_ENGINE ?? 'native';
+  if (authEngine !== 'native' && authEngine !== 'better-auth')
+    throw new Error('ULTRA_AUTH_ENGINE must be native or better-auth');
   if (
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
       serverId,
@@ -20,6 +23,7 @@ export const loadUltraConfig = (publicUrl: string): UltraConfig | undefined => {
     serverId,
     opaqueSetup,
     authSecret,
+    authEngine,
     publicUrl: new URL(publicUrl).origin,
     rpId: new URL(publicUrl).hostname,
   };

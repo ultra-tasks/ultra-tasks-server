@@ -43,7 +43,9 @@
     "test:ultra-realtime": "tsc -p tsconfig.ultra-tests.json && vitest run tests/ultra-realtime.spec.ts",
     "test:ultra-recovery": "tsc -p tsconfig.ultra-tests.json && vitest run tests/ultra-recovery.spec.ts",
     "test:ultra-realtime:load": "vitest run --config vitest.native-load.config.ts",
-    "test:native": "tsc -p tsconfig.ultra-tests.json && vitest run tests/ultra-accounts.spec.ts tests/ultra-sync.spec.ts tests/ultra-realtime.spec.ts tests/ultra-recovery.spec.ts tests/private-profile.spec.ts tests/private-server.spec.ts"
+    "test:native": "tsc -p tsconfig.ultra-tests.json && vitest run tests/ultra-accounts.spec.ts tests/ultra-sync.spec.ts tests/ultra-realtime.spec.ts tests/ultra-recovery.spec.ts tests/private-profile.spec.ts tests/private-server.spec.ts tests/better-auth.spec.ts",
+    "test:better-auth:browser": "tsc -p tsconfig.ultra-tests.json && vitest run --config vitest.better-auth-browser.config.ts",
+    "test:better-auth:postgres": "tsc -p tsconfig.ultra-tests.json && vitest run --config vitest.better-auth-postgres.config.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",
@@ -52,23 +54,25 @@
     "@fastify/static": "^10.1.6",
     "@fastify/websocket": "^11.2.0",
     "@prisma/client": "5.22.0",
-    "prisma": "5.22.0",
     "@simplewebauthn/server": "^13.3.2",
     "@simplewebauthn/types": "^12.0.0",
     "@sp/shared-schema": "https://github.com/ultra-tasks/ultra-tasks-server/releases/download/legacy-compat-535576e/sp-shared-schema-1.0.0.tgz",
     "@sp/sync-core": "https://github.com/ultra-tasks/ultra-tasks-server/releases/download/legacy-compat-64e72f9/sp-sync-core-1.0.0.tgz",
+    "@ultra-tasks/account-crypto": "0.1.1",
+    "@ultra-tasks/sync-contract": "0.1.0",
     "bcryptjs": "^3.0.3",
+    "better-auth": "1.7.18",
     "dotenv": "^17.2.3",
     "fastify": "^5.12.7",
     "jsonwebtoken": "^9.0.2",
     "nodemailer": "^10.1.0",
+    "prisma": "5.22.0",
     "uuidv7": "^1.1.0",
-    "zod": "^4.4.3",
-    "@ultra-tasks/account-crypto": "0.1.1",
-    "@ultra-tasks/sync-contract": "0.1.0"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.3",
+    "@playwright/test": "^1.59.1",
     "@types/bcryptjs": "^2.4.6",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^24.19.0",
@@ -76,11 +80,11 @@
     "@types/supertest": "^7.2.0",
     "@types/ws": "^8.18.1",
     "nodemon": "^3.1.11",
+    "prettier": "^3.8.3",
     "supertest": "^7.1.4",
     "ts-node": "^10.9.1",
     "typescript": "^5.0.0 || ^6.0.0",
-    "vitest": "^5.0.3",
-    "@playwright/test": "^1.59.1",
-    "prettier": "^3.8.3"
+    "vite": "7.3.7",
+    "vitest": "^5.0.3"
   }
 }

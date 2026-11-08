@@ -201,9 +201,11 @@ on('login', async () => {
     value('device-name'),
   );
   if (result.mfaToken) {
+    show('auth', false);
     show('mfa');
     show('webauthn-login', !!result.factors?.includes('webauthn'));
     status('Complete two-factor authentication.');
+    element<HTMLInputElement>('mfa-code').focus();
   } else await signedIn();
 });
 on('mfa', async () => {
@@ -464,6 +466,7 @@ const logout = (): void => {
   );
 };
 on('lock', async () => logout());
+on('mfa-cancel', async () => logout());
 on('logout', async () => {
   if (client.tokens) {
     const sessions =

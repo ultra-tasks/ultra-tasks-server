@@ -33,6 +33,7 @@ export const createHarness = async (
     hasOperatorTerms?: boolean;
     registrationOpen?: boolean;
     privateOnly?: boolean;
+    authEngine?: 'native' | 'better-auth';
   } = {},
 ) => {
   await opaqueReady;
@@ -55,6 +56,17 @@ export const createHarness = async (
       fileURLToPath(
         new URL(
           '../prisma/migrations/20261105020000_ultra_recovery_realtime/migration.sql',
+          import.meta.url,
+        ),
+      ),
+      'utf8',
+    ),
+  );
+  await database.exec(
+    readFileSync(
+      fileURLToPath(
+        new URL(
+          '../prisma/migrations/20261107000000_better_auth_prototype/migration.sql',
           import.meta.url,
         ),
       ),
@@ -100,6 +112,9 @@ export const createHarness = async (
     publicUrl: 'http://localhost:1900',
     rpId: 'localhost',
     privateOnly: settings.privateOnly,
+    authEngine:
+      settings.authEngine ??
+      (process.env.ULTRA_TEST_AUTH_ENGINE === 'better-auth' ? 'better-auth' : undefined),
   };
   const mail: { email: string; kind: 'verify' | 'recover'; token: string }[] = [];
   const app = Fastify();

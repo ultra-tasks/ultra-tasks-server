@@ -59,6 +59,11 @@ import { UltraRealtimeHub, registerUltraRealtime } from './realtime';
 import { deleteUltraAccount } from './account-deletion';
 import { registerBrowserMfa } from './browser-mfa';
 import { registerAccountOverview } from './overview-routes';
+import {
+  createUltraBetterAuth,
+  opaqueLoginStartSchema,
+  opaqueLoginFinishSchema,
+} from './better-auth';
 
 export interface UltraRoutesOptions {
   db: UltraDb;
@@ -82,7 +87,6 @@ const opaqueMessage = z
   .regex(/^[A-Za-z0-9_+/=-]+$/);
 const challengeToken = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 const identifier = z.string().trim().toLowerCase().min(3).max(254);
-const device = z.string().trim().min(1).max(100).default('This device');
 const credential = z.custom<RegistrationResponseJSON>(
   (value) => !!value && typeof value === 'object',
 );
@@ -236,6 +240,7 @@ export const ultraAccountRoutes = async (
         registrationOpen: options.registrationOpen !== false,
         scopeRecovery: true,
         browserMfa: true,
+        betterAuthSessions: config.authEngine === 'better-auth',
       },
       requireTermsConsent: options.requireTermsConsent ?? false,
       hasOperatorTerms: options.hasOperatorTerms ?? false,
@@ -380,13 +385,7 @@ export const ultraAccountRoutes = async (
     5,
   );
 
-  post('/login/start', async (req) => {
-    const input = body(
-      req,
-      z
-        .object({ identifier, startLoginRequest: opaqueMessage, deviceName: device })
-        .strict(),
-    );
+  const loginStart = async (input: z.infer<typeof opaqueLoginStartSchema>) => {
     const account = await accountByIdentifier(db, input.identifier);
     const fake = createHmac('sha256', config.authSecret)
       .update(input.identifier)
@@ -415,14 +414,8 @@ export const ultraAccountRoutes = async (
       loginResponse: result.loginResponse,
       keyStretching: ULTRA_OPAQUE_KSF,
     };
-  });
-  post('/login/finish', async (req) => {
-    const input = body(
-      req,
-      z
-        .object({ loginToken: challengeToken, finishLoginRequest: opaqueMessage })
-        .strict(),
-    );
+  };
+  const loginFinish = async (input: z.infer<typeof opaqueLoginFinishSchema>) => {
     const pending = await readChallenge<{ state: string; deviceName: string }>(
       db,
       config,
@@ -440,6 +433,22 @@ export const ultraAccountRoutes = async (
     }
     if (!pending.accountId) throw new AccountError(401);
     return loginResult(pending.accountId, pending.data.deviceName);
+  };
+  const betterAuth =
+    config.authEngine === 'better-auth'
+      ? createUltraBetterAuth(db, config, { start: loginStart, finish: loginFinish })
+      : undefined;
+  post('/login/start', async (req) => {
+    const input = body(req, opaqueLoginStartSchema);
+    return betterAuth
+      ? betterAuth.api.ultraOpaqueStart({ body: input })
+      : loginStart(input);
+  });
+  post('/login/finish', async (req) => {
+    const input = body(req, opaqueLoginFinishSchema);
+    return betterAuth
+      ? betterAuth.api.ultraOpaqueFinish({ body: input })
+      : loginFinish(input);
   });
   post('/mfa/complete', async (req) => {
     const input = body(

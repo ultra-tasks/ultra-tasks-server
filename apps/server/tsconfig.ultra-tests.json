@@ -4,10 +4,7 @@
     "noEmit": true,
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "lib": [
-      "ES2023",
-      "DOM"
-    ]
+    "lib": ["ES2023", "DOM"]
   },
   "include": [
     "tests/ultra-account.helper.ts",
@@ -19,6 +16,9 @@
     "tests/ultra-recovery.spec.ts",
     "tests/ultra-realtime.load.ts",
     "tests/private-profile.spec.ts",
-    "tests/private-server.spec.ts"
+    "tests/private-server.spec.ts",
+    "tests/better-auth.spec.ts",
+    "tests/better-auth.browser.spec.ts",
+    "tests/better-auth-refresh.integration.spec.ts"
   ]
 }
