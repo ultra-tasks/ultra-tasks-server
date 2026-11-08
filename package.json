@@ -22,6 +22,8 @@
     "db:generate": "npm exec -w @ultra-tasks/server -- prisma generate",
     "test:crypto": "npm test -w @ultra-tasks/account-crypto",
     "test:native": "npm run test:native -w @ultra-tasks/server",
+    "test:browser-login": "npm exec -w @ultra-tasks/server -- vitest run tests/browser-login.spec.ts",
+    "test:browser-login:browser": "npm exec -w @ultra-tasks/server -- vitest run --config vitest.browser-login-browser.config.ts",
     "test:server": "npm test -w @ultra-tasks/server",
     "test:accounts:browser": "npm run test:ultra-accounts:browser -w @ultra-tasks/server",
     "test:better-auth:browser": "npm run test:better-auth:browser -w @ultra-tasks/server",

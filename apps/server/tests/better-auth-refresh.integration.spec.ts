@@ -7,6 +7,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { Prisma, PrismaClient } from '@prisma/client';
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import Fastify from 'fastify';
+import { registerBrowserLogin } from '../src/ultra-account/browser-login';
 import {
   canonical,
   createAccountBundle,
@@ -14,9 +16,16 @@ import {
   opaqueReady,
   opaqueServer,
   type AccountBundle,
+  AccountClient,
+  approveBrowserLogin,
+  newBrowserLogin,
+  type Transport,
+  type Tokens,
+  type VaultSecrets,
 } from '@ultra-tasks/account-crypto';
 import {
   authenticateAccount,
+  AccountError,
   digest,
   issueSession,
   issueTokens,
@@ -49,6 +58,8 @@ describe('Better Auth refresh locking (PostgreSQL)', () => {
   let schemaCreated = false;
   let registrationRecord: string;
   let bundle: AccountBundle;
+  let masterKey: string;
+  let secrets: VaultSecrets;
   let session: SessionRow;
   let refreshToken: string;
 
@@ -97,7 +108,7 @@ describe('Better Auth refresh locking (PostgreSQL)', () => {
       password,
       keyStretching: 'memory-constrained',
     }).registrationRecord;
-    bundle = (await createAccountBundle(password, identity)).bundle;
+    ({ bundle, masterKey, secrets } = await createAccountBundle(password, identity));
   });
 
   beforeEach(async () => {
@@ -178,6 +189,110 @@ describe('Better Auth refresh locking (PostgreSQL)', () => {
     // Attach both rejection handlers immediately; the negative control must reject.
     return Promise.allSettled([refresh, securityChange]);
   };
+
+  it.each(['native', 'better-auth'] as const)(
+    'redeems a browser grant once across real PostgreSQL connections (%s)',
+    async (authEngine) => {
+      config.authEngine = authEngine;
+      const apps = [refreshDb, securityDb].map((db) => {
+        const app = Fastify();
+        registerBrowserLogin({
+          db,
+          config,
+          transaction: (run) => db.$transaction(run, { maxWait: 10000, timeout: 20000 }),
+          post: (url, handler) => {
+            app.post(url, async (req, reply) => {
+              try {
+                return await handler(req);
+              } catch (error) {
+                if (error instanceof AccountError)
+                  return reply.code(error.statusCode).send({ error: error.message });
+                throw error;
+              }
+            });
+          },
+        });
+        return app;
+      });
+      try {
+        const tokens = await refreshDb.$transaction((tx) =>
+          issueSession(tx, config, accountId, 'Browser approval fixture'),
+        );
+        const transport: Transport = async (path, body, access, method) => {
+          const response = await apps[0].inject({
+            method: (method || (body ? 'POST' : 'GET')) as 'POST' | 'GET',
+            url: path,
+            payload: body,
+            headers: access ? { authorization: 'Bearer ' + access } : {},
+          });
+          if (response.statusCode >= 400) throw new Error('Account request rejected');
+          return response.json();
+        };
+        const browser = new AccountClient(transport);
+        browser.capabilities = {
+          serverId: config.serverId,
+          protocol: 2,
+          features: { browserLogin: true },
+        };
+        browser.account = {
+          id: accountId,
+          email: 'review@example.test',
+          username: 'review',
+          displayName: 'Synthetic review',
+          vaultVersion: 1,
+        };
+        browser.bundle = bundle;
+        browser.unlocked = { masterKey, secrets };
+        browser.adoptTokens(tokens);
+        const created = await newBrowserLogin({
+          serverId: config.serverId,
+          serverUrl: config.publicUrl,
+          redirectUri: 'app.ultratasks://account-login',
+          deviceName: 'Concurrent PostgreSQL app',
+        });
+        const request = (await transport(
+          '/browser-login/start',
+          created.input,
+        )) as Awaited<ReturnType<AccountClient['startBrowserLogin']>>['request'];
+        await approveBrowserLogin(browser, request);
+        const payload = {
+          ticket: request.ticket,
+          state: request.state,
+          verifier: created.verifier,
+          serverId: config.serverId,
+        };
+        const responses = await Promise.all(
+          apps.map((app) =>
+            app.inject({ method: 'POST', url: '/browser-login/poll', payload }),
+          ),
+        );
+        expect(responses.map((r) => r.statusCode).sort()).toEqual([200, 401]);
+        const winner = responses
+          .find((r) => r.statusCode === 200)!
+          .json<{ tokens: Tokens }>();
+        expect(
+          (
+            await authenticateAccount(
+              refreshDb,
+              config,
+              'Bearer ' + winner.tokens.accessToken,
+            )
+          ).account_id,
+        ).toBe(accountId);
+        const [count] = await refreshDb.$queryRaw<{ count: bigint }[]>(
+          Prisma.sql`SELECT count(*) AS count FROM ultra_sessions WHERE account_id=${accountId} AND device_name='Concurrent PostgreSQL app'`,
+        );
+        expect(Number(count.count)).toBe(1);
+        const [pending] = await refreshDb.$queryRaw<{ count: bigint }[]>(
+          Prisma.sql`SELECT count(*) AS count FROM ultra_challenges WHERE digest=${digest(request.ticket)}`,
+        );
+        expect(Number(pending.count)).toBe(0);
+      } finally {
+        config.authEngine = 'better-auth';
+        await Promise.all(apps.map((app) => app.close()));
+      }
+    },
+  );
 
   it('proves the original account FK deadlocks a refresh against account security', async () => {
     await refreshDb.$executeRawUnsafe(`ALTER TABLE ultra_better_auth_sessions

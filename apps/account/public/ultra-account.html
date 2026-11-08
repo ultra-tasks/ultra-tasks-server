@@ -52,6 +52,67 @@
         Loading account encryption…
       </p>
       <section
+        id="app-login-context"
+        class="auth-card"
+        hidden
+      >
+        <p class="eyebrow">Connect Ultra Tasks</p>
+        <p><strong id="app-login-device"></strong></p>
+        <p
+          id="app-login-server"
+          class="muted"
+        ></p>
+        <p>Request code: <strong id="app-login-code"></strong></p>
+        <p class="muted">
+          Continue only if you started sign-in in your app. Check that its request code
+          matches.
+        </p>
+      </section>
+      <section
+        id="app-login-approval"
+        class="auth-card"
+        hidden
+      >
+        <h1>Connect your app</h1>
+        <p>Signed in as <strong id="app-login-account"></strong>.</p>
+        <p>
+          This gives the requesting app access to your encrypted account. Your vault keys
+          will be encrypted for that device.
+        </p>
+        <div class="actions">
+          <button
+            id="app-login-approve"
+            type="button"
+            class="primary"
+          >
+            Approve & return to app</button
+          ><button
+            id="app-login-deny"
+            type="button"
+          >
+            Cancel
+          </button>
+        </div>
+      </section>
+      <section
+        id="app-login-finished"
+        class="auth-card"
+        hidden
+      >
+        <h1>You're ready to sync</h1>
+        <p>
+          Return to Ultra Tasks to finish connecting your data. If it didn't open
+          automatically, use the button below or switch back to the app.
+        </p>
+        <p><a id="app-login-return">Open Ultra Tasks</a></p>
+        <button
+          id="app-login-dashboard"
+          type="button"
+        >
+          Account dashboard
+        </button>
+      </section>
+      <section
         id="device-approval"
         hidden=""
       >

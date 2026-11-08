@@ -18,6 +18,8 @@
     "tests/private-profile.spec.ts",
     "tests/private-server.spec.ts",
     "tests/better-auth.spec.ts",
+    "tests/browser-login.spec.ts",
+    "tests/browser-login.browser.spec.ts",
     "tests/better-auth.browser.spec.ts",
     "tests/better-auth-refresh.integration.spec.ts"
   ]

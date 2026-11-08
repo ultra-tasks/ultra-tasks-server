@@ -2,6 +2,7 @@ export * from './encoding';
 export * from './vault';
 export * from './sharing';
 export * from './account-client';
+export * from './browser-login';
 export * from './sync-types';
 export * from './sync-storage';
 export * from './sync-merge';

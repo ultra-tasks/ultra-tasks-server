@@ -52,7 +52,7 @@ Set `CHROMIUM_BIN` for an existing isolated Chromium installation if Playwright'
 
 Before selecting this for 0.3.0, assess whether the session adapter and compatibility bridge reduce total maintenance enough to justify adoption. The prototype intentionally does not migrate MFA/account recovery to Better Auth, adopt the community plugin's different record format, replace vault password wrapping with an OPAQUE export key, or introduce passkey PRF vault unlock.
 
-Full browser sign-in with encrypted key handoff and automatic return to an app that has not entered its password remains a separate contract. Existing browser approval is still WebAuthn MFA after app password login. The existing app UI still needs the planned UltraSync provider/copy update for 0.3.0. Physical-device iOS/Android/macOS acceptance, full HTTP concurrency and deployed upgrade acceptance for the enabled prototype, and independent security review remain release gates. The focused PostgreSQL lock test below does not establish those broader results.
+Full browser sign-in, encrypted key handoff, proof-bound polling, and native return are now implemented in the additive [browser login contract](browser-login.md), alongside the existing post-password WebAuthn approval path. The app still needs the planned UltraSync provider selection update for 0.3.0. Physical-device iOS/Android/macOS acceptance, broader HTTP concurrency and deployed upgrade acceptance, and independent security review remain release gates. Automated desktop/browser and PostgreSQL results do not establish those broader results.
 
 ## Review
 

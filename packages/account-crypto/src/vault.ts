@@ -184,6 +184,15 @@ export const unlockBundle = async (
           bundle.recoveryWrap,
           context(identity, 'recovery'),
         );
+  return unlockBundleWithMasterKey(bundle, identity, masterKey);
+};
+/** Opens a recipient-encrypted browser grant without knowing the account password. */
+export const unlockBundleWithMasterKey = async (
+  bundle: AccountBundle,
+  identity: VaultContext,
+  masterKey: string,
+): Promise<{ masterKey: string; secrets: VaultSecrets }> => {
+  if (bundle.v !== 1 || decode(masterKey).length !== 32) throw new Error('Invalid vault');
   const secrets = JSON.parse(
     await open(masterKey, bundle.vault, context(identity, 'vault')),
   ) as VaultSecrets;

@@ -17,6 +17,7 @@ export default defineConfig({
       'tests/ultra-sync.browser.spec.ts',
       'tests/private.browser.spec.ts',
       'tests/better-auth.browser.spec.ts',
+      'tests/browser-login.browser.spec.ts',
       'tests/better-auth-refresh.integration.spec.ts',
       // Cross-repository application parity has its own required client job.
       'tests/sync-fuzz-server-parity.pglite.spec.ts',

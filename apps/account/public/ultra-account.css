@@ -319,6 +319,9 @@ code {
 .muted {
   color: var(--palette-ink-muted);
 }
+#app-login-server {
+  overflow-wrap: anywhere;
+}
 dl {
   display: grid;
   grid-template-columns: 144px minmax(0, 1fr);

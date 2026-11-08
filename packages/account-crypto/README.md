@@ -2,6 +2,9 @@
 
 Browser and Node account client, pinned OPAQUE authentication, password/recovery
 vault wrappers, HPKE project-key delivery, and signed v2 record primitives.
+SDK 0.1.2 also provides [encrypted browser-to-app login](../../docs/browser-login.md),
+with proof-bound single-use redemption and an HPKE vault-key grant. It remains
+compatible with existing account vaults and the direct password/MFA APIs.
 This package contains no Angular imports or database access. Its server-side
 OPAQUE export must not be exposed as an unauthenticated application API.
 

@@ -1,11 +1,21 @@
 import { client as opaque, ready } from '@serenity-kit/opaque';
-import { randomKey, encode, utf8 } from './encoding';
+import { randomKey, encode, utf8, canonical, fingerprint } from './encoding';
+import {
+  newBrowserLogin,
+  validatePendingBrowserLogin,
+  receiveBrowserLogin,
+  type BrowserLoginRequest,
+  type BrowserLoginReturn,
+  type BrowserLoginApproval,
+  type PendingBrowserLogin,
+} from './browser-login';
 import {
   AccountBundle,
   VaultContext,
   VaultSecrets,
   createAccountBundle,
   unlockBundle,
+  unlockBundleWithMasterKey,
   rewrapPassword,
   sign,
 } from './vault';
@@ -94,6 +104,7 @@ export class AccountClient {
   private pending?: { password: string; mfaToken: string };
   private refreshAt = 0;
   private refreshing?: Promise<void>;
+  private browserLogin?: PendingBrowserLogin;
   onTokensChanged?: () => Promise<void>;
   adoptTokens(tokens: Tokens): void {
     this.tokens = tokens;
@@ -109,6 +120,139 @@ export class AccountClient {
       throw new Error('Unsupported account server');
     this.capabilities = capabilities;
     return capabilities;
+  }
+  async startBrowserLogin(
+    serverUrl: string,
+    redirectUri: BrowserLoginReturn,
+    deviceName: string,
+    identifier?: string,
+  ): Promise<PendingBrowserLogin> {
+    this.lock();
+    await this.init();
+    if (!this.capabilities!.features.browserLogin)
+      throw new Error('Update this server to use browser sign-in');
+    const url = new URL(serverUrl);
+    if (
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      (url.protocol !== 'https:' &&
+        !(
+          url.protocol === 'http:' &&
+          ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+        ))
+    )
+      throw new Error('Invalid account server URL');
+    const created = await newBrowserLogin({
+      serverId: this.capabilities!.serverId,
+      serverUrl: url.href.replace(/\/$/, ''),
+      redirectUri,
+      deviceName,
+      ...(identifier?.trim() ? { identifier: identifier.trim().toLowerCase() } : {}),
+    });
+    const request = (await this.transport(
+      '/browser-login/start',
+      created.input,
+    )) as BrowserLoginRequest;
+    const { ticket: _ticket, expiresAt: _expiry, ...binding } = request;
+    if (canonical(binding) !== canonical(created.input))
+      throw new Error('Account sign-in request changed');
+    const flow = { request, verifier: created.verifier, privateKey: created.privateKey };
+    await validatePendingBrowserLogin(flow);
+    this.browserLogin = flow;
+    return flow;
+  }
+  async resumeBrowserLogin(flow: PendingBrowserLogin): Promise<void> {
+    await validatePendingBrowserLogin(flow);
+    await this.init();
+    if (this.capabilities!.serverId !== flow.request.serverId)
+      throw new Error('Account server identity changed');
+    this.browserLogin = flow;
+  }
+  async cancelBrowserLogin(): Promise<void> {
+    const flow = this.browserLogin;
+    this.browserLogin = undefined;
+    if (flow)
+      await this.transport('/browser-login/cancel', {
+        ticket: flow.request.ticket,
+        state: flow.request.state,
+        verifier: flow.verifier,
+        serverId: flow.request.serverId,
+      });
+  }
+  async pollBrowserLogin(): Promise<boolean> {
+    const flow = this.browserLogin;
+    if (!flow) throw new Error('No pending app sign-in');
+    await validatePendingBrowserLogin(flow);
+    const result = (await this.transport('/browser-login/poll', {
+      ticket: flow.request.ticket,
+      state: flow.request.state,
+      verifier: flow.verifier,
+      serverId: flow.request.serverId,
+    })) as
+      | { pending: true }
+      | { request: BrowserLoginRequest; approval: BrowserLoginApproval; tokens: Tokens };
+    if ('pending' in result) return false;
+    if (this.browserLogin !== flow) {
+      await this.revokeBrowserSession(result.tokens);
+      throw new Error('Login was cancelled');
+    }
+    try {
+      if (canonical(result.request) !== canonical(flow.request))
+        throw new Error('App sign-in binding changed');
+      const me = (await this.transport('/me', undefined, result.tokens.accessToken)) as {
+        account: AccountInfo;
+        bundle: AccountBundle;
+      };
+      if (
+        this.capabilities!.serverId !== flow.request.serverId ||
+        me.account.id !== result.approval.accountId ||
+        me.account.vaultVersion !== result.approval.vaultVersion ||
+        (await fingerprint(me.bundle)) !== result.approval.bundleHash ||
+        (flow.request.identifier &&
+          ![me.account.email, me.account.username].includes(flow.request.identifier))
+      )
+        throw new Error('Account sign-in identity changed');
+      const key = await receiveBrowserLogin(
+        flow,
+        result.approval,
+        me.bundle.signingPublicKey,
+      );
+      const unlocked = await unlockBundleWithMasterKey(
+        me.bundle,
+        this.identity(me.account.id),
+        key,
+      );
+      if (this.browserLogin !== flow) throw new Error('Login was cancelled');
+      this.account = me.account;
+      this.bundle = me.bundle;
+      this.unlocked = unlocked;
+      this.adoptTokens(result.tokens);
+      this.browserLogin = undefined;
+      return true;
+    } catch (error) {
+      await this.revokeBrowserSession(result.tokens);
+      throw error;
+    }
+  }
+  private async revokeBrowserSession(tokens: Tokens): Promise<void> {
+    try {
+      const sessions = (await this.transport(
+        '/sessions',
+        undefined,
+        tokens.accessToken,
+      )) as { id: string; current: boolean }[];
+      const current = sessions.find((s) => s.current);
+      if (current)
+        await this.transport(
+          '/sessions/revoke',
+          { sessionId: current.id },
+          tokens.accessToken,
+        );
+    } catch {
+      /* Session may already have been revoked. Never install a rejected grant. */
+    }
   }
   identity(accountId = this.account?.id): VaultContext {
     if (!this.capabilities || !accountId) throw new Error('No account identity');
@@ -392,6 +536,7 @@ export class AccountClient {
     this.lock();
   }
   lock(): void {
+    this.browserLogin = undefined;
     this.pending = undefined;
     this.tokens = undefined;
     this.unlocked = undefined;

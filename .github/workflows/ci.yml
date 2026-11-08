@@ -60,6 +60,8 @@ jobs:
         env:
           ULTRA_TEST_AUTH_ENGINE: better-auth
         run: npm run quiet -- test:accounts:browser
+      - name: Encrypted browser-login approval and blocked-return fallback
+        run: npm run quiet -- test:browser-login:browser
 
   installation:
     strategy:

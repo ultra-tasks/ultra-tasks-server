@@ -58,6 +58,7 @@ import { ultraScopeRoutes } from './scope-routes';
 import { UltraRealtimeHub, registerUltraRealtime } from './realtime';
 import { deleteUltraAccount } from './account-deletion';
 import { registerBrowserMfa } from './browser-mfa';
+import { registerBrowserLogin } from './browser-login';
 import { registerAccountOverview } from './overview-routes';
 import {
   createUltraBetterAuth,
@@ -171,6 +172,7 @@ export const ultraAccountRoutes = async (
     max?: number,
   ) => route('POST', url, handler, max);
   registerBrowserMfa({ db, transaction, config, post });
+  registerBrowserLogin({ db, transaction, config, post });
   const startRegistration = (accountId: string, registrationRequest: string) => {
     try {
       return opaqueServer.createRegistrationResponse({
@@ -240,6 +242,7 @@ export const ultraAccountRoutes = async (
         registrationOpen: options.registrationOpen !== false,
         scopeRecovery: true,
         browserMfa: true,
+        browserLogin: true,
         betterAuthSessions: config.authEngine === 'better-auth',
       },
       requireTermsConsent: options.requireTermsConsent ?? false,

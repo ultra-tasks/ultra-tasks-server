@@ -3,6 +3,10 @@ import {
   AccountInfo,
   Tokens,
   httpTransport,
+  approveBrowserLogin,
+  browserLoginReturnUrl,
+  fingerprint,
+  type BrowserLoginRequest,
 } from '@ultra-tasks/account-crypto';
 import {
   AccountBundle,
@@ -23,6 +27,16 @@ declare global {
 }
 const client = new AccountClient(httpTransport(location.origin));
 const params = new URLSearchParams(location.search);
+const loginBinding = new URLSearchParams(location.hash.slice(1)).get('binding');
+const loginReferenceKey = 'ultra-browser-login-v1';
+const loginReference = params.has('login')
+  ? { ticket: params.get('login'), binding: loginBinding }
+  : (JSON.parse(sessionStorage.getItem(loginReferenceKey) || 'null') as {
+      ticket: string;
+      binding: string;
+    } | null);
+if (loginReference)
+  sessionStorage.setItem(loginReferenceKey, JSON.stringify(loginReference));
 history.replaceState(null, '', location.pathname);
 const element = <T extends HTMLElement = HTMLElement>(id: string): T => {
   const result = document.getElementById(id);
@@ -76,6 +90,35 @@ let recoveryText = '';
 let prepared: Awaited<ReturnType<AccountClient['prepareRegistration']>> | undefined;
 let totpEnrollment: string | undefined;
 let recoveryMailToken = '';
+let appLogin: BrowserLoginRequest | undefined;
+const appLoginInfo = loginReference
+  ? (async () => {
+      if (
+        !/^[A-Za-z0-9_-]{43}$/.test(loginReference.ticket || '') ||
+        !/^[A-Za-z0-9_-]{43}$/.test(loginReference.binding || '')
+      )
+        throw new Error('Invalid app sign-in link. Start again in Ultra Tasks.');
+      const request = (await client.transport('/browser-login/info', {
+        ticket: loginReference.ticket,
+      })) as BrowserLoginRequest;
+      if (
+        (await fingerprint(request)) !== loginReference.binding ||
+        request.expiresAt <= Date.now()
+      )
+        throw new Error(
+          'App sign-in request changed or expired. Start again in Ultra Tasks.',
+        );
+      return request;
+    })()
+  : Promise.resolve(undefined);
+// The initial service check reports errors; retain the same rejection for sign-in.
+void appLoginInfo.catch(() => undefined);
+const clearAppLogin = (): void => {
+  appLogin = undefined;
+  sessionStorage.removeItem(loginReferenceKey);
+  show('app-login-context', false);
+  show('app-login-approval', false);
+};
 
 interface CachedProfile {
   origin: string;
@@ -128,6 +171,18 @@ const cache = async (): Promise<void> => {
 const signedIn = async (): Promise<void> => {
   show('mfa', false);
   show('auth', false);
+  const request = sessionStorage.getItem(loginReferenceKey)
+    ? await appLoginInfo
+    : undefined;
+  if (request && sessionStorage.getItem(loginReferenceKey)) {
+    appLogin = request;
+    await cache();
+    element('app-login-account').textContent = client.account?.email ?? '';
+    show('app-login-approval');
+    element('app-login-approve').focus();
+    status('Review this request before connecting your app.');
+    return;
+  }
   show('dashboard');
   accountPanel('account-overview', false);
   element('who').textContent = client.account?.email ?? '';
@@ -524,6 +579,34 @@ const logout = (): void => {
 };
 on('lock', async () => logout());
 on('mfa-cancel', async () => logout());
+on('app-login-approve', async () => {
+  if (!appLogin) throw new Error('Start sign-in again in Ultra Tasks.');
+  const request = appLogin;
+  await approveBrowserLogin(client, request);
+  const url = browserLoginReturnUrl(request);
+  clearAppLogin();
+  show('app-login-finished');
+  show('app-login-return', !!url);
+  if (url) element<HTMLAnchorElement>('app-login-return').href = url;
+  status('Sign-in approved. Return to Ultra Tasks.');
+  if (url) element<HTMLAnchorElement>('app-login-return').click();
+});
+on('app-login-deny', async () => {
+  if (!appLogin) return;
+  const url = browserLoginReturnUrl(appLogin);
+  await client.request('/browser-login/deny', { ticket: appLogin.ticket });
+  clearAppLogin();
+  await signedIn();
+  status('App sign-in canceled.');
+  if (url) {
+    element<HTMLAnchorElement>('app-login-return').href = url;
+    element<HTMLAnchorElement>('app-login-return').click();
+  }
+});
+on('app-login-dashboard', async () => {
+  show('app-login-finished', false);
+  await signedIn();
+});
 on('logout', async () => {
   if (client.tokens) {
     const sessions =
@@ -549,7 +632,7 @@ if (params.has('device')) {
 }
 void client
   .init()
-  .then((capabilities) => {
+  .then(async (capabilities) => {
     registrationOpen = capabilities.features['registrationOpen'] !== false;
     for (const button of document.querySelectorAll<HTMLElement>('[data-registration]'))
       button.hidden = !registrationOpen;
@@ -566,6 +649,22 @@ void client
       !!capabilities.requireTermsConsent;
     show('signup-terms', !!capabilities.hasOperatorTerms);
     status('Ready. Passwords and recovery keys stay on your device.');
+    if (loginReference) {
+      try {
+        appLogin = await appLoginInfo;
+        if (appLogin) {
+          element('app-login-device').textContent = appLogin.deviceName;
+          element('app-login-server').textContent = appLogin.serverUrl;
+          element('app-login-code').textContent = (await fingerprint(appLogin))
+            .slice(0, 8)
+            .toUpperCase();
+          show('app-login-context');
+        }
+      } catch (error) {
+        sessionStorage.removeItem(loginReferenceKey);
+        status(error instanceof Error ? error.message : 'App sign-in expired.', 'error');
+      }
+    }
   })
   .catch(() =>
     status(
