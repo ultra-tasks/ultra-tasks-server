@@ -40,6 +40,8 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run quiet -- db:generate
       - run: npm run quiet -- build
+      - name: Existing-host reverse proxy configuration
+        run: sh scripts/test-proxy-config.sh
       - run: npm run quiet -- typecheck
       - run: npm run quiet -- test
       - name: Better Auth compatibility, MFA, recovery, and private sync

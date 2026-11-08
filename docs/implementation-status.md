@@ -5,7 +5,8 @@ Target: private account sync and the account dashboard. This is a development re
 ## Implemented
 
 - Independent server repository with 765 retained historical commits and license notices. The application no longer contains the server or SDK source.
-- Published SDK `0.1.1` and native contract `0.1.0`. The application consumes exact release artifacts through its existing provider/schema packages. Frozen legacy compatibility artifacts replace duplicate source forks.
+- Published SDK `0.1.2` and native contract `0.1.0`. The application consumes exact release artifacts through its existing provider/schema packages. Frozen legacy compatibility artifacts replace duplicate source forks.
+- Better Auth access sessions are the beta default, preserving OPAQUE, the existing encrypted vault, MFA/recovery and rotating device sessions. Browser approval returns encrypted key material to the initiating client with one-time proof-bound redemption.
 - Private production entry point: accounts, encrypted personal scopes, account dashboard, metadata notifications, and health endpoints. Sharing and legacy routes are absent; retained shared data is not deleted.
 - Durable foreground capture after local edits, authorized personal wakeups, HTTP fallback, offline/reconnect/restart behavior, and explicit initial upload/download choices. No encrypted format, persisted task model, or protocol version change.
 - Dashboard navigation, encrypted storage usage, profile, password/recovery/MFA, device revocation, and confirmed account deletion. Website links are enabled only when its public account origin is configured.

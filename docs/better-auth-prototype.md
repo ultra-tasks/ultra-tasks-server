@@ -1,10 +1,10 @@
-# Better Auth + OPAQUE compatibility prototype
+# Better Auth + OPAQUE integration
 
-Status: Opt-in prototype for the application 0.3.0 authentication decision. This is not a completed authentication migration or a production/security approval. Oracle deployment remains deferred.
+Status: Selected by the maintainer for the application 0.3.0 beta on November 8, 2026. Better Auth is the deployment default. The ownership boundary below is intentional; this is not a migration to stock password or MFA endpoints, or an independent security audit.
 
 ## Run it
 
-Use the normal installation and its existing persistent secrets. Apply migrations before starting the new build. Set `ULTRA_AUTH_ENGINE=better-auth` in the server environment or Compose `.env`; the runtime default is `native`. Unknown engine values stop startup.
+Use the normal installation and its existing persistent secrets. Apply migrations before starting the new build. New configuration and an unset `ULTRA_AUTH_ENGINE` default to `better-auth`. An explicit `native` setting is honored for existing installations. Unknown engine values stop startup.
 
 The account website remains `/account`. Existing applications continue to use `/api/v2/accounts`; no client dependency change or new password prompt is needed. `/capabilities` reports `features.betterAuthSessions` for acceptance/diagnostics. Accounts, passwords, OPAQUE setup, and vaults belong to that installation for both official and custom servers.
 
@@ -14,9 +14,9 @@ The account website remains `/account`. Existing applications continue to use `/
 - The server's test workspace pins patched Vite 7.3.7. Better Auth's optional Vitest peer makes the existing test-tool chain participate in the production dependency audit; keeping the existing Vite major patched resolves the observed audit finding without a broader upgrade.
 - The small `ultra-opaque-v2` Better Auth plugin runs the existing two-step OPAQUE login. It preserves `@serenity-kit/opaque` 1.1.0, immutable server/account identifier binding, and the current key-stretching profile. The community plugin cannot read this binding unchanged, so it is a design reference rather than a runtime dependency.
 - Registration, email verification, MFA enrollment/verification, password changes, and recovery remain owned by the existing v2 account flow. Enrolled factors must complete before either a native or Better Auth session is issued. The stock Better Auth two-factor plugin is not installed and is not assumed to cover custom OPAQUE endpoints.
-- In prototype mode, Better Auth creates and validates ten-minute opaque access sessions through its real bearer/session API. A narrow database adapter reads existing account identities without copying accounts. Only SHA-256 access-token digests and non-secret session fields are stored in the additive `ultra_better_auth_sessions` table.
-- Existing device sessions remain the authority for account binding, revocation, idle/hard expiry, device listing, and rotating refresh receipts. Each refresh atomically replaces that device's Better Auth access session. There is at most one access row per persisted device session; native device-session expiry/deletion cascades to these rows. This bridge is deliberate prototype ownership, not a claim that Better Auth owns our full account lifecycle yet.
-- Existing v2 JWT sessions remain accepted while the prototype is enabled. Successful refresh upgrades access issuance to Better Auth without changing account IDs. Turning the setting back to `native` rejects Better Auth access tokens; clients can refresh or sign in again. It does not change vaults or delete encrypted local/server data. Keep the additive migration installed during rollback.
+- Better Auth creates and validates ten-minute opaque access sessions through its real bearer/session API. A narrow database adapter reads existing account identities without copying accounts. Only SHA-256 access-token digests and non-secret session fields are stored in the additive `ultra_better_auth_sessions` table.
+- Existing device sessions remain the authority for account binding, revocation, idle/hard expiry, device listing, and rotating refresh receipts. Each refresh atomically replaces that device's Better Auth access session. There is at most one access row per persisted device session; native device-session expiry/deletion cascades to these rows. Better Auth owns access sessions; this account adapter owns the wider encrypted-account lifecycle.
+- Existing v2 JWT sessions remain accepted in Better Auth mode. Successful refresh upgrades access issuance to Better Auth without changing account IDs. Turning the setting back to `native` rejects Better Auth access tokens; clients can refresh or sign in again. It does not change vaults or delete encrypted local/server data. Keep the additive migration installed during rollback.
 - No generic Better Auth HTTP handler is exposed. Built-in plaintext-password registration, sign-in, reset, and set-password routes are absent. The Fastify routes retain request validation, rate limits, one-use challenges, and sanitized errors.
 - The encrypted vault, password/recovery wraps, signing keys, personal sync records, generations, and signed transactions are unchanged. A framework session alone cannot decrypt them. Password changes/recovery still commit the new OPAQUE record and preserved vault/recovery material in the account transaction.
 
@@ -48,11 +48,11 @@ npm run quiet -- test:better-auth:browser
 
 Set `CHROMIUM_BIN` for an existing isolated Chromium installation if Playwright's default browser is absent. Optionally set `ULTRA_ELECTRON_EXECUTABLE` to the Ultra Tasks executable to exercise the actual Windows desktop shell using its custom URL and a separate test profile. For a development Electron binary, also set `ULTRA_ELECTRON_APP` to the application checkout after `npm run quiet -- electron:build`. Keep the shell/preload and frontend builds matched. Without the executable, app captures use the browser build and must be labeled accordingly. All accounts, authenticators, emails, and screenshots in these tests are synthetic. The website presents MFA as a focused step with a Back to sign in action that clears pending client credentials.
 
-## Remaining adoption decisions
+## Beta scope
 
-Before selecting this for 0.3.0, assess whether the session adapter and compatibility bridge reduce total maintenance enough to justify adoption. The prototype intentionally does not migrate MFA/account recovery to Better Auth, adopt the community plugin's different record format, replace vault password wrapping with an OPAQUE export key, or introduce passkey PRF vault unlock.
+The maintainer confirmed Better Auth sessions with OPAQUE password authentication and local vault unlock for the beta. Passkeys/security keys and TOTP remain second factors. Recovery of encrypted data still requires the recovery key. The integration does not migrate MFA/account recovery to stock Better Auth endpoints, adopt the community plugin's different record format, replace vault password wrapping with an OPAQUE export key, or introduce passkey PRF vault unlock.
 
-Full browser sign-in, encrypted key handoff, proof-bound polling, and native return are now implemented in the additive [browser login contract](browser-login.md), alongside the existing post-password WebAuthn approval path. The app still needs the planned UltraSync provider selection update for 0.3.0. Physical-device iOS/Android/macOS acceptance, broader HTTP concurrency and deployed upgrade acceptance, and independent security review remain release gates. Automated desktop/browser and PostgreSQL results do not establish those broader results.
+Full browser sign-in, encrypted key handoff, proof-bound polling, and native return are implemented in the additive [browser login contract](browser-login.md), alongside post-password WebAuthn approval. Application 0.3.0 owns the UltraSync provider selector and official/custom server choice. Physical-device iOS/Android/macOS acceptance and independent specialist security review remain outstanding for a dependable stable release. The maintainer approved beta distribution for testing; automated desktop/browser and PostgreSQL results do not establish those broader results.
 
 ## Review
 

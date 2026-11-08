@@ -23,6 +23,7 @@ opaqueReady.then(() => {
     ULTRA_SERVER_ID: randomUUID(),
     ULTRA_OPAQUE_SETUP: opaqueServer.createSetup(),
     ULTRA_AUTH_SECRET: randomBytes(32).toString('hex'),
+    ULTRA_AUTH_ENGINE: 'better-auth',
     ULTRA_REGISTRATION_OPEN: 'false',
     ULTRA_REQUIRE_TERMS_CONSENT: 'true',
     SMTP_HOST: '',

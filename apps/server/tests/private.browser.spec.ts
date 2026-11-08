@@ -9,6 +9,10 @@ import {
 import fastifyStatic from '@fastify/static';
 import { resolve } from 'node:path';
 import { createHarness, password } from './ultra-account.helper';
+import {
+  acknowledgeAppSyncConnection,
+  selectAppAccountServer,
+} from './app-account-ui.helper';
 
 describe('private v1 sync through two real Angular clients', () => {
   let harness: Awaited<ReturnType<typeof createHarness>>;
@@ -63,7 +67,7 @@ describe('private v1 sync through two real Angular clients', () => {
     importLocal: boolean,
     alreadyLinked = false,
   ): Promise<void> => {
-    await page.getByLabel('Ultra Tasks server URL').fill(origin);
+    await selectAppAccountServer(page, origin);
     await page.getByLabel('Email or username').fill('alice');
     await page.getByLabel('Password', { exact: true }).fill(password);
     await page.getByRole('button', { name: 'Sign in and unlock' }).click();
@@ -71,7 +75,7 @@ describe('private v1 sync through two real Angular clients', () => {
       await page
         .getByText('Connect personal data', { exact: true })
         .waitFor({ timeout: 30000 });
-      await page.getByLabel('I have backed up my data').check();
+      await acknowledgeAppSyncConnection(page);
       await page
         .getByRole('button', {
           name: importLocal
@@ -145,6 +149,34 @@ describe('private v1 sync through two real Angular clients', () => {
         ).toHaveCount(1, {
           timeout: 15000,
         });
+      // Locking and a full restart still reserve the saved UltraSync connection.
+      await second.goto(origin + '/#/native-sync');
+      await second.getByText('Account & session options', { exact: true }).click();
+      await second.getByRole('button', { name: 'Lock account', exact: true }).click();
+      await second.reload();
+      await second.goto(origin + '/#/account');
+      await second.getByRole('button', { name: 'Set up sync', exact: true }).click();
+      const picker = second.locator('dialog-sync-cfg');
+      await picker.getByRole('combobox').click();
+      await browserExpect(
+        second.getByRole('option', { name: 'WebDAV — personal sync only', exact: true }),
+      ).toHaveAttribute('aria-disabled', 'true');
+      await second.getByRole('option', { name: 'UltraSync', exact: true }).click();
+      await picker
+        .getByRole('button', { name: 'Continue with UltraSync', exact: true })
+        .click();
+      await second
+        .getByRole('button', { name: 'Disconnect UltraSync on this device', exact: true })
+        .click();
+      await second.goto(origin + '/#/tag/TODAY/tasks');
+      for (const title of [
+        'Private first-device task',
+        'Private offline second-device task',
+        'Private concurrent first-device task',
+      ])
+        await browserExpect(
+          second.locator('task').filter({ hasText: title }),
+        ).toHaveCount(1);
     } finally {
       await firstContext.close();
       await secondContext.close();

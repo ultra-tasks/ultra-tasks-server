@@ -1,6 +1,6 @@
 # Ultra Tasks server
 
-The self-hostable account and end-to-end encrypted sync backend for Ultra Tasks. This is a pre-release extraction, not a production-ready 1.0.0 release. The v1 scope is private account sync and an account dashboard; project sharing and the full browser task application are deferred. Oracle deployment is the final phase.
+The self-hostable account and end-to-end encrypted sync backend for Ultra Tasks. This beta supports private account sync and an account dashboard; project sharing and the full browser task application are deferred. The server and application have independent release versions. Stable server 1.0.0 has not been declared.
 
 ## Development
 
@@ -34,7 +34,7 @@ After checks and native AMD64/ARM64 lifecycle acceptance pass on `main`, CI publ
 
 ## Validation
 
-An opt-in [Better Auth + OPAQUE prototype](docs/better-auth-prototype.md) preserves existing accounts and encrypted vaults while exercising framework-managed access sessions. It is disabled by default and is not the completed 0.3.0 authentication migration.
+The beta defaults to [Better Auth + OPAQUE](docs/better-auth-prototype.md): OPAQUE authenticates the password, the client unlocks the E2EE vault, and Better Auth issues access sessions. Existing MFA, recovery, refresh rotation and device revocation remain enforced by the account adapter. Explicit `ULTRA_AUTH_ENGINE=native` remains available for installation compatibility.
 
 `npm test` runs the account SDK and native account/sync/realtime/recovery suites. `npm run test:server` runs the inherited server regression suite. Browser and real PostgreSQL checks are separate. The browser client integration requires `ULTRA_CLIENT_DIST` pointing to an independently built Ultra Tasks browser bundle.
 

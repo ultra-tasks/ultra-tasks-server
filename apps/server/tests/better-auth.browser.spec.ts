@@ -12,6 +12,10 @@ import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHarness, password } from './ultra-account.helper';
+import {
+  acknowledgeAppSyncConnection,
+  selectAppAccountServer,
+} from './app-account-ui.helper';
 import { totp } from '../src/ultra-account/security';
 
 describe('Better Auth + OPAQUE through the account website and real app', () => {
@@ -217,7 +221,7 @@ describe('Better Auth + OPAQUE through the account website and real app', () => 
         void dialog.dismiss();
       });
       await page.goto(origin + '/#/native-sync');
-      await page.getByLabel('Ultra Tasks server URL').fill(origin);
+      await selectAppAccountServer(page, origin);
       await page.getByLabel('Email or username').fill('preview');
       await page.getByLabel('Password', { exact: true }).fill(password);
       await screenshot(page, 'app-01-sign-in');
@@ -240,7 +244,7 @@ describe('Better Auth + OPAQUE through the account website and real app', () => 
         .fill(totp(mfaSecret, Math.floor(Date.now() / 30000) + 1));
       await page.getByRole('button', { name: 'Verify', exact: true }).click();
       await page.getByText('Connect personal data', { exact: true }).waitFor();
-      await page.getByLabel('I have backed up my data').check();
+      await acknowledgeAppSyncConnection(page);
       await page.getByRole('button', { name: 'Import this device’s data' }).click();
       await browserExpect(
         page.getByText('Connect personal data', { exact: true }),

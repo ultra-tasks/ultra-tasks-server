@@ -1,0 +1,5 @@
+services:
+  server:
+    ports: ['127.0.0.1:${ULTRA_HTTP_PORT:-1900}:1900']
+  caddy:
+    profiles: ['standalone-https']

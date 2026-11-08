@@ -17,7 +17,7 @@ export interface UltraConfig {
   rpId: string;
   /** V1 production exposes personal scopes only; full mode is retained for compatibility tests. */
   privateOnly?: boolean;
-  /** Opt-in compatibility prototype; the native engine remains the runtime default. */
+  /** Better Auth is the deployment default; native is retained for existing installations. */
   authEngine?: 'native' | 'better-auth';
 }
 export const digest = (value: string): string =>

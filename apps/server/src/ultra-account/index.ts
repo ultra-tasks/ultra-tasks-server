@@ -6,7 +6,7 @@ export const loadUltraConfig = (publicUrl: string): UltraConfig | undefined => {
   const serverId = process.env.ULTRA_SERVER_ID ?? '';
   const opaqueSetup = process.env.ULTRA_OPAQUE_SETUP ?? '';
   const authSecret = process.env.ULTRA_AUTH_SECRET ?? '';
-  const authEngine = process.env.ULTRA_AUTH_ENGINE ?? 'native';
+  const authEngine = process.env.ULTRA_AUTH_ENGINE ?? 'better-auth';
   if (authEngine !== 'native' && authEngine !== 'better-auth')
     throw new Error('ULTRA_AUTH_ENGINE must be native or better-auth');
   if (

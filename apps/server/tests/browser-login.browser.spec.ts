@@ -17,6 +17,7 @@ import {
   browserLoginUrl,
 } from '@ultra-tasks/account-crypto';
 import { createHarness, password } from './ultra-account.helper';
+import { selectAppAccountServer } from './app-account-ui.helper';
 import { totp } from '../src/ultra-account/security';
 
 describe('website-to-app encrypted login on independent server origins', () => {
@@ -200,7 +201,7 @@ describe('website-to-app encrypted login on independent server origins', () => {
               localStorage.setItem(key, 'true');
           });
           await page.goto(origin + '/#/native-sync');
-          await page.getByLabel('Ultra Tasks server URL').fill(origin);
+          await selectAppAccountServer(page, origin);
           await page.getByLabel('Email or username').fill('handoff');
           await page
             .getByRole('button', { name: 'Continue in browser', exact: true })

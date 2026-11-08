@@ -4,6 +4,10 @@ import fastifyStatic from '@fastify/static';
 import { resolve } from 'node:path';
 import { Prisma } from '@prisma/client';
 import { createHarness, password } from './ultra-account.helper';
+import {
+  acknowledgeAppSyncConnection,
+  selectAppAccountServer,
+} from './app-account-ui.helper';
 
 describe('native sync and sharing through the Angular app in Chromium', () => {
   let h: Awaited<ReturnType<typeof createHarness>>;
@@ -59,7 +63,7 @@ describe('native sync and sharing through the Angular app in Chromium', () => {
   };
   const login = async (page: Page, username: string, pw: string, migrate = true) => {
     try {
-      await page.getByLabel('Ultra Tasks server URL').fill(origin, { timeout: 15000 });
+      await selectAppAccountServer(page, origin);
     } catch (error) {
       process.stderr.write(
         'Native browser URL: ' +
@@ -76,7 +80,7 @@ describe('native sync and sharing through the Angular app in Chromium', () => {
     await page
       .getByText('Connect personal data', { exact: true })
       .waitFor({ timeout: 30000 });
-    await page.getByLabel('I have backed up my data').check();
+    await acknowledgeAppSyncConnection(page);
     await page
       .getByRole('button', {
         name: migrate ? 'Import this device’s data' : 'Use the account’s existing data',
@@ -250,7 +254,7 @@ describe('native sync and sharing through the Angular app in Chromium', () => {
     expect(storage).not.toContain('Bobby private planning');
     expect(storage).not.toContain('bob has a different password');
     await alice
-      .getByRole('button', { name: 'Sign out of this device', exact: true })
+      .getByRole('button', { name: 'Disconnect UltraSync on this device', exact: true })
       .click();
     await alice
       .getByRole('button', { name: 'Sign in and unlock', exact: true })
@@ -305,7 +309,7 @@ describe('native sync and sharing through the Angular app in Chromium', () => {
           },
         };
       });
-      await page.getByLabel('Ultra Tasks server URL').fill(origin);
+      await selectAppAccountServer(page, origin);
       await page.getByLabel('Email or username').fill('nativekeys');
       await page.getByLabel('Password', { exact: true }).fill(password);
       await page.getByRole('button', { name: 'Sign in and unlock' }).click();
@@ -317,7 +321,7 @@ describe('native sync and sharing through the Angular app in Chromium', () => {
         );
       expect((await handoffs()).length).toBeGreaterThan(0);
       expect((await handoffs()).every((count) => count === 0)).toBe(true);
-      await page.getByLabel('I have backed up my data').check();
+      await acknowledgeAppSyncConnection(page);
       await page.getByRole('button', { name: 'Use the account’s existing data' }).click();
       await page.getByRole('heading', { name: 'Shared projects' }).waitFor();
       await expect

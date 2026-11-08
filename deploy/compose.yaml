@@ -12,7 +12,7 @@ x-server-environment: &server-environment
   ULTRA_SERVER_ID: ${ULTRA_SERVER_ID:?Generate a stable server ID}
   ULTRA_OPAQUE_SETUP: ${ULTRA_OPAQUE_SETUP:?Generate persistent OPAQUE setup}
   ULTRA_AUTH_SECRET: ${ULTRA_AUTH_SECRET:?Generate a persistent authentication secret}
-  ULTRA_AUTH_ENGINE: ${ULTRA_AUTH_ENGINE:-native}
+  ULTRA_AUTH_ENGINE: ${ULTRA_AUTH_ENGINE:-better-auth}
   ULTRA_REGISTRATION_OPEN: ${ULTRA_REGISTRATION_OPEN:-false}
   ULTRA_REQUIRE_TERMS_CONSENT: ${ULTRA_REQUIRE_TERMS_CONSENT:-true}
   CORS_ORIGINS: ${CORS_ORIGINS:-}
