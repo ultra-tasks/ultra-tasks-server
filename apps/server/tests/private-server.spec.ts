@@ -41,7 +41,15 @@ describe('published private server entry point', () => {
     const dashboard = await app.inject('/account');
     expect(dashboard.statusCode).toBe(200);
     expect(dashboard.headers['cache-control']).toBe('no-store');
-    expect(dashboard.body).toContain('Manage your account and connected devices here.');
+    expect(dashboard.body).toContain('id="auth"');
+    for (const [asset, contentType] of [
+      ['/account-theme.css', 'text/css'],
+      ['/account-assets/logo.svg', 'image/svg+xml'],
+    ]) {
+      const response = await app.inject(asset);
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['content-type']).toContain(contentType);
+    }
     const capabilities = await app.inject('/api/v2/accounts/capabilities');
     expect(capabilities.json()).toMatchObject({
       protocol: 2,
