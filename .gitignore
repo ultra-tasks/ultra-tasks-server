@@ -11,4 +11,6 @@ node_modules/
 apps/server/public/ultra-account/
 apps/server/public/ultra-account.html
 apps/server/public/ultra-account.css
+apps/server/public/account-theme.css
+apps/server/public/account-assets/
 apps/server/account-public/

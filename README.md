@@ -15,6 +15,8 @@ npm run quiet -- test
 
 Server source and migrations are in apps/server, the browser account entry is in apps/account, and the framework-independent SDK is in packages/account-crypto. Root scripts build dependencies in order. The production image does not require the Angular/Electron repository. See [source provenance](SOURCE.md) and [implementation status](docs/implementation-status.md).
 
+The [account website design](docs/account-design.md) follows the app's default palette and control language, with separate sign-in/recovery views and an account settings dashboard.
+
 ## Docker
 
 Build and start the local installation with development email delivery:

@@ -38,9 +38,40 @@ const secret = (id: string): string => {
 const show = (id: string, visible = true): void => {
   element(id).hidden = !visible;
 };
-const status = (message: string): void => {
+const status = (message: string, tone = 'info'): void => {
   element('status').textContent = message;
+  element('status').dataset.tone = tone;
 };
+type AuthView = 'login' | 'signup' | 'verify-email' | 'recover-request';
+let registrationOpen = false;
+const authView = (view: AuthView, focus = true): void => {
+  if (view === 'signup' && !registrationOpen) return;
+  for (const id of ['login', 'signup', 'verify-email', 'recover-request'])
+    show(id, id === view);
+  show('auth-back', view !== 'login');
+  // Passwords do not follow the user between account flows.
+  for (const input of element('auth').querySelectorAll<HTMLInputElement>(
+    'input[type=password]',
+  ))
+    input.value = '';
+  if (focus) element(view).querySelector<HTMLInputElement>('input')?.focus();
+};
+for (const button of document.querySelectorAll<HTMLButtonElement>('[data-auth-view]'))
+  button.addEventListener('click', () => authView(button.dataset.authView as AuthView));
+const accountPanel = (id: string, focus = true): void => {
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-panel]')) {
+    const selected = button.dataset.panel === id;
+    button.setAttribute('aria-current', selected ? 'page' : 'false');
+    show(button.dataset.panel!, selected);
+  }
+  if (focus) {
+    const heading = element(id).querySelector<HTMLElement>('h2');
+    heading?.setAttribute('tabindex', '-1');
+    heading?.focus();
+  }
+};
+for (const button of document.querySelectorAll<HTMLButtonElement>('[data-panel]'))
+  button.addEventListener('click', () => accountPanel(button.dataset.panel!));
 let recoveryText = '';
 let prepared: Awaited<ReturnType<AccountClient['prepareRegistration']>> | undefined;
 let totpEnrollment: string | undefined;
@@ -98,6 +129,7 @@ const signedIn = async (): Promise<void> => {
   show('mfa', false);
   show('auth', false);
   show('dashboard');
+  accountPanel('account-overview', false);
   element('who').textContent = client.account?.email ?? '';
   await cache();
   const info = await client.request<{ factors: { id: string; kind: string }[] }>('/me');
@@ -105,13 +137,15 @@ const signedIn = async (): Promise<void> => {
   for (const factor of info.factors) {
     const row = document.createElement('li');
     const label = document.createElement('span');
-    label.textContent = factor.kind + ' ';
+    label.textContent =
+      factor.kind === 'totp' ? 'Authenticator app' : 'Security key or passkey';
     const remove = document.createElement('button');
     remove.type = 'button';
     remove.textContent = 'Remove';
     remove.addEventListener('click', () => {
       element<HTMLInputElement>('remove-factor-id').value = factor.id;
       show('remove-factor');
+      element('remove-factor-code').focus();
     });
     row.append(label, remove);
     element('factors').append(row);
@@ -133,7 +167,7 @@ const run =
       status('Working…');
       await action();
     } catch (error) {
-      status(error instanceof Error ? error.message : 'Account action failed');
+      status(error instanceof Error ? error.message : 'Account action failed', 'error');
     } finally {
       for (const button of buttons) button.disabled = false;
     }
@@ -148,6 +182,8 @@ const recoverySheet = (label: string, material: string): void => {
   element('recovery-material').textContent = material;
   element('recovery-label').textContent = label;
   show('recovery-sheet');
+  element('recovery-material').setAttribute('tabindex', '-1');
+  element('recovery-material').focus();
 };
 on('signup', async () => {
   const password = secret('signup-password');
@@ -163,6 +199,7 @@ on('signup', async () => {
     password,
   );
   recoverySheet('vault recovery key', prepared.recoveryKey);
+  show('auth', false);
   show('finish-signup');
   element<HTMLInputElement>('saved-key').checked = false;
   status('Save or print your recovery key before creating the account.');
@@ -176,7 +213,20 @@ on('finish-signup', async () => {
   element('recovery-material').textContent = '';
   show('recovery-sheet', false);
   show('finish-signup', false);
+  show('auth');
+  authView('verify-email');
   status('Check your email to verify the account, then sign in.');
+});
+on('signup-back', async () => {
+  prepared = undefined;
+  recoveryText = '';
+  element('recovery-material').textContent = '';
+  element<HTMLInputElement>('saved-key').checked = false;
+  show('recovery-sheet', false);
+  show('finish-signup', false);
+  show('auth');
+  authView('signup');
+  status('Recovery key discarded. Update your details to prepare a new key.');
 });
 on('copy-recovery', async () => {
   await navigator.clipboard.writeText(recoveryText);
@@ -353,11 +403,14 @@ on('recover-finish', async () => {
   );
   recoveryMailToken = '';
   show('recover-finish', false);
+  show('auth');
+  authView('login');
   status('Password recovered. Sign in with the new password.');
 });
 on('verify-email', async () => {
   await client.transport('/verify-email', { token: value('verify-token') });
   element<HTMLInputElement>('verify-token').value = '';
+  authView('login');
   status('Email verified. You can sign in.');
 });
 on('resend-verification', async () => {
@@ -422,6 +475,9 @@ const refreshOverview = async (): Promise<void> => {
     limits: { encryptedBytes: number; historyBytes: number };
   }>('/overview');
   const mib = (bytes: number): string => (bytes / (1024 * 1024)).toFixed(2) + ' MiB';
+  const meter = element<HTMLProgressElement>('storage-meter');
+  meter.max = overview.limits.encryptedBytes;
+  meter.value = overview.personal?.encryptedBytes ?? 0;
   element('server-address').textContent = overview.server.url;
   element('personal-state').textContent = overview.personal
     ? overview.personal.state
@@ -461,6 +517,7 @@ const logout = (): void => {
   show('recovery-sheet', false);
   show('offline-state', false);
   show('auth');
+  authView('login', false);
   status(
     'Account locked on this page. Encrypted offline unlock data remains on this device.',
   );
@@ -477,10 +534,13 @@ on('logout', async () => {
   logout();
 });
 
-if (params.has('verify'))
+if (params.has('verify')) {
   element<HTMLInputElement>('verify-token').value = params.get('verify')!;
+  authView('verify-email', false);
+}
 if (params.has('recover')) {
   recoveryMailToken = params.get('recover')!;
+  show('auth', false);
   show('recover-finish');
 }
 if (params.has('device')) {
@@ -490,9 +550,17 @@ if (params.has('device')) {
 void client
   .init()
   .then((capabilities) => {
-    show('signup', capabilities.features['registrationOpen'] !== false);
+    registrationOpen = capabilities.features['registrationOpen'] !== false;
+    for (const button of document.querySelectorAll<HTMLElement>('[data-registration]'))
+      button.hidden = !registrationOpen;
     show('registration-closed', capabilities.features['registrationOpen'] === false);
-    if (params.get('view') === 'signup') element('signup').scrollIntoView();
+    if (
+      params.get('view') === 'signup' &&
+      !params.has('verify') &&
+      !params.has('recover') &&
+      !params.has('device')
+    )
+      authView('signup', false);
     show('signup-consent', !!capabilities.requireTermsConsent);
     element<HTMLInputElement>('signup-consent-accepted').required =
       !!capabilities.requireTermsConsent;

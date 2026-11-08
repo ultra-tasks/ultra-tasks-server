@@ -1,0 +1,40 @@
+/* Default Ultra Tasks roles, generated from client b79c0f94d5 palette-normalize.util.ts.
+   Keep both modes aligned when the app's default palette changes. */
+:root {
+  --palette-background: #f8f8f7;
+  --palette-surface: #ffffff;
+  --palette-accent: #075b5e;
+  --palette-ink: #000000;
+  --palette-ink-muted: #6c6c6c;
+  --palette-accent-ink: #ffffff;
+  --palette-accent-text: #075b5e;
+  --palette-focus-ring: #075b5e;
+  --palette-selected: #d2e1e2;
+  --palette-selected-ink: #000000;
+  --palette-hover: #ebf2f2;
+  --palette-danger: #c0161b;
+  --palette-danger-ink: #ffffff;
+  --palette-border: rgba(0, 0, 0, 0.123);
+  --palette-separator: rgba(0, 0, 0, 0.091);
+  --palette-outline: rgba(0, 0, 0, 0.43);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --palette-background: #131314;
+    --palette-surface: #242426;
+    --palette-accent: #63c5c3;
+    --palette-ink: #ffffff;
+    --palette-ink-muted: #989898;
+    --palette-accent-ink: #000000;
+    --palette-accent-text: #63c5c3;
+    --palette-focus-ring: #63c5c3;
+    --palette-selected: #2f4142;
+    --palette-selected-ink: #ffffff;
+    --palette-hover: #293133;
+    --palette-danger: #ff877b;
+    --palette-danger-ink: #000000;
+    --palette-border: rgba(255, 255, 255, 0.125);
+    --palette-separator: rgba(255, 255, 255, 0.1);
+    --palette-outline: rgba(255, 255, 255, 0.345);
+  }
+}

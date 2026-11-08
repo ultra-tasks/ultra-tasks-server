@@ -83,7 +83,10 @@ describe('Better Auth + OPAQUE through the account website and real app', () => 
   });
 
   it('signs in on the website, enforces MFA, and opens the account dashboard', async () => {
-    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+    const context = await browser.newContext({
+      viewport: { width: 1440, height: 1000 },
+      colorScheme: 'light',
+    });
     const page = await context.newPage();
     try {
       await page.goto(origin + '/account');
@@ -107,6 +110,16 @@ describe('Better Auth + OPAQUE through the account website and real app', () => 
       await page.locator('#status').filter({ hasText: 'Signed in.' }).waitFor();
       await page.evaluate(() => window.scrollTo(0, 0));
       await screenshot(page, 'website-03-dashboard');
+      await browserExpect(page.locator('#storage-meter')).toHaveAttribute('max', /[1-9]/);
+      await page.getByRole('button', { name: 'Security', exact: true }).click();
+      await browserExpect(
+        page.getByText('Authenticator app', { exact: true }),
+      ).toBeVisible();
+      await screenshot(page, 'website-04-security');
+      await page.getByRole('button', { name: 'Devices', exact: true }).click();
+      await browserExpect(page.locator('#sessions')).toContainText('This device');
+      await page.getByRole('button', { name: 'Profile', exact: true }).click();
+      await browserExpect(page.locator('#profile-username')).toHaveValue('preview');
       expect(await h.transport('/capabilities')).toMatchObject({
         features: { betterAuthSessions: true },
       });
@@ -121,6 +134,48 @@ describe('Better Auth + OPAQUE through the account website and real app', () => 
       ).toBeGreaterThan(0);
     } finally {
       await context.close();
+    }
+  });
+
+  it('keeps account flows usable on a narrow screen in both themes', async () => {
+    for (const colorScheme of ['light', 'dark'] as const) {
+      const context = await browser.newContext({
+        viewport: { width: 390, height: 844 },
+        colorScheme,
+        isMobile: true,
+        hasTouch: true,
+      });
+      try {
+        const page = await context.newPage();
+        await page.goto(origin + '/account');
+        await page.locator('#status').filter({ hasText: 'Ready.' }).waitFor();
+        await browserExpect(page.locator('#signup')).toBeHidden();
+        await page
+          .getByRole('button', { name: 'Create an account', exact: true })
+          .click();
+        await browserExpect(page.locator('#signup-email')).toBeFocused();
+        await browserExpect(page.locator('#login')).toBeHidden();
+        await screenshot(page, 'website-05-create-account-' + colorScheme);
+        await page.getByRole('button', { name: 'Back to sign in' }).click();
+        await page.getByRole('button', { name: 'Forgot your password?' }).click();
+        await browserExpect(page.locator('#recover-request')).toBeVisible();
+        await browserExpect(page.locator('#signup')).toBeHidden();
+        await page.getByRole('button', { name: 'Back to sign in' }).click();
+        await page.locator('#login-id').fill('preview');
+        await page.locator('#login-password').fill('incorrect password');
+        await page.locator('#login button.primary').click();
+        await browserExpect(page.locator('#status')).toHaveAttribute(
+          'data-tone',
+          'error',
+        );
+        await browserExpect(page.locator('#login-password')).toHaveValue('');
+        expect(
+          await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+        ).toBe(true);
+        await screenshot(page, 'website-06-sign-in-mobile-' + colorScheme);
+      } finally {
+        await context.close();
+      }
     }
   });
 
@@ -168,6 +223,17 @@ describe('Better Auth + OPAQUE through the account website and real app', () => 
       await screenshot(page, 'app-01-sign-in');
       await page.getByRole('button', { name: 'Sign in and unlock' }).click();
       await page.getByLabel('Authenticator or 2FA recovery code').waitFor();
+      await browserExpect(
+        page.getByRole('button', { name: 'Use security key or passkey' }),
+      ).toHaveCount(0);
+      await page.getByLabel('Authenticator or 2FA recovery code').fill('cancelled code');
+      await page.getByRole('button', { name: 'Back to sign in', exact: true }).click();
+      await browserExpect(page.getByLabel('Password', { exact: true })).toHaveValue('');
+      await page.getByLabel('Password', { exact: true }).fill(password);
+      await page.getByRole('button', { name: 'Sign in and unlock' }).click();
+      await browserExpect(
+        page.getByLabel('Authenticator or 2FA recovery code'),
+      ).toHaveValue('');
       await screenshot(page, 'app-02-two-factor');
       await page
         .getByLabel('Authenticator or 2FA recovery code')

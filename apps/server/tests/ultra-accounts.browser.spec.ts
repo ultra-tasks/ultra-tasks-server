@@ -52,6 +52,7 @@ describe('encrypted account portal in Chromium with a real virtual WebAuthn auth
       await page.locator('#login-password').fill(password);
       await page.locator('#login button:not([type])').click();
       await page.locator('#status').filter({ hasText: 'Signed in.' }).waitFor();
+      await page.getByRole('button', { name: 'Security', exact: true }).click();
       await page.getByText('Delete account', { exact: true }).click();
       await page.locator('#delete-confirm-email').fill('delete-dashboard@example.test');
       await page.locator('#delete-confirm').check();
@@ -89,14 +90,28 @@ describe('encrypted account portal in Chromium with a real virtual WebAuthn auth
         .waitFor({ state: 'visible', timeout: 20000 });
     await page.goto(origin + '/account');
     await wait('Ready.');
+    await page.getByRole('button', { name: 'Create an account', exact: true }).click();
     await page.locator('#signup-email').fill('browser@example.test');
     await page.locator('#signup-username').fill('browseruser');
     await page.locator('#signup-password').fill(password);
     await page.locator('#signup-confirm').fill(password);
     await page.locator('#signup button').click();
     await wait('Save or print');
+    const discardedKey = (await page.locator('#recovery-material').textContent())!;
+    expect(await page.locator('#signup-back').count()).toBe(1);
+    await page.locator('#signup-back').click();
+    expect(await page.locator('#recovery-sheet').isHidden()).toBe(true);
+    expect(await page.locator('#recovery-material').textContent()).toBe('');
+    expect(await page.locator('#signup').isVisible()).toBe(true);
+    expect(await page.locator('#signup-password').inputValue()).toBe('');
+    expect(await page.locator('#signup-confirm').inputValue()).toBe('');
+    await page.locator('#signup-password').fill(password);
+    await page.locator('#signup-confirm').fill(password);
+    await page.locator('#signup button').click();
+    await wait('Save or print');
     const recoveryKey = (await page.locator('#recovery-material').textContent())!;
     expect(recoveryKey).toMatch(/^UTRK1-/);
+    expect(recoveryKey).not.toBe(discardedKey);
     expect(await page.locator('#recovery-sheet').textContent()).toContain(
       'lose access to your encrypted data',
     );
@@ -107,7 +122,7 @@ describe('encrypted account portal in Chromium with a real virtual WebAuthn auth
     expect(saved).toContain(recoveryKey);
     expect(saved).toContain('cannot decrypt data');
     await page.locator('#saved-key').check();
-    await page.locator('#finish-signup button').click();
+    await page.locator('#finish-signup button.primary').click();
     await wait('Check your email');
     await page
       .locator('#verify-token')
@@ -128,6 +143,7 @@ describe('encrypted account portal in Chromium with a real virtual WebAuthn auth
       ),
       fullPage: true,
     });
+    await page.getByRole('button', { name: 'Security', exact: true }).click();
     await page.locator('#webauthn-enroll').click();
     await wait('Signed in.');
     const mfaCodes = (await page.locator('#recovery-material').textContent())!.split(
@@ -143,9 +159,13 @@ describe('encrypted account portal in Chromium with a real virtual WebAuthn auth
     await wait('Complete two-factor');
     await page.locator('#webauthn-login').click();
     await wait('Signed in.');
-    expect(await page.locator('#factors').textContent()).toContain('webauthn');
+    await page.getByRole('button', { name: 'Security', exact: true }).click();
+    expect(await page.locator('#factors').textContent()).toContain(
+      'Security key or passkey',
+    );
     await page.locator('#logout').click();
     await wait('Account locked');
+    await page.getByRole('button', { name: 'Forgot your password?' }).click();
     await page.locator('#recover-id').fill('browseruser');
     await page.locator('#recover-request button').click();
     await wait('check your email');
@@ -185,6 +205,7 @@ describe('encrypted account portal in Chromium with a real virtual WebAuthn auth
     await context.setOffline(true);
     await page.locator('#login-id').fill('browseruser');
     await page.locator('#login-password').fill('a recovered browser password');
+    await page.getByText('Device & sign-in help', { exact: true }).click();
     await page.locator('#offline-unlock').click();
     await wait('unlocked offline');
     expect(errors).toEqual([]);
@@ -213,6 +234,7 @@ describe('encrypted account portal in Chromium with a real virtual WebAuthn auth
     await expect
       .poll(() => page.locator('#status').textContent())
       .toContain('Signed in.');
+    await page.getByRole('button', { name: 'Security', exact: true }).click();
     await page.locator('#webauthn-enroll').click();
     await expect
       .poll(() => page.locator('#recovery-material').textContent())

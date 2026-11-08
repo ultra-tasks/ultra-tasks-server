@@ -17,24 +17,33 @@
     />
     <script
       src="/simplewebauthn-browser.min.js"
-      defer
+      defer=""
     ></script>
     <script
       src="/ultra-account/portal.global.js"
-      defer
+      defer=""
     ></script>
+    <link
+      rel="icon"
+      href="/account-assets/logo.svg"
+      type="image/svg+xml"
+    />
   </head>
   <body>
+    <header class="site-header">
+      <a
+        class="brand"
+        href="/account"
+        aria-label="Ultra Tasks account"
+        ><img
+          src="/account-assets/logo.svg"
+          width="32"
+          height="32"
+          alt=""
+        /><span>Ultra Tasks</span></a
+      ><span class="header-context">Account</span>
+    </header>
     <main>
-      <header>
-        <h1>Ultra Tasks account</h1>
-        <p>Manage your password, encryption keys, and two-factor authentication.</p>
-        <p>
-          Connect your Ultra Tasks clients to this server to sync your private data.
-          Changes sync automatically while your clients are unlocked, including after
-          reconnecting. Manage your account and connected devices here.
-        </p>
-      </header>
       <p
         id="status"
         role="status"
@@ -44,9 +53,9 @@
       </p>
       <section
         id="device-approval"
-        hidden
+        hidden=""
       >
-        <h2>Approve a device login</h2>
+        <h1>Approve a device login</h1>
         <p>
           Continue only if you just entered your password in the Ultra Tasks app on your
           own device. This approves that device’s login.
@@ -59,57 +68,92 @@
           Approve using a security key or passkey
         </button>
       </section>
-      <section id="auth">
+      <section
+        id="auth"
+        class="auth-card"
+      >
+        <div class="auth-context">Your Ultra Tasks account</div>
         <p
           id="registration-closed"
-          hidden
+          hidden=""
         >
           New accounts are not available on this server.
         </p>
         <form id="login">
-          <h2>Sign in</h2>
+          <h1>Sign in</h1>
           <label
             >Email or username
             <input
               id="login-id"
               autocomplete="username"
-              required /></label
+              required="" /></label
           ><label
             >Password
             <input
               id="login-password"
               type="password"
               autocomplete="current-password"
-              required /></label
-          ><label
-            >Device name
-            <input
-              id="device-name"
-              value="This device"
-              maxlength="100"
-              required /></label
-          ><button>Sign in</button
-          ><button
+              required="" /></label
+          ><button class="primary">Sign in</button>
+          <details class="signin-help">
+            <summary>Device &amp; sign-in help</summary>
+            <label
+              >Device name
+              <input
+                id="device-name"
+                value="This device"
+                maxlength="100"
+                required=""
+            /></label>
+            <div class="actions">
+              <button
+                type="button"
+                id="offline-unlock"
+              >
+                Unlock cached account offline</button
+              ><button
+                type="button"
+                id="resend-verification"
+              >
+                Resend verification email</button
+              ><button
+                type="button"
+                data-auth-view="verify-email"
+              >
+                Verify email with a token
+              </button>
+            </div>
+          </details>
+          <p class="form-switch">
+            New here?
+            <button
+              type="button"
+              data-auth-view="signup"
+              data-registration=""
+            >
+              Create an account
+            </button>
+          </p>
+          <button
+            class="text-button"
             type="button"
-            id="offline-unlock"
+            data-auth-view="recover-request"
           >
-            Unlock cached account offline</button
-          ><button
-            type="button"
-            id="resend-verification"
-          >
-            Resend verification email
+            Forgot your password?
           </button>
         </form>
-        <form id="signup">
-          <h2>Create an account</h2>
+        <form
+          id="signup"
+          hidden=""
+        >
+          <h1>Create an account</h1>
           <label
             >Email
             <input
               id="signup-email"
               type="email"
               autocomplete="email"
-              required /></label
+              required="" /></label
           ><label
             >Username (optional)
             <input
@@ -130,7 +174,7 @@
               autocomplete="new-password"
               minlength="12"
               maxlength="1024"
-              required /></label
+              required="" /></label
           ><label
             >Confirm password
             <input
@@ -139,10 +183,10 @@
               autocomplete="new-password"
               minlength="12"
               maxlength="1024"
-              required /></label
+              required="" /></label
           ><label
             id="signup-consent"
-            hidden
+            hidden=""
             ><input
               id="signup-consent-accepted"
               type="checkbox"
@@ -155,7 +199,7 @@
               >Privacy Policy</a
             ><span
               id="signup-terms"
-              hidden
+              hidden=""
             >
               and
               <a
@@ -165,20 +209,26 @@
                 >Terms of Service</a
               ></span
             >.</label
-          ><button>Prepare account and recovery key</button>
+          ><button class="primary">Continue to recovery key</button>
         </form>
-        <form id="verify-email">
-          <h2>Verify email</h2>
+        <form
+          id="verify-email"
+          hidden=""
+        >
+          <h1>Verify email</h1>
           <label
             >Verification token from email
             <input
               id="verify-token"
               autocomplete="off"
-              required /></label
-          ><button>Verify email</button>
+              required="" /></label
+          ><button class="primary">Verify email</button>
         </form>
-        <form id="recover-request">
-          <h2>Forgot your password?</h2>
+        <form
+          id="recover-request"
+          hidden=""
+        >
+          <h1>Forgot your password?</h1>
           <p>
             Your vault recovery key and, if enabled, your authenticator or MFA recovery
             code are required. Email alone cannot decrypt your data.
@@ -188,15 +238,27 @@
             <input
               id="recover-id"
               autocomplete="username"
-              required /></label
-          ><button>Send recovery link</button>
+              required="" /></label
+          ><button class="primary">Send recovery link</button>
         </form>
+        <button
+          type="button"
+          id="auth-back"
+          class="text-button"
+          data-auth-view="login"
+          hidden=""
+        >
+          Back to sign in
+        </button>
+        <p class="privacy-note">
+          End-to-end encrypted. Your password and vault keys stay on your device.
+        </p>
       </section>
       <section
         id="recovery-sheet"
-        hidden
+        hidden=""
       >
-        <h2 id="recovery-label">Vault recovery key</h2>
+        <h1 id="recovery-label">Vault recovery key</h1>
         <p>
           Save this recovery key in your password manager or print it and store it safely.
           If you lose both your password and recovery key and have no unlocked device, you
@@ -227,34 +289,40 @@
         </nav>
         <form
           id="finish-signup"
-          hidden
+          hidden=""
         >
           <label
             ><input
               id="saved-key"
               type="checkbox"
-              required
+              required=""
             />
             I saved my recovery key and understand the data loss warning.</label
-          ><button>Create account</button>
+          ><button class="primary">Create account</button>
+          <button
+            id="signup-back"
+            type="button"
+          >
+            Back to account details
+          </button>
         </form>
       </section>
       <form
         id="mfa"
-        hidden
+        hidden=""
       >
-        <h2>Two-factor authentication</h2>
+        <h1>Two-factor authentication</h1>
         <label
           >Authenticator or MFA recovery code
           <input
             id="mfa-code"
             type="password"
             autocomplete="one-time-code" /></label
-        ><button>Verify code</button
+        ><button class="primary">Verify code</button
         ><button
           id="webauthn-login"
           type="button"
-          hidden
+          hidden=""
         >
           Use security key or passkey
         </button>
@@ -267,16 +335,16 @@
       </form>
       <section
         id="offline-state"
-        hidden
+        hidden=""
       >
         <h2>Cached account unlocked</h2>
         <button id="resume-session">Resume online session</button>
       </section>
       <form
         id="recover-finish"
-        hidden
+        hidden=""
       >
-        <h2>Recover encrypted account</h2>
+        <h1>Recover encrypted account</h1>
         <label
           >Recovery link token (filled automatically from email)
           <input
@@ -288,7 +356,7 @@
             id="recover-key"
             type="password"
             autocomplete="off"
-            required /></label
+            required="" /></label
         ><label
           >New password
           <input
@@ -297,7 +365,7 @@
             autocomplete="new-password"
             minlength="12"
             maxlength="1024"
-            required /></label
+            required="" /></label
         ><label
           >Confirm new password
           <input
@@ -306,201 +374,280 @@
             autocomplete="new-password"
             minlength="12"
             maxlength="1024"
-            required /></label
+            required="" /></label
         ><label
           >Authenticator or MFA recovery code (if enabled)
           <input
             id="recover-mfa"
             type="password"
             autocomplete="one-time-code" /></label
-        ><button>Recover account</button>
+        ><button class="primary">Recover account</button>
       </form>
       <section
         id="dashboard"
-        hidden
+        hidden=""
       >
-        <h2 id="who">Account</h2>
-        <nav aria-label="Account navigation">
-          <a href="#account-overview">Overview</a>
-          <a href="#account-security">Security</a>
-          <a href="#profile">Profile</a>
-          <a href="#account-devices">Devices</a>
-        </nav>
-        <section
-          id="account-overview"
-          aria-labelledby="overview-heading"
-        >
-          <h3 id="overview-heading">Private sync</h3>
-          <p>
-            Sign in to this server from Ultra Tasks on each device. Your task content is
-            encrypted before it leaves your device.
-          </p>
-          <dl>
-            <dt>Server address</dt>
-            <dd id="server-address"></dd>
-            <dt>Personal data</dt>
-            <dd id="personal-state"></dd>
-            <dt>Encrypted records</dt>
-            <dd id="storage-usage"></dd>
-            <dt>Encrypted history</dt>
-            <dd id="history-usage"></dd>
-          </dl>
-          <button
-            type="button"
-            id="overview-refresh"
-          >
-            Refresh sync information
-          </button>
-          <a
-            href="https://ultratasks.app/#download"
-            rel="noreferrer noopener"
-            >Get Ultra Tasks</a
-          >
-        </section>
-        <button
-          id="lock"
-          type="button"
-        >
-          Lock this page</button
-        ><button
-          id="logout"
-          type="button"
-        >
-          Sign out and revoke this session
-        </button>
-        <h3 id="account-security">Two-factor authentication</h3>
-        <ul id="factors"></ul>
-        <button
-          id="totp-start"
-          type="button"
-        >
-          Set up authenticator</button
-        ><button
-          id="webauthn-enroll"
-          type="button"
-        >
-          Add security key or passkey
-        </button>
-        <form
-          id="totp-enroll"
-          hidden
-        >
-          <p>Enter this secret in your authenticator: <code id="totp-secret"></code></p>
-          <a id="totp-uri">Open authenticator app</a
-          ><label
-            >Code
-            <input
-              id="totp-code"
-              autocomplete="one-time-code"
-              pattern="[0-9]{6}"
-              required /></label
-          ><button>Enable authenticator</button>
-        </form>
-        <form
-          id="remove-factor"
-          hidden
-        >
-          <input
-            id="remove-factor-id"
-            type="hidden"
-          /><label
-            >Authenticator or MFA recovery code
-            <input
-              id="remove-factor-code"
-              type="password"
-              autocomplete="one-time-code"
-              required /></label
-          ><button>Remove second factor</button>
-        </form>
-        <form id="password-change">
-          <h3>Change password</h3>
-          <p>
-            Your recovery key and encrypted content remain valid. Other device sessions
-            will be revoked.
-          </p>
-          <label
-            >New password
-            <input
-              id="new-password"
-              type="password"
-              autocomplete="new-password"
-              minlength="12"
-              maxlength="1024"
-              required /></label
-          ><label
-            >Confirm new password
-            <input
-              id="new-password-confirm"
-              type="password"
-              autocomplete="new-password"
-              minlength="12"
-              maxlength="1024"
-              required /></label
-          ><button>Change password</button>
-        </form>
-        <form id="profile">
-          <h3>Profile</h3>
-          <label
-            >Username
-            <input
-              id="profile-username"
-              autocomplete="username" /></label
-          ><label
-            >Display name
-            <input
-              id="profile-name"
-              autocomplete="name" /></label
-          ><label
-            >New email (optional, requires verification)
-            <input
-              id="profile-email"
-              type="email"
-              autocomplete="email" /></label
-          ><button>Save profile</button>
-        </form>
-        <h3 id="account-devices">Device sessions</h3>
-        <button
-          id="sessions-refresh"
-          type="button"
-        >
-          Refresh devices
-        </button>
-        <ul id="sessions"></ul>
-        <details>
-          <summary>Delete account</summary>
-          <p>
-            This permanently deletes your account and its personal encrypted data from the
-            live server. Export a backup from Ultra Tasks first. Offline copies on your
-            devices are not erased remotely. Server backups may retain encrypted copies
-            until the operator's retention period expires.
-          </p>
-          <form id="delete-account">
-            <label
-              >Type your account email to confirm<input
-                id="delete-confirm-email"
-                type="email"
-                autocomplete="off"
-                required
-            /></label>
-            <label
-              ><input
-                id="delete-confirm"
-                type="checkbox"
-                required
-              />I understand this cannot be undone.</label
+        <header class="account-heading">
+          <div>
+            <p class="eyebrow">Account</p>
+            <h1 id="who">Account</h1>
+          </div>
+          <div class="actions">
+            <button
+              id="lock"
+              type="button"
             >
-            <button type="submit">Permanently delete account</button>
-          </form>
-        </details>
+              Lock this page</button
+            ><button
+              id="logout"
+              type="button"
+            >
+              Sign out
+            </button>
+          </div>
+        </header>
+        <div class="settings-layout">
+          <nav
+            class="settings-nav"
+            aria-label="Account navigation"
+          >
+            <button
+              type="button"
+              data-panel="account-overview"
+              aria-current="page"
+            >
+              Overview</button
+            ><button
+              type="button"
+              data-panel="account-security"
+              aria-current="false"
+            >
+              Security</button
+            ><button
+              type="button"
+              data-panel="account-profile"
+              aria-current="false"
+            >
+              Profile</button
+            ><button
+              type="button"
+              data-panel="account-devices"
+              aria-current="false"
+            >
+              Devices
+            </button>
+          </nav>
+          <div class="settings-content">
+            <section
+              id="account-overview"
+              aria-labelledby="overview-heading"
+            >
+              <h2 id="overview-heading">Private sync</h2>
+              <p>
+                Sign in to this server from Ultra Tasks on each device. Your task content
+                is encrypted before it leaves your device.
+              </p>
+              <dl>
+                <dt>Server address</dt>
+                <dd id="server-address"></dd>
+                <dt>Personal data</dt>
+                <dd id="personal-state"></dd>
+                <dt>Encrypted records</dt>
+                <dd>
+                  <span id="storage-usage"></span
+                  ><progress
+                    id="storage-meter"
+                    value="0"
+                    max="1"
+                    aria-label="Encrypted record storage used"
+                  ></progress>
+                </dd>
+                <dt>Encrypted history</dt>
+                <dd id="history-usage"></dd>
+              </dl>
+              <button
+                type="button"
+                id="overview-refresh"
+              >
+                Refresh sync information
+              </button>
+              <a
+                href="https://ultratasks.app/#download"
+                rel="noreferrer noopener"
+                >Get Ultra Tasks</a
+              >
+            </section>
+            <section
+              id="account-security"
+              hidden=""
+              aria-labelledby="security-heading"
+            >
+              <h2 id="security-heading">Security</h2>
+              <div class="settings-group">
+                <h3>Two-factor authentication</h3>
+                <p class="muted">Add another layer of protection when you sign in.</p>
+                <ul
+                  id="factors"
+                  class="item-list"
+                ></ul>
+                <div class="actions">
+                  <button
+                    id="totp-start"
+                    type="button"
+                  >
+                    Set up authenticator</button
+                  ><button
+                    id="webauthn-enroll"
+                    type="button"
+                  >
+                    Add security key or passkey
+                  </button>
+                </div>
+                <form
+                  id="totp-enroll"
+                  hidden=""
+                >
+                  <p>
+                    Enter this secret in your authenticator:
+                    <code id="totp-secret"></code>
+                  </p>
+                  <a id="totp-uri">Open authenticator app</a
+                  ><label
+                    >Code
+                    <input
+                      id="totp-code"
+                      autocomplete="one-time-code"
+                      pattern="[0-9]{6}"
+                      required="" /></label
+                  ><button class="primary">Enable authenticator</button>
+                </form>
+                <form
+                  id="remove-factor"
+                  hidden=""
+                >
+                  <input
+                    id="remove-factor-id"
+                    type="hidden"
+                  /><label
+                    >Authenticator or MFA recovery code
+                    <input
+                      id="remove-factor-code"
+                      type="password"
+                      autocomplete="one-time-code"
+                      required="" /></label
+                  ><button class="primary">Remove second factor</button>
+                </form>
+              </div>
+              <div class="settings-group">
+                <form id="password-change">
+                  <h3>Change password</h3>
+                  <p>
+                    Your recovery key and encrypted content remain valid. Other device
+                    sessions will be revoked.
+                  </p>
+                  <label
+                    >New password
+                    <input
+                      id="new-password"
+                      type="password"
+                      autocomplete="new-password"
+                      minlength="12"
+                      maxlength="1024"
+                      required="" /></label
+                  ><label
+                    >Confirm new password
+                    <input
+                      id="new-password-confirm"
+                      type="password"
+                      autocomplete="new-password"
+                      minlength="12"
+                      maxlength="1024"
+                      required="" /></label
+                  ><button class="primary">Change password</button>
+                </form>
+              </div>
+              <details>
+                <summary>Delete account</summary>
+                <p>
+                  This permanently deletes your account and its personal encrypted data
+                  from the live server. Export a backup from Ultra Tasks first. Offline
+                  copies on your devices are not erased remotely. Server backups may
+                  retain encrypted copies until the operator's retention period expires.
+                </p>
+                <form id="delete-account">
+                  <label
+                    >Type your account email to confirm<input
+                      id="delete-confirm-email"
+                      type="email"
+                      autocomplete="off"
+                      required=""
+                  /></label>
+                  <label
+                    ><input
+                      id="delete-confirm"
+                      type="checkbox"
+                      required=""
+                    />I understand this cannot be undone.</label
+                  >
+                  <button type="submit">Permanently delete account</button>
+                </form>
+              </details>
+            </section>
+            <section
+              id="account-profile"
+              hidden=""
+              aria-labelledby="profile-heading"
+            >
+              <h2 id="profile-heading">Profile</h2>
+              <form id="profile">
+                <label
+                  >Username
+                  <input
+                    id="profile-username"
+                    autocomplete="username" /></label
+                ><label
+                  >Display name
+                  <input
+                    id="profile-name"
+                    autocomplete="name" /></label
+                ><label
+                  >New email (optional, requires verification)
+                  <input
+                    id="profile-email"
+                    type="email"
+                    autocomplete="email" /></label
+                ><button class="primary">Save profile</button>
+              </form>
+            </section>
+            <section
+              id="account-devices"
+              hidden=""
+              aria-labelledby="devices-heading"
+            >
+              <h2 id="devices-heading">Devices</h2>
+              <p class="muted">
+                Manage the devices signed in to this server. Revoking a session stops its
+                access; downloaded data stays on the device.
+              </p>
+              <button
+                id="sessions-refresh"
+                type="button"
+              >
+                Refresh devices
+              </button>
+              <ul
+                id="sessions"
+                class="item-list"
+              ></ul>
+            </section>
+          </div>
+        </div>
       </section>
-      <footer>
-        <p>
-          <a href="https://github.com/ultra-tasks/ultra-tasks-server">
-            Source code and self-hosting
-          </a>
-          · GNU AGPL-3.0-only; inherited MIT notices are retained.
-        </p>
-      </footer>
     </main>
+    <footer>
+      <a href="https://github.com/ultra-tasks/ultra-tasks-server"
+        >Source code &amp; self-hosting</a
+      ><span>GNU AGPL-3.0-only · inherited MIT notices retained</span>
+    </footer>
   </body>
 </html>
