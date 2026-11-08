@@ -62,15 +62,18 @@ describe('private v1 sync through two real Angular clients', () => {
     await page.goto(origin + '/#/native-sync');
     return page;
   };
+  const unlock = async (page: Page): Promise<void> => {
+    await selectAppAccountServer(page, origin);
+    await page.getByLabel('Email or username').fill('alice');
+    await page.getByLabel('Password', { exact: true }).fill(password);
+    await page.getByRole('button', { name: 'Sign in and unlock' }).click();
+  };
   const login = async (
     page: Page,
     importLocal: boolean,
     alreadyLinked = false,
   ): Promise<void> => {
-    await selectAppAccountServer(page, origin);
-    await page.getByLabel('Email or username').fill('alice');
-    await page.getByLabel('Password', { exact: true }).fill(password);
-    await page.getByRole('button', { name: 'Sign in and unlock' }).click();
+    await unlock(page);
     if (!alreadyLinked) {
       await page
         .getByText('Connect personal data', { exact: true })
@@ -182,6 +185,38 @@ describe('private v1 sync through two real Angular clients', () => {
         await browserExpect(
           second.locator('task').filter({ hasText: title }),
         ).toHaveCount(1);
+
+      // A disconnected device may have used another provider. Signing back in
+      // must leave its local data untouched until the user explicitly connects.
+      const disconnectedTask = 'Private disconnected second-device task';
+      await secondContext.setOffline(true);
+      await add(second, disconnectedTask);
+      await secondContext.setOffline(false);
+      await second.goto(origin + '/#/native-sync');
+      await unlock(second);
+      await browserExpect(
+        second.getByText('Connect personal data', { exact: true }),
+      ).toBeVisible();
+      await second.reload();
+      await unlock(second);
+      await browserExpect(
+        second.getByText('Connect personal data', { exact: true }),
+      ).toBeVisible();
+      await second.goto(origin + '/#/tag/TODAY/tasks');
+      await browserExpect(
+        second.locator('task').filter({ hasText: disconnectedTask }),
+      ).toHaveCount(1);
+      await browserExpect(
+        first.locator('task').filter({ hasText: disconnectedTask }),
+      ).toHaveCount(0);
+      for (const title of [
+        'Private first-device task',
+        'Private offline second-device task',
+        'Private concurrent first-device task',
+      ])
+        await browserExpect(first.locator('task').filter({ hasText: title })).toHaveCount(
+          1,
+        );
     } finally {
       await firstContext.close();
       await secondContext.close();
