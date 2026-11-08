@@ -151,11 +151,16 @@ describe('private v1 sync through two real Angular clients', () => {
         });
       // Locking and a full restart still reserve the saved UltraSync connection.
       await second.goto(origin + '/#/native-sync');
-      await second.getByText('Account & session options', { exact: true }).click();
-      await second.getByRole('button', { name: 'Lock account', exact: true }).click();
+      const nativePage = second.locator('native-sync:visible');
+      await browserExpect(nativePage).toHaveCount(1);
+      await nativePage.locator('.account-options > summary').click();
+      await nativePage.getByRole('button', { name: 'Lock account', exact: true }).click();
       await second.reload();
       await second.goto(origin + '/#/account');
-      await second.getByRole('button', { name: 'Set up sync', exact: true }).click();
+      await second
+        .getByRole('dialog', { name: 'Account', exact: true })
+        .getByRole('button', { name: 'Set up sync', exact: true })
+        .click();
       const picker = second.locator('dialog-sync-cfg');
       await picker.getByRole('combobox').click();
       await browserExpect(
