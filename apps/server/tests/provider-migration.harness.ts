@@ -8,7 +8,11 @@ it('serves synthetic accounts to the provider migration browser tests', async ()
   const dist = process.env.ULTRA_CLIENT_DIST;
   if (!dist) throw new Error('ULTRA_CLIENT_DIST is required');
   const port = Number(process.env.ULTRA_MIGRATION_PORT ?? 4244);
-  const harness = await createHarness({ privateOnly: true, authEngine: 'better-auth' });
+  const harness = await createHarness({
+    privateOnly: true,
+    authEngine: 'better-auth',
+    disableRateLimit: true,
+  });
   try {
     let ready = false;
     harness.app.get('/provider-migration-ready', async (_request, reply) =>

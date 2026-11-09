@@ -34,8 +34,10 @@ export const createHarness = async (
     registrationOpen?: boolean;
     privateOnly?: boolean;
     authEngine?: 'native' | 'better-auth';
+    disableRateLimit?: boolean;
   } = {},
 ) => {
+  const { disableRateLimit, ...accountSettings } = settings;
   await opaqueReady;
   const database = new PGlite();
   await database.waitReady;
@@ -131,14 +133,19 @@ export const createHarness = async (
   const app = Fastify();
   const realtime = new UltraRealtimeHub(db, !!settings.privateOnly);
   await app.register(websocket, { options: { maxPayload: 1024 } });
-  await app.register(rateLimit, { global: false });
+  // Only the synthetic multi-browser migration harness opts out: its many
+  // independent accounts all connect from the same loopback IP.
+  await app.register(rateLimit, {
+    global: false,
+    ...(disableRateLimit ? { allowList: () => true } : {}),
+  });
   await app.register(ultraAccountRoutes, {
     prefix: '/api/v2/accounts',
     realtime,
     db,
     transaction,
     config,
-    ...settings,
+    ...accountSettings,
     sendMail: async (email, kind, token) => {
       mail.push({ email, kind, token });
       return true;
