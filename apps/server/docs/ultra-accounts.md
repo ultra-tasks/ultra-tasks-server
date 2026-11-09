@@ -1,5 +1,10 @@
 # Encrypted Ultra Tasks accounts
 
+New accounts receive an eight-digit email verification code. It is bound to the
+account, expires after 24 hours and is invalidated after five incorrect attempts
+or a resend. Previously issued verification links remain usable. SMTP must be
+configured to deliver verification emails.
+
 The opt-in account foundation provides password registration and login, verified
 email, optional usernames, TOTP and WebAuthn second factors, device sessions,
 password changes, and client-side encrypted key vaults. The account portal is

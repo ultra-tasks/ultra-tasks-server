@@ -173,7 +173,7 @@ describe('encrypted account portal in Chromium with a real virtual WebAuthn auth
     await page
       .locator('#verify-token')
       .fill(h.mail.findLast((message) => message.kind === 'verify')!.token);
-    await page.locator('#verify-email button').click();
+    await page.locator('#verify-email button.primary').click();
     await wait('Email verified');
     await page.locator('#login-id').fill('browseruser');
     await page.locator('#login-password').fill(password);

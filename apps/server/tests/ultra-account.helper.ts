@@ -166,7 +166,7 @@ export const createHarness = async (
     const verifyToken = mail.findLast(
       (message) => message.email === email && message.kind === 'verify',
     )!.token;
-    await transport('/verify-email', { token: verifyToken });
+    await transport('/verify-email', { identifier: email, code: verifyToken });
     await account.login(email, password);
     return { client: account, prepared, verifyToken };
   };

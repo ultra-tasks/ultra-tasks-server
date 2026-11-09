@@ -329,6 +329,7 @@ on('finish-signup', async () => {
   show('finish-signup', false);
   show('auth');
   authView('verify-email');
+  element<HTMLInputElement>('verify-identifier').value = value('signup-email');
   status('Check your email to verify the account, then sign in.');
 });
 on('signup-back', async () => {
@@ -522,10 +523,23 @@ on('recover-finish', async () => {
   status('Password recovered. Sign in with the new password.');
 });
 on('verify-email', async () => {
-  await client.transport('/verify-email', { token: value('verify-token') });
+  const entered = value('verify-token');
+  if (/^\d{8}$/.test(entered)) {
+    const identifier = value('verify-identifier');
+    if (!identifier) throw new Error('Enter your email or username.');
+    await client.transport('/verify-email', { identifier, code: entered });
+  } else {
+    await client.transport('/verify-email', { token: entered });
+  }
   element<HTMLInputElement>('verify-token').value = '';
   authView('login');
   status('Email verified. You can sign in.');
+});
+on('verify-resend', async () => {
+  const identifier = value('verify-identifier');
+  if (!identifier) throw new Error('Enter your email or username.');
+  await client.transport('/verification/resend', { identifier });
+  status('If verification is needed, check your email for a new code.');
 });
 on('resend-verification', async () => {
   await client.transport('/verification/resend', { identifier: value('login-id') });

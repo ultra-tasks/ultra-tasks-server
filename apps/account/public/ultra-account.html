@@ -282,13 +282,28 @@
           hidden=""
         >
           <h1>Verify email</h1>
+          <p>Enter the eight-digit code sent to your email. It expires in 24 hours.</p>
           <label
-            >Verification token from email
+            >Email or username
+            <input
+              id="verify-identifier"
+              autocomplete="username"
+            />
+          </label>
+          <label
+            >Verification code
             <input
               id="verify-token"
               autocomplete="off"
               required="" /></label
           ><button class="primary">Verify email</button>
+          <button
+            type="button"
+            id="verify-resend"
+            class="text-button"
+          >
+            Send a new code
+          </button>
         </form>
         <form
           id="recover-request"

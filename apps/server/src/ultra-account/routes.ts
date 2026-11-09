@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
 import { Prisma } from '@prisma/client';
-import { createHmac } from 'node:crypto';
+import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
 import { z, ZodError } from 'zod';
 import {
   generateRegistrationOptions,
@@ -190,6 +190,35 @@ export const ultraAccountRoutes = async (
     kind: 'verify' | 'recover',
     data: object = {},
   ) => {
+    if (kind === 'verify' && !account.verified) {
+      let code = '';
+      const issued = await transaction(async (tx) => {
+        const locked = await lockAccount(tx, account.id);
+        if (locked.verified) return false;
+        const previous = await one<{ digest: string }>(
+          tx,
+          Prisma.sql`SELECT digest FROM ultra_challenges WHERE account_id=${account.id} AND kind='verify-code'`,
+        );
+        let codeDigest: string;
+        do {
+          code = randomInt(0, 100000000).toString().padStart(8, '0');
+          codeDigest = createHmac('sha256', config.authSecret)
+            .update(`email-verification:${account.id}:${code}`)
+            .digest('hex');
+        } while (codeDigest === previous?.digest);
+        await tx.$executeRaw(
+          Prisma.sql`DELETE FROM ultra_challenges WHERE account_id=${account.id} AND kind='verify-code'`,
+        );
+        await tx.$executeRaw(
+          Prisma.sql`INSERT INTO ultra_challenges(digest,kind,account_id,expires_at,data) VALUES (${codeDigest},'verify-code',${account.id},${BigInt(Date.now() + DAY)},'{}'::jsonb)`,
+        );
+        return true;
+      });
+      if (!issued) return;
+      if (!(await sendMail(account.email, kind, code)))
+        throw new AccountError(503, 'Email could not be delivered. Please try again.');
+      return;
+    }
     const value = await challenge(
       db,
       config,
@@ -386,7 +415,43 @@ export const ultraAccountRoutes = async (
     };
   });
   post('/verify-email', async (req) => {
-    const { token: value } = body(req, z.object({ token: challengeToken }).strict());
+    const input = body(
+      req,
+      z.union([
+        z.object({ token: challengeToken }).strict(),
+        z.object({ identifier, code: z.string().regex(/^\d{8}$/) }).strict(),
+      ]),
+    );
+    if ('code' in input) {
+      const account = await accountByIdentifier(db, input.identifier);
+      if (!account) throw new AccountError(401);
+      const valid = await transaction(async (tx) => {
+        const locked = await lockAccount(tx, account.id);
+        if (locked.verified) return false;
+        const row = await one<{ digest: string }>(
+          tx,
+          Prisma.sql`UPDATE ultra_challenges SET attempts=attempts+1 WHERE account_id=${account.id} AND kind='verify-code' AND expires_at>${BigInt(Date.now())} AND attempts<5 RETURNING digest`,
+        );
+        if (!row) return false;
+        const candidate = createHmac('sha256', config.authSecret)
+          .update(`email-verification:${account.id}:${input.code}`)
+          .digest('hex');
+        if (
+          !timingSafeEqual(Buffer.from(row.digest, 'hex'), Buffer.from(candidate, 'hex'))
+        )
+          return false;
+        await tx.$executeRaw(
+          Prisma.sql`DELETE FROM ultra_challenges WHERE account_id=${account.id} AND kind='verify-code'`,
+        );
+        await tx.$executeRaw(
+          Prisma.sql`UPDATE ultra_accounts SET verified=true WHERE id=${account.id}`,
+        );
+        return true;
+      });
+      if (!valid) throw new AccountError(401, 'Invalid or expired verification code');
+      return { verified: true };
+    }
+    const value = input.token;
     await transaction(async (tx) => {
       const pending = await readChallenge<{
         email?: string;
