@@ -539,7 +539,9 @@ on('verify-resend', async () => {
   const identifier = value('verify-identifier');
   if (!identifier) throw new Error('Enter your email or username.');
   await client.transport('/verification/resend', { identifier });
-  status('If verification is needed, check your email for a new code.');
+  status(
+    'If verification is needed, check your email for a new code. If registration expired, start again.',
+  );
 });
 on('resend-verification', async () => {
   await client.transport('/verification/resend', { identifier: value('login-id') });

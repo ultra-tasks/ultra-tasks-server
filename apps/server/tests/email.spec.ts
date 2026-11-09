@@ -43,7 +43,7 @@ describe('Email transport configuration', () => {
         }),
       );
       const text = sendMail.mock.calls[0][0].text as string;
-      expect(text).toContain('24 hours');
+      expect(text).toContain('30 minutes');
       expect(text).not.toContain('?verify=');
     } finally {
       vi.doUnmock('nodemailer');

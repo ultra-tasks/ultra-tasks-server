@@ -27,13 +27,57 @@ describe('Ultra accounts: real routes, real PostgreSQL SQL and real client crypt
       ),
     );
     const previous = h.mail.at(-1)!.token;
+    const initial = await h.database.query<{ expires_at: string }>(
+      "SELECT expires_at FROM ultra_challenges WHERE kind='verify-code'",
+    );
     await h.transport('/verification/resend', { identifier });
+    const resent = await h.database.query<{ expires_at: string }>(
+      "SELECT expires_at FROM ultra_challenges WHERE kind='verify-code'",
+    );
+    expect(resent.rows[0].expires_at).toEqual(initial.rows[0].expires_at);
     const replacement = h.mail.at(-1)!.token;
     expect(replacement).not.toBe(previous);
     await expect(
       h.transport('/verify-email', { identifier, code: previous }),
     ).rejects.toThrow();
     await h.transport('/verify-email', { identifier, code: replacement });
+  });
+
+  it('cancels expired registrations and permits a fresh signup without deleting verified accounts', async () => {
+    const existing = await h.register('verified@example.test', 'verified');
+    const client = h.client();
+    const identifier = 'expired@example.test';
+    const old = await client.prepareRegistration(
+      { email: identifier, displayName: 'Expired' },
+      password,
+    );
+    await client.register(old);
+    const expiredCode = h.mail.at(-1)!.token;
+    await h.database.query('UPDATE ultra_accounts SET created_at=$1', [
+      Date.now() - 1800001,
+    ]);
+    await h.transport('/verification/resend', { identifier });
+    await expect(
+      h.transport('/verify-email', { identifier, code: expiredCode }),
+    ).rejects.toThrow();
+    const remaining = await h.database.query<{ email: string }>(
+      'SELECT email FROM ultra_accounts',
+    );
+    expect(remaining.rows.map((row) => row.email)).toEqual(['verified@example.test']);
+    const replacement = await client.prepareRegistration(
+      { email: identifier, displayName: 'Fresh' },
+      password,
+    );
+    expect(replacement.recoveryKey).not.toBe(old.recoveryKey);
+    await client.register(replacement);
+    const freshCode = h.mail.at(-1)!.token;
+    if (expiredCode !== freshCode)
+      await expect(
+        h.transport('/verify-email', { identifier, code: expiredCode }),
+      ).rejects.toThrow();
+    await h.transport('/verify-email', { identifier, code: freshCode });
+    await client.login(identifier, password);
+    expect(existing.client.account!.email).toBe('verified@example.test');
   });
 
   it('expires and limits account-bound email verification codes', async () => {
@@ -50,9 +94,9 @@ describe('Ultra accounts: real routes, real PostgreSQL SQL and real client crypt
     const challenge = await h.database.query<{ expires_at: string }>(
       "SELECT expires_at FROM ultra_challenges WHERE kind='verify-code'",
     );
-    expect(Number(challenge.rows[0].expires_at) - Date.now()).toBeGreaterThan(86300000);
+    expect(Number(challenge.rows[0].expires_at) - Date.now()).toBeGreaterThan(1700000);
     expect(Number(challenge.rows[0].expires_at) - Date.now()).toBeLessThanOrEqual(
-      86400000,
+      1800000,
     );
     const wrong = code === '00000000' ? '00000001' : '00000000';
     for (let i = 0; i < 5; i++)

@@ -66,7 +66,7 @@ export const sendUltraAccountEmail = async (
       text:
         kind === 'verify'
           ? /^\d{8}$/.test(token)
-            ? `Your Ultra Tasks verification code is: ${token}\nEnter it at ${config.publicUrl}/account. It expires in 24 hours. If you did not request this, ignore this email.`
+            ? `Your Ultra Tasks verification code is: ${token}\nEnter it at ${config.publicUrl}/account. Registration expires 30 minutes after signup; requesting a new code does not extend that time. If you did not request this, ignore this email.`
             : `Open this link to verify your email: ${link}\nThis link expires in 24 hours.`
           : `Open this link to recover your account: ${link}\nYour printed recovery key is also required. This link expires in one hour. Ultra Tasks cannot decrypt your data without your password or recovery key.`,
     });

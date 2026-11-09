@@ -276,6 +276,7 @@ model UltraAccount {
   sessions UltraSession[]
   factors UltraFactor[]
   recoveryCodes UltraRecoveryCode[]
+  @@index([verified, createdAt], map: "ultra_accounts_verified_created_at_idx")
   @@map("ultra_accounts")
 }
 model UltraSession {
@@ -327,6 +328,7 @@ model UltraChallenge {
   attempts Int @default(0)
   data Json
   @@index([expiresAt])
+  @@index([accountId, kind], map: "ultra_challenges_account_kind_idx")
   @@map("ultra_challenges")
 }
 

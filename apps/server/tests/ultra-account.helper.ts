@@ -45,6 +45,17 @@ export const createHarness = async (
     readFileSync(
       fileURLToPath(
         new URL(
+          '../prisma/migrations/20261109000000_ultra_registration_expiry/migration.sql',
+          import.meta.url,
+        ),
+      ),
+      'utf8',
+    ),
+  );
+  await database.exec(
+    readFileSync(
+      fileURLToPath(
+        new URL(
           '../prisma/migrations/20261105010000_ultra_scopes/migration.sql',
           import.meta.url,
         ),

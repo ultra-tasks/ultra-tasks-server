@@ -88,6 +88,7 @@ const opaqueMessage = z
   .max(4096)
   .regex(/^[A-Za-z0-9_+/=-]+$/);
 const challengeToken = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+const REGISTRATION_LIFETIME = 30 * 60 * 1000;
 const identifier = z.string().trim().toLowerCase().min(3).max(254);
 const credential = z.custom<RegistrationResponseJSON>(
   (value) => !!value && typeof value === 'object',
@@ -138,6 +139,24 @@ export const ultraAccountRoutes = async (
     if (!account) throw new AccountError(401);
     return account;
   };
+  const purgeExpiredRegistrations = async (): Promise<void> => {
+    await transaction(async (tx) => {
+      const expired = await tx.$queryRaw<{ id: string }[]>(
+        Prisma.sql`DELETE FROM ultra_accounts WHERE verified=false AND created_at<=${BigInt(Date.now() - REGISTRATION_LIFETIME)} RETURNING id`,
+      );
+      for (const account of expired)
+        await tx.$executeRaw(
+          Prisma.sql`DELETE FROM ultra_challenges WHERE account_id=${account.id}`,
+        );
+    });
+  };
+  const cleanupTimer = setInterval(() => {
+    void purgeExpiredRegistrations().catch(() =>
+      app.log.error('Expired registration cleanup failed'),
+    );
+  }, 60000);
+  cleanupTimer.unref();
+  app.addHook('onClose', async () => clearInterval(cleanupTimer));
   const route = (
     method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     url: string,
@@ -194,7 +213,11 @@ export const ultraAccountRoutes = async (
       let code = '';
       const issued = await transaction(async (tx) => {
         const locked = await lockAccount(tx, account.id);
-        if (locked.verified) return false;
+        if (
+          locked.verified ||
+          Number(locked.created_at) + REGISTRATION_LIFETIME <= Date.now()
+        )
+          return false;
         const previous = await one<{ digest: string }>(
           tx,
           Prisma.sql`SELECT digest FROM ultra_challenges WHERE account_id=${account.id} AND kind='verify-code'`,
@@ -210,7 +233,7 @@ export const ultraAccountRoutes = async (
           Prisma.sql`DELETE FROM ultra_challenges WHERE account_id=${account.id} AND kind='verify-code'`,
         );
         await tx.$executeRaw(
-          Prisma.sql`INSERT INTO ultra_challenges(digest,kind,account_id,expires_at,data) VALUES (${codeDigest},'verify-code',${account.id},${BigInt(Date.now() + DAY)},'{}'::jsonb)`,
+          Prisma.sql`INSERT INTO ultra_challenges(digest,kind,account_id,expires_at,data) VALUES (${codeDigest},'verify-code',${account.id},${BigInt(Number(locked.created_at) + REGISTRATION_LIFETIME)},'{}'::jsonb)`,
         );
         return true;
       });
@@ -285,6 +308,7 @@ export const ultraAccountRoutes = async (
   post('/register/start', async (req) => {
     if (options.registrationOpen === false)
       throw new AccountError(403, 'Account registration is closed on this server');
+    await purgeExpiredRegistrations();
     const input = body(
       req,
       z
@@ -415,6 +439,7 @@ export const ultraAccountRoutes = async (
     };
   });
   post('/verify-email', async (req) => {
+    await purgeExpiredRegistrations();
     const input = body(
       req,
       z.union([
@@ -427,7 +452,11 @@ export const ultraAccountRoutes = async (
       if (!account) throw new AccountError(401);
       const valid = await transaction(async (tx) => {
         const locked = await lockAccount(tx, account.id);
-        if (locked.verified) return false;
+        if (
+          locked.verified ||
+          Number(locked.created_at) + REGISTRATION_LIFETIME <= Date.now()
+        )
+          return false;
         const row = await one<{ digest: string }>(
           tx,
           Prisma.sql`UPDATE ultra_challenges SET attempts=attempts+1 WHERE account_id=${account.id} AND kind='verify-code' AND expires_at>${BigInt(Date.now())} AND attempts<5 RETURNING digest`,
@@ -460,6 +489,11 @@ export const ultraAccountRoutes = async (
       }>(tx, config, value, 'verify', true);
       const account = await lockAccount(tx, pending.accountId!);
       if (
+        !account.verified &&
+        Number(account.created_at) + REGISTRATION_LIFETIME <= Date.now()
+      )
+        throw new AccountError(401, 'Registration expired. Start again.');
+      if (
         pending.data.email &&
         (pending.data.version !== account.vault_version ||
           pending.data.oldEmail !== account.email)
@@ -479,6 +513,7 @@ export const ultraAccountRoutes = async (
   post(
     '/verification/resend',
     async (req) => {
+      await purgeExpiredRegistrations();
       const { identifier: name } = body(req, z.object({ identifier }).strict());
       const account = await accountByIdentifier(db, name);
       if (account && !account.verified) await newMail(account, 'verify');
