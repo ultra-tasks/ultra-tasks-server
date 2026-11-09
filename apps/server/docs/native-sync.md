@@ -67,6 +67,7 @@ Routes live under `/api/v2/accounts/sync`; exact executable contracts are
 | `/scopes/:scopeId/snapshot`, `/changes`                              | Consistent current heads plus signed transaction manifests; unchanged-cursor shortcut |
 | `/scopes/:scopeId/checkpoint`                                        | Retain the latest two explicit consistent checkpoints                                 |
 | `/scopes/:scopeId/migration/finish`                                  | Validate the frozen import's record count and activate the personal scope             |
+| `/scopes/:scopeId/replacement/start`, `/stage`, `/finish`            | Owner-authorized, atomic replacement of a populated personal scope                    |
 | `/recipients`, `/invites`, `/scopes/:scopeId/invites`                | Verified recipient lookup, inbox, invitation creation/acceptance/revocation           |
 | `/scopes/:scopeId/provisioning`, `/provision`                        | Owner delivery of grants after an invited email registers                             |
 | `/scopes/:scopeId/rotation/start`, `/stage`, `/finish`, `/provision` | Freeze, automatically re-encrypt, and atomically publish a new generation             |
@@ -172,14 +173,28 @@ private histories are not erased.
 
 ## Migration and app integration
 
-The native page requires legacy sync to be disabled and an explicit acknowledgement
-that old targets/devices have been retired. It saves a local recovery point first.
-Import this device's data is for an empty account; Use the account's existing data
-explicitly replaces this device's dataset while keeping that recovery point.
-A frozen encrypted migration journal uploads bounded batches and resumes on the
-same installed device. Another device cannot write into an in-progress import.
-The server activates the scope only after the inventory count matches. Source
-data survives interruption; subsequent local changes are captured separately.
+The app saves a local recovery point and stops the previous provider before linking.
+An empty account receives the local dataset automatically; a populated account
+requires an explicit local-or-account choice. Other devices must switch separately.
+A frozen encrypted migration journal uploads a new account's bounded batches and
+resumes on the same installed device. The server activates the scope only after
+the inventory count matches. Source data survives interruption; subsequent local
+changes are captured separately.
+
+Replacing an existing personal scope requires `personalReplacement` capability.
+The owner signs the expected scope version and hashes of each encrypted batch.
+The server validates and stages those batches without changing live heads, then
+checks the complete inventory and expected version before committing a new
+generation atomically. Concurrent account changes reject the replacement. A
+replacement includes an encrypted tombstone for every previous head absent from
+the new inventory, including existing tombstones. The server rejects inventories
+that omit an old head or change its entity type. This lets existing clients preserve
+offline edits as private conflict drafts, and these tombstones count toward the
+personal scope quota. A previous encrypted checkpoint is retained, and a repeated
+finish is idempotent.
+The personal checkpoint is retained as recovery evidence; the existing project
+restore UI does not restore it. An abandoned stage is superseded by the next
+owner-authorized attempt. This operation does not modify the old provider.
 
 Personal views keep the durable local operation log. A bridge maps its current
 projection to encrypted records, rebases remote results, and reuses the existing
@@ -195,8 +210,8 @@ Private shared-task plans and time can be exported there, including references
 to unavailable projects. Large legacy bulk changes can span several 100-record
 transactions; there is no cross-scope atomic write. Changed scopes currently
 download full consistent heads rather than a paginated incremental stream.
-Automatic legacy account fencing/final sync and provider retirement belong to
-the cutover milestone; this rollout does not silently dual-write legacy targets.
+Other devices and unrelated provider installations cannot be fenced remotely;
+the user must switch them separately.
 
 ## Platform sessions and reminders
 

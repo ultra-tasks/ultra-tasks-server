@@ -12,10 +12,7 @@ import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHarness, password } from './ultra-account.helper';
-import {
-  acknowledgeAppSyncConnection,
-  selectAppAccountServer,
-} from './app-account-ui.helper';
+import { selectAppAccountServer } from './app-account-ui.helper';
 import { totp } from '../src/ultra-account/security';
 
 describe('Better Auth + OPAQUE through the account website and real app', () => {
@@ -243,17 +240,9 @@ describe('Better Auth + OPAQUE through the account website and real app', () => 
         .getByLabel('Authenticator or 2FA recovery code')
         .fill(totp(mfaSecret, Math.floor(Date.now() / 30000) + 1));
       await page.getByRole('button', { name: 'Verify', exact: true }).click();
-      await page.getByText('Connect personal data', { exact: true }).waitFor();
-      await acknowledgeAppSyncConnection(page);
-      await page.getByRole('button', { name: 'Import this device’s data' }).click();
-      await browserExpect(
-        page.getByText('Connect personal data', { exact: true }),
-      ).toHaveCount(0, {
-        timeout: 30000,
-      });
       await browserExpect(
         page.getByRole('button', { name: 'Sync now', exact: true }),
-      ).toBeVisible();
+      ).toBeEnabled({ timeout: 30000 });
       await screenshot(page, 'app-03-connected');
       await browserExpect(page.locator('native-sync [role=alert]')).toHaveCount(0);
     } catch (error) {

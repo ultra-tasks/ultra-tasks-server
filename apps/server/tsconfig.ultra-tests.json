@@ -12,6 +12,8 @@
     "tests/ultra-accounts.spec.ts",
     "tests/ultra-accounts.browser.spec.ts",
     "tests/ultra-sync.spec.ts",
+    "tests/personal-replacement.spec.ts",
+    "tests/provider-migration.harness.ts",
     "tests/ultra-sync.browser.spec.ts",
     "tests/ultra-realtime.spec.ts",
     "tests/ultra-recovery.spec.ts",

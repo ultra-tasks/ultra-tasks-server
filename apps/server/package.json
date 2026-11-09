@@ -43,7 +43,7 @@
     "test:ultra-realtime": "tsc -p tsconfig.ultra-tests.json && vitest run tests/ultra-realtime.spec.ts",
     "test:ultra-recovery": "tsc -p tsconfig.ultra-tests.json && vitest run tests/ultra-recovery.spec.ts",
     "test:ultra-realtime:load": "vitest run --config vitest.native-load.config.ts",
-    "test:native": "tsc -p tsconfig.ultra-tests.json && vitest run tests/ultra-accounts.spec.ts tests/ultra-sync.spec.ts tests/ultra-realtime.spec.ts tests/ultra-recovery.spec.ts tests/private-profile.spec.ts tests/private-server.spec.ts tests/better-auth.spec.ts tests/browser-login.spec.ts",
+    "test:native": "tsc -p tsconfig.ultra-tests.json && vitest run tests/ultra-accounts.spec.ts tests/ultra-sync.spec.ts tests/personal-replacement.spec.ts tests/ultra-realtime.spec.ts tests/ultra-recovery.spec.ts tests/private-profile.spec.ts tests/private-server.spec.ts tests/better-auth.spec.ts tests/browser-login.spec.ts",
     "test:better-auth:browser": "tsc -p tsconfig.ultra-tests.json && vitest run --config vitest.better-auth-browser.config.ts",
     "test:better-auth:postgres": "tsc -p tsconfig.ultra-tests.json && vitest run --config vitest.better-auth-postgres.config.ts"
   },
