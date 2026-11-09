@@ -34,6 +34,7 @@ export const createHarness = async (
     registrationOpen?: boolean;
     privateOnly?: boolean;
     authEngine?: 'native' | 'better-auth';
+    turnstile?: { siteKey: string; secret: string; hostname: string };
   } = {},
 ) => {
   await opaqueReady;

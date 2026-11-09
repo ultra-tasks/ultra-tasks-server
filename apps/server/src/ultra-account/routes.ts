@@ -73,6 +73,7 @@ export interface UltraRoutesOptions {
   requireTermsConsent?: boolean;
   hasOperatorTerms?: boolean;
   registrationOpen?: boolean;
+  turnstile?: { siteKey: string; secret: string; hostname: string };
   sendMail: (
     email: string,
     kind: 'verify' | 'recover',
@@ -247,6 +248,7 @@ export const ultraAccountRoutes = async (
       },
       requireTermsConsent: options.requireTermsConsent ?? false,
       hasOperatorTerms: options.hasOperatorTerms ?? false,
+      turnstileSiteKey: options.turnstile?.siteKey,
     }),
     300,
   );
@@ -262,10 +264,42 @@ export const ultraAccountRoutes = async (
           username: UltraUsernameSchema.optional(),
           displayName: z.string().trim().max(100).default(''),
           registrationRequest: opaqueMessage,
+          turnstileToken: z.string().min(1).max(2048).optional(),
           termsAccepted: z.boolean().optional(),
         })
         .strict(),
     );
+    if (options.turnstile) {
+      if (!input.turnstileToken)
+        throw new AccountError(400, 'Complete the security check');
+      let verified = false;
+      try {
+        const response = await fetch(
+          'https://challenges.cloudflare.com/turnstile/v0/siteverify',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              secret: options.turnstile.secret,
+              response: input.turnstileToken,
+            }),
+            signal: AbortSignal.timeout(10000),
+          },
+        );
+        const result = (await response.json()) as {
+          success?: boolean;
+          hostname?: string;
+        };
+        verified =
+          response.ok &&
+          result.success === true &&
+          result.hostname === options.turnstile.hostname;
+      } catch {
+        throw new AccountError(503, 'Security check unavailable. Please try again.');
+      }
+      if (!verified)
+        throw new AccountError(400, 'Security check failed. Please try again.');
+    }
     if (options.requireTermsConsent && !input.termsAccepted)
       throw new AccountError(
         400,

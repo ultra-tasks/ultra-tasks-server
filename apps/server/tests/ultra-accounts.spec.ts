@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Prisma } from '@prisma/client';
 import { createHarness, password } from './ultra-account.helper';
 import { totp, totpStep, digest } from '../src/ultra-account/security';
-import { unlockBundle, randomKey } from '@ultra-tasks/account-crypto';
+import { AccountClient, unlockBundle, randomKey } from '@ultra-tasks/account-crypto';
 
 // Production-strength Argon2/OPAQUE can exceed the default 5s under parallel suite load.
 vi.setConfig({ testTimeout: 20000, hookTimeout: 30000 });
@@ -14,6 +14,64 @@ describe('Ultra accounts: real routes, real PostgreSQL SQL and real client crypt
   });
   afterEach(async () => {
     await h.close();
+    vi.unstubAllGlobals();
+  });
+
+  it('enforces Turnstile before enrollment and rejects a different hostname', async () => {
+    const secured = await createHarness({
+      turnstile: { siteKey: 'site-key', secret: 'secret-key', hostname: 'localhost' },
+    });
+    try {
+      const result = await secured.app.inject({
+        method: 'POST',
+        url: '/api/v2/accounts/register/start',
+        payload: { email: 'check@example.test', registrationRequest: 'x'.repeat(64) },
+      });
+      expect(result.statusCode).toBe(400);
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ success: true, hostname: 'other.example' }), {
+          status: 200,
+        }),
+      );
+      vi.stubGlobal('fetch', mockFetch);
+      const client = new AccountClient((path, body, token, method) =>
+        secured.transport(
+          path,
+          path === '/register/start'
+            ? { ...body, turnstileToken: 'response-token' }
+            : body,
+          token,
+          method,
+        ),
+      );
+      await expect(
+        client.prepareRegistration(
+          { email: 'check@example.test', displayName: 'Check' },
+          password,
+        ),
+      ).rejects.toThrow('Security check failed');
+      mockFetch.mockRejectedValueOnce(new Error('network unavailable'));
+      await expect(
+        client.prepareRegistration(
+          { email: 'check@example.test', displayName: 'Check' },
+          password,
+        ),
+      ).rejects.toThrow('Security check unavailable');
+      mockFetch.mockResolvedValue(
+        new Response(JSON.stringify({ success: true, hostname: 'localhost' }), {
+          status: 200,
+        }),
+      );
+      const prepared = await client.prepareRegistration(
+        { email: 'check@example.test', displayName: 'Check' },
+        password,
+      );
+      await client.register(prepared);
+      expect(secured.mail).toHaveLength(1);
+      expect(JSON.stringify(await client.init())).not.toContain('secret-key');
+    } finally {
+      await secured.close();
+    }
   });
 
   it('honors the operator consent policy before account enrollment and records acceptance', async () => {

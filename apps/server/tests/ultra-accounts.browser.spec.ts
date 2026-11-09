@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { chromium, Browser } from '@playwright/test';
 import fastifyStatic from '@fastify/static';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +10,52 @@ describe('encrypted account portal in Chromium with a real virtual WebAuthn auth
   let h: Awaited<ReturnType<typeof createHarness>>;
   let browser: Browser;
   let origin: string;
+  it('sends the signup challenge to the server before displaying recovery material', async () => {
+    const secured = await createHarness({
+      turnstile: { siteKey: 'test-site', secret: 'test-secret', hostname: '127.0.0.1' },
+    });
+    await secured.app.register(fastifyStatic, {
+      root: fileURLToPath(new URL('../public', import.meta.url)),
+    });
+    secured.app.get('/account', (_, reply) => reply.sendFile('ultra-account.html'));
+    await secured.app.listen({ host: '127.0.0.1', port: 0 });
+    const address = secured.app.server.address();
+    if (!address || typeof address === 'string')
+      throw new Error('Missing test server address');
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    const mockFetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true, hostname: '127.0.0.1' }), {
+        status: 200,
+      }),
+    );
+    vi.stubGlobal('fetch', mockFetch);
+    try {
+      await page.route('https://challenges.cloudflare.com/**', (route) =>
+        route.fulfill({
+          contentType: 'application/javascript',
+          body: "window.turnstile={render:(element,options)=>{options.callback('browser-token');return 'widget'},reset:()=>{}}",
+        }),
+      );
+      await page.goto(`http://127.0.0.1:${address.port}/account`);
+      await page.locator('#status').filter({ hasText: 'Ready.' }).waitFor();
+      await page.getByRole('button', { name: 'Create an account', exact: true }).click();
+      await page.locator('#signup-email').fill('turnstile@example.test');
+      await page.locator('#signup-password').fill(password);
+      await page.locator('#signup-confirm').fill(password);
+      await page.locator('#signup button').click();
+      await page
+        .locator('#status')
+        .filter({ hasText: 'Save or print' })
+        .waitFor({ timeout: 20000 });
+      expect(mockFetch).toHaveBeenCalledOnce();
+      expect(JSON.stringify(mockFetch.mock.calls)).toContain('browser-token');
+    } finally {
+      vi.unstubAllGlobals();
+      await context.close();
+      await secured.close();
+    }
+  }, 60000);
   beforeAll(async () => {
     h = await createHarness();
     await h.app.register(fastifyStatic, {
