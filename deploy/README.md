@@ -9,12 +9,13 @@ Download the versioned Compose bundle, select its tested immutable image tag or 
 ```sh
 sh scripts/setup.sh https://accounts.example.com ghcr.io/ultra-tasks/ultra-tasks-server:sha-FULL_COMMIT
 # Edit deploy/.env: configure real SMTP, domain, and public origin.
-# Provide deploy/legal/privacy.html and optionally terms.html (readable public files).
+# Publish a privacy policy: set ULTRA_PRIVACY_URL to its HTTPS address, or provide
+# deploy/legal/privacy.html (readable public file). terms.html is optional.
 sh scripts/install.sh
 sh scripts/diagnostics.sh
 ```
 
-Setup refuses to replace an existing configuration. It generates the stable server UUID, OPAQUE setup, auth secret, and database password once, in a private `deploy/.env`. Enrollment defaults to closed. To open signup, supply the operator's privacy document and set `ULTRA_REGISTRATION_OPEN=true`; consent is required by default. Restart with `sh scripts/compose.sh up -d --wait`. The operator must supply accurate privacy/retention/contact information; the project does not invent legal claims for an installation.
+Setup refuses to replace an existing configuration. It generates the stable server UUID, OPAQUE setup, auth secret, and database password once, in a private `deploy/.env`. Enrollment defaults to closed. To open signup, publish the operator's privacy policy (an `ULTRA_PRIVACY_URL` address that `/privacy.html` redirects to, or a `privacy.html` file) and set `ULTRA_REGISTRATION_OPEN=true`; consent is required by default. Restart with `sh scripts/compose.sh up -d --wait`. The operator must supply accurate privacy/retention/contact information; the project does not invent legal claims for an installation.
 
 Caddy handles HTTPS on reachable ports80/443. PostgreSQL has no published host port. The server runs as UID1001, so public legal documents need readable directories/files (755/644); secrets and backups remain private. CORS must list the actual trusted web-app origins. Native accounts and personal sync are available; legacy endpoints and project sharing are absent from the production runtime.
 

@@ -9,6 +9,7 @@ import { existsSync } from 'node:fs';
 import { loadConfigFromEnv, type ServerConfig } from './config';
 import { prisma } from './db';
 import { sendUltraAccountEmail } from './email';
+import { parsePrivacyPolicyUrl } from './privacy-url';
 import { loadUltraConfig, ultraAccountRoutes } from './ultra-account';
 
 /** The v1 entry point exposes accounts and personal sync, independently of legacy routes. */
@@ -25,14 +26,21 @@ export const createServer = (overrides: Partial<ServerConfig> = {}) => {
     process.env.ULTRA_REGISTRATION_OPEN === 'true' ||
     (!production && process.env.ULTRA_REGISTRATION_OPEN !== 'false');
   const legalDir = resolve(process.env.ULTRA_LEGAL_DIR || 'operator/legal');
-  const hasPrivacy = existsSync(resolve(legalDir, 'privacy.html'));
+  // One home for the policy: when ULTRA_PRIVACY_URL is set, /privacy.html (the
+  // link beside the sign-up consent box) redirects there and takes precedence
+  // over an operator file, so the policy never exists in two places.
+  const privacyUrl = parsePrivacyPolicyUrl(process.env.ULTRA_PRIVACY_URL);
+  const hasPrivacy =
+    privacyUrl !== undefined || existsSync(resolve(legalDir, 'privacy.html'));
   const hasTerms = existsSync(resolve(legalDir, 'terms.html'));
   const requireConsent =
     process.env.ULTRA_REQUIRE_TERMS_CONSENT === undefined
       ? production
       : process.env.ULTRA_REQUIRE_TERMS_CONSENT === 'true';
   if (registrationOpen && requireConsent && !hasPrivacy)
-    throw new Error('Provide operator/legal/privacy.html before opening registration');
+    throw new Error(
+      'Set ULTRA_PRIVACY_URL or provide operator/legal/privacy.html before opening registration',
+    );
 
   return {
     get fastifyServer(): FastifyInstance | undefined {
@@ -89,8 +97,12 @@ export const createServer = (overrides: Partial<ServerConfig> = {}) => {
         sendMail: sendUltraAccountEmail,
       });
       app.get('/', async (_request, reply) => reply.redirect('/account'));
+      if (privacyUrl)
+        app.get('/privacy.html', async (_request, reply) =>
+          reply.header('Cache-Control', 'no-store').redirect(privacyUrl),
+        );
       for (const [name, available] of [
-        ['privacy', hasPrivacy],
+        ['privacy', hasPrivacy && !privacyUrl],
         ['terms', hasTerms],
       ] as const) {
         if (available)
