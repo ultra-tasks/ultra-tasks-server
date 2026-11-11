@@ -1,0 +1,64 @@
+name: Account SDK release
+
+# Publishes the account SDK tarball the client pins by exact release URL
+# (sdk-v<version>/ultra-tasks-account-crypto-<version>.tgz). Run manually on main
+# after the version in packages/account-crypto/package.json has been bumped.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: SDK version, matching packages/account-crypto/package.json (e.g. 0.1.4)
+        required: true
+      notes:
+        description: Release notes (markdown)
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sdk-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run quiet -- db:generate
+      - name: Check the requested version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          case "$VERSION" in *[!0-9.]*|'') echo 'Invalid version' >&2; exit 1;; esac
+          test "$(node -p "require('./packages/account-crypto/package.json').version")" = "$VERSION"
+      - run: npm run quiet -- build:packages
+      - run: npm run quiet -- test:crypto
+      - run: npm run quiet -- test:native
+      - name: Pack
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          mkdir -p .tmp/sdk
+          npm pack -w @ultra-tasks/account-crypto --pack-destination .tmp/sdk
+          test -f ".tmp/sdk/ultra-tasks-account-crypto-$VERSION.tgz"
+          (cd .tmp/sdk && sha256sum "ultra-tasks-account-crypto-$VERSION.tgz" > "ultra-tasks-account-crypto-$VERSION.tgz.sha256")
+      - name: Publish prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          gh release create "sdk-v$VERSION" \
+            ".tmp/sdk/ultra-tasks-account-crypto-$VERSION.tgz" \
+            ".tmp/sdk/ultra-tasks-account-crypto-$VERSION.tgz.sha256" \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+            --title "Account and E2EE SDK $VERSION" --notes "$NOTES"
