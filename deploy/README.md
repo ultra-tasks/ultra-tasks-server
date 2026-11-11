@@ -17,13 +17,49 @@ sh scripts/diagnostics.sh
 
 Setup refuses to replace an existing configuration. It generates the stable server UUID, OPAQUE setup, auth secret, and database password once, in a private `deploy/.env`. Enrollment defaults to closed. To open signup, publish the operator's privacy policy (an `ULTRA_PRIVACY_URL` address that `/privacy.html` redirects to, or a `privacy.html` file) and set `ULTRA_REGISTRATION_OPEN=true`; consent is required by default. Restart with `sh scripts/compose.sh up -d --wait`. The operator must supply accurate privacy/retention/contact information; the project does not invent legal claims for an installation.
 
-Caddy handles HTTPS on reachable ports80/443. PostgreSQL has no published host port. The server runs as UID1001, so public legal documents need readable directories/files (755/644); secrets and backups remain private. CORS must list the actual trusted web-app origins. Native accounts and personal sync are available; legacy endpoints and project sharing are absent from the production runtime.
+Caddy handles HTTPS on reachable ports80/443. PostgreSQL has no published host port. The server runs as UID1001, so public legal documents need readable directories/files (755/644); secrets and backups remain private. CORS needs no entry for the web application served from this origin; list an origin only for a web application hosted elsewhere. Native accounts and personal sync are available; legacy endpoints and project sharing are absent from the production runtime.
 
 ### Existing HTTPS proxy
 
 When the machine already hosts websites, set `ULTRA_EXTERNAL_PROXY=true` and an unused `ULTRA_HTTP_PORT` in `deploy/.env`. The normal install/update/diagnostic commands then use `compose.proxy.yaml`: Caddy stays disabled and only the application is exposed at `127.0.0.1:ULTRA_HTTP_PORT`. PostgreSQL remains private. Forward the selected HTTPS hostname to that loopback port using the existing proxy, including WebSocket upgrades, `Host`, `X-Forwarded-For`, and `X-Forwarded-Proto`. Preserve the existing sites and certificate manager. Keep `PUBLIC_URL` set to the public HTTPS origin.
 
-The account dashboard uses `/account`, leaving the root of the same origin available for a future hosted application. Changing the WebAuthn origin later requires enrolling new passkeys, so choose that hostname before opening enrollment.
+The account dashboard uses `/account`, and the root of the same origin serves the web application once a bundle is installed (next section). Changing the WebAuthn origin later requires enrolling new passkeys, so choose that hostname before opening enrollment.
+
+## Web application bundle
+
+The server does not build or contain the web application. Each application release attaches `ultra-tasks-web-VERSION.tar.gz` and a `.sha256` file. Download both, then:
+
+```sh
+sh scripts/install-web.sh ultra-tasks-web-VERSION.tar.gz
+```
+
+The script verifies that the checksum file names that archive and matches it, rejects unsafe archive paths, unpacks into `deploy/web/VERSION/` (set `ULTRA_WEB_DIRECTORY` to move it), and switches `deploy/web/current`. To roll back, point `current` at an older version directory (`ln -sfn OLD_VERSION deploy/web/current`); no restart is needed. Hashed files from the previous release are carried forward for 30 days (`--keep-days`) and old version directories are pruned after that.
+
+With the bundled Caddy, `deploy/Caddyfile` sends `/account`, `/api/`, `/live`, `/health`, `/privacy.html` and `/terms.html` to the server and serves everything else from `current`. With no bundle installed, `/` still reaches the server and redirects to `/account`. The web application and the dashboard share an origin, so no CORS entry is needed; leave `CORS_ORIGINS` empty unless you host the web application on a different origin.
+
+Behind an existing HTTPS proxy (`ULTRA_EXTERNAL_PROXY=true`), give that proxy the same split. This nginx fragment is illustrative; adapt paths and TLS to your host and keep the WebSocket upgrade headers:
+
+```nginx
+location ~ ^/(account(/|$)|api/|live$|health$|privacy.html$|terms.html$) {
+    proxy_pass http://127.0.0.1:1900;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+location /oauth/callback/ {
+    root /srv/ultra-tasks/deploy/web/current;
+    rewrite ^ /oauth-callback.html break;
+}
+location / {
+    root /srv/ultra-tasks/deploy/web/current;
+    location ~ ^/(index.html|sw.js|ngsw-worker.js|ngsw.json|manifest.json)$ {
+        add_header Cache-Control "no-cache";
+    }
+}
+```
 
 Do not change the server ID or regenerate OPAQUE/authentication secrets during upgrades or hostname changes. Reusing an email on a new installation does not transfer encrypted data. Never use `down -v` for a database you intend to keep.
 

@@ -87,6 +87,7 @@ services:
       DOMAIN: ${DOMAIN:?Configure DOMAIN}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${ULTRA_WEB_DIRECTORY:-./web}:/srv/web:ro
       - caddy-data:/data
       - caddy-config:/config
     depends_on:

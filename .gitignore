@@ -14,3 +14,6 @@ apps/server/public/ultra-account.css
 apps/server/public/account-theme.css
 apps/server/public/account-assets/
 apps/server/account-public/
+
+# Installed web bundles (served by Caddy, not source)
+deploy/web/
