@@ -236,6 +236,7 @@ export const ultraAccountRoutes = async (
         totp: true,
         webauthn: true,
         scopedSync: true,
+        incrementalChanges: true,
         sharedProjects: !config.privateOnly,
         sharedRealtime: !config.privateOnly,
         personalRealtime: !!config.privateOnly,

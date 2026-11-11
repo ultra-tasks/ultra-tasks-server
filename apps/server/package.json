@@ -58,7 +58,7 @@
     "@simplewebauthn/types": "^12.0.0",
     "@sp/shared-schema": "https://github.com/ultra-tasks/ultra-tasks-server/releases/download/legacy-compat-535576e/sp-shared-schema-1.0.0.tgz",
     "@sp/sync-core": "https://github.com/ultra-tasks/ultra-tasks-server/releases/download/legacy-compat-64e72f9/sp-sync-core-1.0.0.tgz",
-    "@ultra-tasks/account-crypto": "0.1.3",
+    "@ultra-tasks/account-crypto": "0.1.4",
     "@ultra-tasks/sync-contract": "0.1.0",
     "bcryptjs": "^3.0.3",
     "better-auth": "1.7.18",

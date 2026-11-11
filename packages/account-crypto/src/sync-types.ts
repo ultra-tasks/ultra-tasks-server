@@ -88,6 +88,10 @@ export interface ScopeInfo {
 }
 export interface ScopeSnapshot {
   controlUnchanged?: boolean;
+  /** Only heads written after the requested cursor, within the same generation. */
+  delta?: boolean;
+  /** The mutation at `scope.sequence`; clients send it back to prove their cursor. */
+  cursorMutationId?: string | null;
   scope: ScopeInfo;
   heads: SyncWrite[];
   manifests: Mutation[];
@@ -143,6 +147,8 @@ export interface LocalScope {
   uncertain?: Mutation;
   uncertainKey?: string;
   conflicts: ConflictDraft[];
+  /** Mutation id at `info.sequence`, sent with change requests to detect a rewritten history. */
+  cursorMutationId?: string;
 }
 export interface SyncState {
   v: 2;

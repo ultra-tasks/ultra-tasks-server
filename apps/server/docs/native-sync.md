@@ -60,21 +60,21 @@ Routes live under `/api/v2/accounts/sync`; exact executable contracts are
 [scope-routes.ts](../src/ultra-account/scope-routes.ts) and
 [ultra-sync-contract.ts](../../shared-schema/src/ultra-sync-contract.ts).
 
-| Route group                                                          | Purpose                                                                               |
-| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| `/scopes`                                                            | List scopes; create personal/project scope with owner authorization                   |
-| `/scopes/:scopeId/transactions`                                      | Conditional atomic replacement of up to 100 encrypted records                         |
-| `/scopes/:scopeId/snapshot`, `/changes`                              | Consistent current heads plus signed transaction manifests; unchanged-cursor shortcut |
-| `/scopes/:scopeId/checkpoint`                                        | Retain the latest two explicit consistent checkpoints                                 |
-| `/scopes/:scopeId/migration/finish`                                  | Validate the frozen import's record count and activate the personal scope             |
-| `/recipients`, `/invites`, `/scopes/:scopeId/invites`                | Verified recipient lookup, inbox, invitation creation/acceptance/revocation           |
-| `/scopes/:scopeId/provisioning`, `/provision`                        | Owner delivery of grants after an invited email registers                             |
-| `/scopes/:scopeId/rotation/start`, `/stage`, `/finish`, `/provision` | Freeze, automatically re-encrypt, and atomically publish a new generation             |
-| `/socket-ticket`, `/events`                                          | Single-use scoped WebSocket subscriptions                                             |
-| `/scopes/:scopeId/receipt`                                           | Account/device-bound uncertain-write receipts                                         |
-| `/ownership/offers`, `/scopes/:scopeId/ownership/offer`, `/accept`   | Dual-signed ownership acceptance and automatic rekey                                  |
-| `/scopes/:scopeId/checkpoints`, `/restore/start`, `/restore/source`  | Owner-authorized project restore                                                      |
-| `/scopes/:scopeId/delete`                                            | Owner-signed project deletion                                                         |
+| Route group                                                          | Purpose                                                                                     |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `/scopes`                                                            | List scopes; create personal/project scope with owner authorization                         |
+| `/scopes/:scopeId/transactions`                                      | Conditional atomic replacement of up to 100 encrypted records                               |
+| `/scopes/:scopeId/snapshot`, `/changes`                              | Consistent current heads, or only those changed since a cursor, plus their signed manifests |
+| `/scopes/:scopeId/checkpoint`                                        | Retain the latest two explicit consistent checkpoints                                       |
+| `/scopes/:scopeId/migration/finish`                                  | Validate the frozen import's record count and activate the personal scope                   |
+| `/recipients`, `/invites`, `/scopes/:scopeId/invites`                | Verified recipient lookup, inbox, invitation creation/acceptance/revocation                 |
+| `/scopes/:scopeId/provisioning`, `/provision`                        | Owner delivery of grants after an invited email registers                                   |
+| `/scopes/:scopeId/rotation/start`, `/stage`, `/finish`, `/provision` | Freeze, automatically re-encrypt, and atomically publish a new generation                   |
+| `/socket-ticket`, `/events`                                          | Single-use scoped WebSocket subscriptions                                                   |
+| `/scopes/:scopeId/receipt`                                           | Account/device-bound uncertain-write receipts                                               |
+| `/ownership/offers`, `/scopes/:scopeId/ownership/offer`, `/accept`   | Dual-signed ownership acceptance and automatic rekey                                        |
+| `/scopes/:scopeId/checkpoints`, `/restore/start`, `/restore/source`  | Owner-authorized project restore                                                            |
+| `/scopes/:scopeId/delete`                                            | Owner-signed project deletion                                                               |
 
 Personal scope admission also requires the account's own owner identity, its
 single owner membership, and the vault's personal content key. Cached scope kinds
@@ -100,7 +100,27 @@ does not create a second mutation. A viewer downgrade preserves unsent edits
 as private drafts; an own-account receipt acknowledges a previously committed
 write even when the writer no longer has permission to resubmit it.
 
-Changed scopes download consistent current heads. A request with the current
+A device's first download is the complete set of consistent current heads.
+Afterwards, a client sends its cursor with `delta=1` and receives only the heads
+written after that cursor, with the manifests that authenticate them. The server
+reads them in the same locked transaction as the scope, through the
+`(scope_id, mutation_id)` index. Heads are never removed within a generation
+(deletes are tombstones), so overlaying the delta reaches the same state as a full
+snapshot. A delta never crosses a generation: after rekeying, ownership transfer or
+restore, and for any request without `delta=1`, the server returns the complete
+snapshot. Each response names the mutation at its sequence (`cursorMutationId`),
+and the client sends it back as `afterMutation`. If the database no longer has that
+mutation at that sequence, for example after restoring an older backup and
+committing again, the server returns the complete snapshot instead of "unchanged"
+or a delta. Clients verify a delta exactly like a snapshot and validate project
+hierarchy on the merged result. Within one generation they also reject any
+response, delta or complete, that returns an older revision of a record they hold
+or omits one. A device that already synced past a restored backup therefore stops
+with an error instead of silently diverging; it needs an explicit reconnect.
+Servers advertise `incrementalChanges` for discovery; clients always ask, and a
+server without it ignores the parameter and returns the complete snapshot. Upgrading
+builds the `(scope_id, mutation_id)` index without `CONCURRENTLY`, which briefly
+blocks writes to record heads on large installations. A request with the current
 control version and generation can reuse its previously authenticated membership
 list (`controlUnchanged`); clients reject a compact response if owner, key epoch,
 generation, control version, or ownership history differs from their cached
@@ -193,8 +213,9 @@ Shared projects currently use the native page inside the app. They are not yet
 projected into legacy Today/worklog/boards or plugin/REST/MCP task APIs.
 Private shared-task plans and time can be exported there, including references
 to unavailable projects. Large legacy bulk changes can span several 100-record
-transactions; there is no cross-scope atomic write. Changed scopes currently
-download full consistent heads rather than a paginated incremental stream.
+transactions; there is no cross-scope atomic write. A delta is one response, not
+a paginated stream: a device that was offline through many changes downloads all of
+them at once, at most the size of a full snapshot.
 Automatic legacy account fencing/final sync and provider retirement belong to
 the cutover milestone; this rollout does not silently dual-write legacy targets.
 

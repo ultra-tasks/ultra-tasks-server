@@ -51,7 +51,9 @@ The package also provides `SyncClient`, encrypted IndexedDB state storage,
 personal model codecs, shared-task field validation, and three-way merging.
 A client persists intents and the exact signed/encrypted in-flight transaction
 before sending it, retries uncertain writes verbatim, and preserves overlapping
-edits as private conflict drafts. The browser host holds one native workspace
+edits as private conflict drafts. After its first complete download, a client requests
+only heads changed since its cursor (`delta=1`), verifies them like a snapshot,
+and rejects any older revision than it already holds. The browser host holds one native workspace
 lease while unlocked. The local account/session cache and sync state are bound
 to the account and server; no password or unwrapped key is persisted there.
 

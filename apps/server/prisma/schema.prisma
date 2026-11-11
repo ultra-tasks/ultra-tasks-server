@@ -389,6 +389,7 @@ model UltraRecordHead {
   bytes Int
   scope UltraScope @relation(fields: [scopeId], references: [id], onDelete: Cascade)
   @@id([scopeId, entityId])
+  @@index([scopeId, mutationId])
   @@map("ultra_record_heads")
 }
 model UltraScopeMutation {

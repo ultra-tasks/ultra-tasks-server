@@ -18,7 +18,7 @@ Target: private account sync and the account dashboard. This is a development re
 
 The maintained [security and recovery record](security-and-recovery.md) distinguishes automated checks from release gates. The client integration covers two independent Angular clients, automatic delivery, offline concurrent changes, and reopening encrypted state. The Docker capacity fixture uses independent account sessions and real PostgreSQL connections; it also verifies that quota refusal retains pending encrypted intents across reopening.
 
-Capacity measurements are workload observations, not a hosted-user guarantee. Changed scopes still download consistent complete heads. Local client storage is not automatically encrypted by server E2EE. This release supports one application process; distributed notification/rate-limit/revocation coordination is future work.
+Capacity measurements are workload observations, not a hosted-user guarantee. After a device's first complete download, changed scopes download only heads changed since its cursor; complete downloads remain for new devices, key updates and the Android reminder worker. Local client storage is not automatically encrypted by server E2EE. This release supports one application process; distributed notification/rate-limit/revocation coordination is future work.
 
 ## Remaining release gates
 

@@ -281,9 +281,11 @@ export class SyncClient {
     this.authenticatedCertificates.add(key);
     return true;
   }
+  /** `base` is the verified state a delta overlays; validation then covers the result. */
   private async openSnapshot(
     value: ScopeSnapshot,
     key: string,
+    base: Record<string, PlainHead> = {},
   ): Promise<Record<string, PlainHead>> {
     const scope = value.scope;
     const manifests = new Map(
@@ -354,7 +356,7 @@ export class SyncClient {
     if (scope.kind === 'project')
       validateSharedHierarchy(
         Object.fromEntries(
-          Object.values(heads)
+          Object.values({ ...base, ...heads })
             .filter((h) => !h.deleted && h.entityType === 'shared.task')
             .map((h) => [h.entityId, h.value as SharedTask]),
         ),
@@ -697,10 +699,19 @@ export class SyncClient {
         }
       }
       const response = await this.request<
-        ScopeSnapshot | { scope: ScopeInfo; unchanged: true; controlUnchanged?: boolean }
+        | ScopeSnapshot
+        | {
+            scope: ScopeInfo;
+            unchanged: true;
+            controlUnchanged?: boolean;
+            cursorMutationId?: string | null;
+          }
       >(
         scope.downloaded
-          ? `/scopes/${scopeId}/changes?after=${scope.info.sequence}&generation=${scope.info.generation}&controlVersion=${scope.info.controlVersion}`
+          ? `/scopes/${scopeId}/changes?after=${scope.info.sequence}&generation=${scope.info.generation}&controlVersion=${scope.info.controlVersion}&delta=1` +
+              (scope.cursorMutationId
+                ? '&afterMutation=' + encodeURIComponent(scope.cursorMutationId)
+                : '')
           : `/scopes/${scopeId}/snapshot`,
       );
       const previous = scope.info;
@@ -718,13 +729,37 @@ export class SyncClient {
         response.scope.members = previous.members;
       }
       scope = await this.adopt(response.scope);
-      if ('heads' in response) {
+      if ('heads' in response && response.delta) {
+        // Servers without incremental changes ignore the request and send a full snapshot.
+        if (
+          response.scope.generation !== previous.generation ||
+          response.scope.epoch !== previous.epoch
+        )
+          throw new Error('Incremental changes cannot cross a key update');
+        const changed = await this.openSnapshot(response, scope.key, scope.heads);
+        for (const head of Object.values(changed))
+          if ((scope.heads[head.entityId]?.revision ?? 0) > head.revision)
+            throw new Error('Sync server returned an older record version');
+        this.rebase(scope, { ...scope.heads, ...changed });
+      } else if ('heads' in response) {
         const remote = await this.openSnapshot(response, scope.key);
+        // Within one generation heads are never removed and revisions only grow, so a
+        // complete snapshot must still contain everything this device verified before.
+        if (scope.downloaded && response.scope.generation === previous.generation)
+          for (const held of Object.values(scope.heads)) {
+            const current = remote[held.entityId];
+            if (!current)
+              throw new Error('Sync server omitted a record this device already has');
+            if (current.revision < held.revision)
+              throw new Error('Sync server returned an older record version');
+          }
         this.rebase(scope, remote);
         scope.downloaded = true;
       } else if (previous.epoch !== response.scope.epoch)
         throw new Error('Key update requires a complete snapshot');
       scope.info = response.scope;
+      if ('cursorMutationId' in response)
+        scope.cursorMutationId = response.cursorMutationId ?? undefined;
       if (
         scope.info.kind === 'project' &&
         scope.info.members.find((m) => m.authorization.accountId === this.accountId)

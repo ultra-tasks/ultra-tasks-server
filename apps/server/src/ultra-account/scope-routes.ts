@@ -26,6 +26,8 @@ import {
   putMember,
   scopeInfo,
   snapshot,
+  changesSince,
+  cursorMutationId,
   unsigned,
   validateMembership,
   type ScopeRow,
@@ -203,7 +205,10 @@ export const ultraScopeRoutes = async (
     });
   });
   route('GET', '/scopes/:scopeId/snapshot', (req) =>
-    withScope(req, false, (tx, scope) => snapshot(tx, scope)),
+    withScope(req, false, async (tx, scope) => ({
+      ...(await snapshot(tx, scope)),
+      cursorMutationId: await cursorMutationId(tx, scope),
+    })),
   );
   route('GET', '/scopes/:scopeId/receipt', (req) =>
     withScope(req, false, async (tx, scope, member) => {
@@ -221,22 +226,48 @@ export const ultraScopeRoutes = async (
   );
   route('GET', '/scopes/:scopeId/changes', (req) =>
     withScope(req, false, async (tx, scope) => {
-      const { after, generation, controlVersion } = z
+      const { after, afterMutation, generation, controlVersion, delta } = z
         .object({
           after: z.coerce.number().int().nonnegative(),
+          afterMutation: z.string().min(1).max(200).optional(),
           generation: z.coerce.number().int().positive(),
           controlVersion: z.coerce.number().int().positive().optional(),
+          delta: z.literal('1').optional(),
         })
         .parse(req.query);
       const compact =
         controlVersion === scope.control_version && generation === scope.generation;
-      if (after === scope.sequence && generation === scope.generation)
+      const cursor = await cursorMutationId(tx, scope);
+      // The client's cursor names the mutation it last saw. If this database no
+      // longer has that mutation at that sequence (for example after restoring an
+      // older backup and committing again), the sequence numbers no longer mean the
+      // same history: neither "unchanged" nor a delta is safe, so send everything.
+      const cursorMatches =
+        afterMutation === undefined ||
+        !!(await one(
+          tx,
+          Prisma.sql`SELECT 1 FROM ultra_scope_mutations WHERE scope_id=${scope.id} AND id=${afterMutation} AND sequence=${after}`,
+        ));
+      if (cursorMatches && after === scope.sequence && generation === scope.generation)
         return {
           scope: await scopeInfo(tx, scope, compact),
           unchanged: true,
+          cursorMutationId: cursor,
           ...(compact ? { controlUnchanged: true } : {}),
         };
-      return snapshot(tx, scope, compact);
+      // A delta never crosses a generation: rekeying, ownership transfer and restore
+      // re-encrypt or replace heads, so those clients need the complete snapshot.
+      if (
+        cursorMatches &&
+        delta &&
+        generation === scope.generation &&
+        after < scope.sequence
+      )
+        return {
+          ...(await changesSince(tx, scope, after, compact)),
+          cursorMutationId: cursor,
+        };
+      return { ...(await snapshot(tx, scope, compact)), cursorMutationId: cursor };
     }),
   );
   route('POST', '/scopes/:scopeId/transactions', async (req) => {

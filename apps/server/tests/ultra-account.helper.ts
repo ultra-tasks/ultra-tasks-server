@@ -73,6 +73,17 @@ export const createHarness = async (
       'utf8',
     ),
   );
+  await database.exec(
+    readFileSync(
+      fileURLToPath(
+        new URL(
+          '../prisma/migrations/20261111000000_ultra_record_heads_mutation_index/migration.sql',
+          import.meta.url,
+        ),
+      ),
+      'utf8',
+    ),
+  );
   const rawDb = {
     $queryRaw: async (sql: Prisma.Sql) =>
       (await database.query(sql.text, sql.values)).rows,

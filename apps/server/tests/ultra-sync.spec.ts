@@ -297,6 +297,172 @@ describe('native encrypted personal sync and project sharing', () => {
       title: 'Created by editor',
     });
   }, 60000);
+  it('downloads only records changed since the cursor and keeps full snapshots for new devices and older clients', async () => {
+    harness = await createHarness();
+    const { client: account } = await harness.register();
+    const first = (await device(account)).client;
+    const id = await first.createScope('personal');
+    await first.edit(
+      id,
+      Array.from({ length: 30 }, (_, index) => ({
+        entityId: 'task-' + index,
+        entityType: 'personal.task',
+        value: { title: 'task ' + index },
+      })),
+    );
+    await first.syncScope(id);
+    const downloads: { path: string; response: ScopeSnapshot }[] = [];
+    const recording = new AccountClient(async (...args) => {
+      const result = await harness.transport(...args);
+      if (args[0].includes('/changes?') || args[0].endsWith('/snapshot'))
+        downloads.push({ path: args[0], response: result as ScopeSnapshot });
+      return result;
+    });
+    await recording.login('alice', password);
+    const second = (await device(recording)).client;
+    await second.refreshScopes();
+    await second.syncScope(id);
+    expect(downloads.at(-1)?.path).toMatch(/\/snapshot$/);
+    expect(downloads.at(-1)?.response.heads).toHaveLength(30);
+
+    await first.edit(id, [
+      { entityId: 'task-3', entityType: 'personal.task', value: { title: 'edited' } },
+      { entityId: 'task-7', entityType: 'personal.task', value: null, deleted: true },
+    ]);
+    await first.syncScope(id);
+    await second.syncScope(id);
+    const delta = downloads.at(-1)!;
+    expect(delta.path).toContain('delta=1');
+    expect(delta.response.delta).toBe(true);
+    expect(delta.response.heads.map((h) => h.record.header.entityId).sort()).toEqual([
+      'task-3',
+      'task-7',
+    ]);
+    expect(second.records(id)['task-3'].value).toEqual({ title: 'edited' });
+    expect(second.records(id)['task-7']).toBeUndefined();
+    expect(Object.keys(second.records(id))).toHaveLength(29);
+    expect(second.records(id, true)).toEqual(first.records(id, true));
+
+    // A client that does not ask for a delta keeps receiving the complete snapshot.
+    const full = await account.request<ScopeSnapshot>(
+      `/sync/scopes/${id}/changes?after=1&generation=1`,
+    );
+    expect(full.delta).toBeUndefined();
+    expect(full.heads).toHaveLength(30);
+    // A cursor from another generation never receives a delta.
+    const otherGeneration = await account.request<ScopeSnapshot>(
+      `/sync/scopes/${id}/changes?after=1&generation=2&delta=1`,
+    );
+    expect(otherGeneration.delta).toBeUndefined();
+    expect(otherGeneration.heads).toHaveLength(30);
+  }, 60000);
+  it('rejects a delta that replays an authenticated older record version', async () => {
+    harness = await createHarness();
+    const { client: account } = await harness.register();
+    const first = (await device(account)).client;
+    const id = await first.createScope('personal');
+    await first.edit(id, [{ entityId: 'a', entityType: 'personal.task', value: 'one' }]);
+    await first.syncScope(id);
+    const old = await account.request<ScopeSnapshot>(`/sync/scopes/${id}/snapshot`);
+    await first.edit(id, [{ entityId: 'a', entityType: 'personal.task', value: 'two' }]);
+    await first.syncScope(id);
+    let replay = false;
+    let stripDelta = false;
+    const wrapped = new AccountClient(async (...args) => {
+      const result = (await harness.transport(...args)) as ScopeSnapshot;
+      if (!replay || !args[0].includes('/changes?') || !result.delta) return result;
+      if (stripDelta) {
+        const { delta: _delta, ...complete } = result;
+        return { ...complete, heads: old.heads, manifests: old.manifests };
+      }
+      return {
+        ...result,
+        heads: [...result.heads, ...old.heads],
+        manifests: [...result.manifests, ...old.manifests],
+      };
+    });
+    await wrapped.login('alice', password);
+    const second = (await device(wrapped)).client;
+    await second.refreshScopes();
+    await second.syncScope(id);
+    expect(second.records(id)['a'].value).toBe('two');
+    await first.edit(id, [{ entityId: 'b', entityType: 'personal.task', value: 'new' }]);
+    await first.syncScope(id);
+    replay = true;
+    await expect(second.syncScope(id)).rejects.toThrow('older record version');
+    expect(second.records(id)['a'].value).toBe('two');
+    // Dropping the delta marker turns the same replay into a "complete" snapshot,
+    // which must meet the same rule within one generation.
+    stripDelta = true;
+    await expect(second.syncScope(id)).rejects.toThrow('older record version');
+    expect(second.records(id)['a'].value).toBe('two');
+    replay = false;
+    await second.syncScope(id);
+    expect(second.records(id)['b'].value).toBe('new');
+  }, 60000);
+  it('applies a delta whose earlier transaction was partly superseded', async () => {
+    harness = await createHarness();
+    const { client: account } = await harness.register();
+    const first = (await device(account)).client;
+    const second = (await device(account)).client;
+    const id = await first.createScope('personal');
+    await first.edit(id, [{ entityId: 'x', entityType: 'personal.task', value: 0 }]);
+    await first.syncScope(id);
+    await second.refreshScopes();
+    await second.syncScope(id);
+    await first.edit(id, [
+      { entityId: 'a', entityType: 'personal.task', value: 1 },
+      { entityId: 'b', entityType: 'personal.task', value: 1 },
+    ]);
+    await first.syncScope(id);
+    await first.edit(id, [{ entityId: 'a', entityType: 'personal.task', value: 2 }]);
+    await first.syncScope(id);
+    await first.edit(id, [
+      { entityId: 'b', entityType: 'personal.task', value: null, deleted: true },
+    ]);
+    await first.syncScope(id);
+    await second.syncScope(id);
+    expect(second.records(id, true)).toEqual(first.records(id, true));
+  }, 60000);
+  it('refuses to continue silently after the server history is rewritten', async () => {
+    harness = await createHarness();
+    const { client: account } = await harness.register();
+    const first = (await device(account)).client;
+    const second = (await device(account)).client;
+    const id = await first.createScope('personal');
+    await first.edit(id, [{ entityId: 'x', entityType: 'personal.task', value: 'x' }]);
+    await first.syncScope(id);
+    await second.refreshScopes();
+    await second.syncScope(id);
+    await first.edit(id, [{ entityId: 'y', entityType: 'personal.task', value: 'y' }]);
+    await first.syncScope(id);
+    await second.syncScope(id);
+    expect(second.records(id).y).toBeDefined();
+    // Restore the database to before sequence 2, then let another device commit
+    // twice so the sequence numbers catch up with a different history.
+    const [lost] = await harness.db.$queryRaw<{ id: string }[]>(
+      Prisma.sql`SELECT id FROM ultra_scope_mutations WHERE scope_id=${id} AND sequence=2`,
+    );
+    await harness.db.$executeRaw(
+      Prisma.sql`DELETE FROM ultra_record_heads WHERE scope_id=${id} AND mutation_id=${lost.id}`,
+    );
+    await harness.db.$executeRaw(
+      Prisma.sql`DELETE FROM ultra_scope_mutations WHERE id=${lost.id}`,
+    );
+    await harness.db.$executeRaw(
+      Prisma.sql`UPDATE ultra_scopes SET sequence=1 WHERE id=${id}`,
+    );
+    const third = (await device(account)).client;
+    await third.refreshScopes();
+    await third.syncScope(id);
+    await third.edit(id, [{ entityId: 'z', entityType: 'personal.task', value: 'z' }]);
+    await third.syncScope(id);
+    await third.edit(id, [{ entityId: 'w', entityType: 'personal.task', value: 'w' }]);
+    await third.syncScope(id);
+    await expect(second.syncScope(id)).rejects.toThrow(
+      'omitted a record this device already has',
+    );
+  }, 60000);
   it('refuses substituted heads, missing transaction members, and scope/recipient access', async () => {
     harness = await createHarness();
     const { client: account } = await harness.register();

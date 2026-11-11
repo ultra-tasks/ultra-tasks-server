@@ -118,6 +118,46 @@ export const snapshot = async (
     )
   ).map((row) => row.manifest),
 });
+/** The mutation at the scope's current sequence, or null when none exists there. */
+export const cursorMutationId = async (
+  db: UltraDb,
+  scope: ScopeRow,
+): Promise<string | null> =>
+  (
+    await one<{ id: string }>(
+      db,
+      Prisma.sql`SELECT id FROM ultra_scope_mutations WHERE scope_id=${scope.id} AND sequence=${scope.sequence}`,
+    )
+  )?.id ?? null;
+/**
+ * Current heads written after `after`, with the manifests that authenticate them.
+ * Valid only within one generation: heads are never deleted inside a generation
+ * (deletes are tombstones), so a client holding every head up to `after` reaches the
+ * same state as a full snapshot by overlaying these. Referenced manifests are never
+ * pruned, so any cursor in the current generation can be served.
+ */
+export const changesSince = async (
+  db: UltraDb,
+  scope: ScopeRow,
+  after: number,
+  compact = false,
+): Promise<ScopeSnapshot & { delta: true }> => {
+  // Manifests are fetched once each: a manifest holds every write of its
+  // transaction, so joining it onto each head would repeat it per record.
+  const heads = await db.$queryRaw<HeadRow[]>(
+    Prisma.sql`SELECT h.* FROM ultra_scope_mutations m JOIN ultra_record_heads h ON h.scope_id=m.scope_id AND h.mutation_id=m.id WHERE m.scope_id=${scope.id} AND m.sequence>${after} ORDER BY h.entity_id`,
+  );
+  const manifests = await db.$queryRaw<{ manifest: Mutation }[]>(
+    Prisma.sql`SELECT m.manifest FROM ultra_scope_mutations m WHERE m.scope_id=${scope.id} AND m.sequence>${after} AND EXISTS (SELECT 1 FROM ultra_record_heads h WHERE h.scope_id=m.scope_id AND h.mutation_id=m.id) ORDER BY m.sequence`,
+  );
+  return {
+    ...(compact ? { controlUnchanged: true } : {}),
+    delta: true,
+    scope: await scopeInfo(db, scope, compact),
+    heads: heads.map((row) => row.write),
+    manifests: manifests.map((row) => row.manifest),
+  };
+};
 export const validateMembership = async (
   db: UltraDb,
   config: UltraConfig,
