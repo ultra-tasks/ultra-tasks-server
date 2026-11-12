@@ -248,7 +248,10 @@ describe('native sync and sharing through the Angular app in Chromium', () => {
     expect(storage).not.toContain('Bobby private planning');
     expect(storage).not.toContain('bob has a different password');
     await alice
-      .getByRole('button', { name: 'Disconnect UltraSync on this device', exact: true })
+      .getByRole('button', {
+        name: 'Disconnect UltraTasks Account on this device',
+        exact: true,
+      })
       .click();
     await alice
       .getByRole('button', { name: 'Sign in and unlock', exact: true })

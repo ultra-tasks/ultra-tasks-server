@@ -148,7 +148,7 @@ describe('private v1 sync through two real Angular clients', () => {
         ).toHaveCount(1, {
           timeout: 15000,
         });
-      // Locking and a full restart still reserve the saved UltraSync connection.
+      // Locking and a full restart still reserve the saved UltraTasks account connection.
       await second.goto(origin + '/#/native-sync');
       const nativePage = second.locator('native-sync:visible');
       await browserExpect(nativePage).toHaveCount(1);
@@ -165,12 +165,17 @@ describe('private v1 sync through two real Angular clients', () => {
       await browserExpect(
         second.getByRole('option', { name: 'WebDAV — personal sync only', exact: true }),
       ).toBeEnabled();
-      await second.getByRole('option', { name: 'UltraSync', exact: true }).click();
+      await second
+        .getByRole('option', { name: 'UltraTasks Account', exact: true })
+        .click();
       await picker
-        .getByRole('button', { name: 'Continue with UltraSync', exact: true })
+        .getByRole('button', { name: 'Continue with UltraTasks Account', exact: true })
         .click();
       await second
-        .getByRole('button', { name: 'Disconnect UltraSync on this device', exact: true })
+        .getByRole('button', {
+          name: 'Disconnect UltraTasks Account on this device',
+          exact: true,
+        })
         .click();
       await second.goto(origin + '/#/tag/TODAY/tasks');
       for (const title of [
