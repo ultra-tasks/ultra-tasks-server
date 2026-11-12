@@ -40,7 +40,7 @@ jobs:
         run: |
           case "$VERSION" in *[!0-9.]*|'') echo 'Invalid version' >&2; exit 1;; esac
           test "$(node -p "require('./packages/account-crypto/package.json').version")" = "$VERSION"
-      - run: npm run quiet -- build:packages
+      - run: npm run quiet -- build
       - run: npm run quiet -- test:crypto
       - run: npm run quiet -- test:native
       - name: Pack
