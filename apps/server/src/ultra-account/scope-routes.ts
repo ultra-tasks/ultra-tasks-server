@@ -10,6 +10,7 @@ import {
   type Mutation,
 } from '@ultra-tasks/account-crypto';
 import { registerScopeRecovery } from './scope-recovery-routes';
+import { registerPersonalReplacement } from './personal-replacement-routes';
 import { UltraMembershipSchema, UltraMutationSchema } from '@ultra-tasks/sync-contract';
 import { AccountError, authenticateAccount, type UltraConfig } from './security';
 import {
@@ -326,6 +327,7 @@ export const ultraScopeRoutes = async (
       return { complete: true };
     });
   });
+  registerPersonalReplacement({ route, withScope, owner, config });
   registerScopeRecovery({ route, withScope, owner, db, config, auth, transaction });
   if (config.privateOnly) return;
 

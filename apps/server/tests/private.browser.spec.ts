@@ -9,10 +9,7 @@ import {
 import fastifyStatic from '@fastify/static';
 import { resolve } from 'node:path';
 import { createHarness, password } from './ultra-account.helper';
-import {
-  acknowledgeAppSyncConnection,
-  selectAppAccountServer,
-} from './app-account-ui.helper';
+import { selectAppAccountServer } from './app-account-ui.helper';
 
 describe('private v1 sync through two real Angular clients', () => {
   let harness: Awaited<ReturnType<typeof createHarness>>;
@@ -74,11 +71,10 @@ describe('private v1 sync through two real Angular clients', () => {
     alreadyLinked = false,
   ): Promise<void> => {
     await unlock(page);
-    if (!alreadyLinked) {
+    if (!alreadyLinked && !importLocal) {
       await page
         .getByText('Connect personal data', { exact: true })
         .waitFor({ timeout: 30000 });
-      await acknowledgeAppSyncConnection(page);
       await page
         .getByRole('button', {
           name: importLocal
@@ -87,9 +83,9 @@ describe('private v1 sync through two real Angular clients', () => {
         })
         .click();
     }
-    await page
-      .getByRole('button', { name: 'Sync now', exact: true })
-      .waitFor({ timeout: 30000 });
+    await browserExpect(
+      page.getByRole('button', { name: 'Sync now', exact: true }),
+    ).toBeEnabled({ timeout: 30000 });
     await expect
       .poll(
         async () => ({
@@ -168,7 +164,7 @@ describe('private v1 sync through two real Angular clients', () => {
       await picker.getByRole('combobox').click();
       await browserExpect(
         second.getByRole('option', { name: 'WebDAV — personal sync only', exact: true }),
-      ).toHaveAttribute('aria-disabled', 'true');
+      ).toBeEnabled();
       await second.getByRole('option', { name: 'UltraSync', exact: true }).click();
       await picker
         .getByRole('button', { name: 'Continue with UltraSync', exact: true })

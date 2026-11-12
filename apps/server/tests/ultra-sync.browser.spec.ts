@@ -4,10 +4,7 @@ import fastifyStatic from '@fastify/static';
 import { resolve } from 'node:path';
 import { Prisma } from '@prisma/client';
 import { createHarness, password } from './ultra-account.helper';
-import {
-  acknowledgeAppSyncConnection,
-  selectAppAccountServer,
-} from './app-account-ui.helper';
+import { selectAppAccountServer } from './app-account-ui.helper';
 
 describe('native sync and sharing through the Angular app in Chromium', () => {
   let h: Awaited<ReturnType<typeof createHarness>>;
@@ -77,15 +74,12 @@ describe('native sync and sharing through the Angular app in Chromium', () => {
     await page.getByLabel('Email or username').fill(username);
     await page.getByLabel('Password', { exact: true }).fill(pw);
     await page.getByRole('button', { name: 'Sign in and unlock' }).click();
-    await page
-      .getByText('Connect personal data', { exact: true })
-      .waitFor({ timeout: 30000 });
-    await acknowledgeAppSyncConnection(page);
-    await page
-      .getByRole('button', {
-        name: migrate ? 'Import this device’s data' : 'Use the account’s existing data',
-      })
-      .click();
+    if (!migrate) {
+      await page
+        .getByText('Connect personal data', { exact: true })
+        .waitFor({ timeout: 30000 });
+      await page.getByRole('button', { name: 'Use the account’s existing data' }).click();
+    }
     await page.waitForFunction(
       () =>
         !!document.querySelector('native-sync [role=alert]') ||
@@ -321,7 +315,6 @@ describe('native sync and sharing through the Angular app in Chromium', () => {
         );
       expect((await handoffs()).length).toBeGreaterThan(0);
       expect((await handoffs()).every((count) => count === 0)).toBe(true);
-      await acknowledgeAppSyncConnection(page);
       await page.getByRole('button', { name: 'Use the account’s existing data' }).click();
       await page.getByRole('heading', { name: 'Shared projects' }).waitFor();
       await expect

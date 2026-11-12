@@ -11,7 +11,3 @@ export const selectAppAccountServer = async (
   if (await custom.isVisible()) await custom.check();
   await input.fill(origin);
 };
-
-export const acknowledgeAppSyncConnection = async (page: Page): Promise<void> => {
-  await page.getByLabel('I have disconnected any previous sync provider').check();
-};

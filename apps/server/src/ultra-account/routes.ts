@@ -240,6 +240,7 @@ export const ultraAccountRoutes = async (
         sharedProjects: !config.privateOnly,
         sharedRealtime: !config.privateOnly,
         personalRealtime: !!config.privateOnly,
+        personalReplacement: true,
         registrationOpen: options.registrationOpen !== false,
         scopeRecovery: true,
         browserMfa: true,

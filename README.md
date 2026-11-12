@@ -30,6 +30,8 @@ Open http://localhost:1900/account and http://localhost:8025 for development ema
 
 The new entry point exposes only accounts, personal sync with authenticated wakeup notifications, and the dashboard. It omits legacy authentication, legacy sync, project sharing, and shared realtime. The installation bundle and setup/update/backup/restore commands are in [deploy](deploy/README.md); inherited Compose/Helm/deployment files under apps/server are historical references, not the supported v1 installation. Production enrollment defaults to closed.
 
+The provider-switching update adds a database migration for staging encrypted personal-data replacements. Use the supported update command to back up and apply migrations before starting the new image. Clients detect support through server capabilities; older self-hosted servers cannot replace a populated personal account until upgraded.
+
 After checks and native AMD64/ARM64 lifecycle acceptance pass on `main`, CI publishes a development image tagged `ghcr.io/ultra-tasks/ultra-tasks-server:sha-<full-commit>`. Verify the workflow and registry access before using a tag. The container package is public and can be pulled anonymously; source builds and dependency artifacts also need no private credentials. There is no stable 1.0.0 image yet.
 
 ## Validation
