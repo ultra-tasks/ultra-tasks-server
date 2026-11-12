@@ -1,0 +1,27 @@
+name: Publish release draft
+
+# Publishes an existing draft release (for example one prepared by the
+# server release draft workflow) after a maintainer approved it.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag of the draft release to publish (e.g. server-v0.1.0-beta.2)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Publish the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          case "$TAG" in *[!a-zA-Z0-9._-]*|'') echo 'Invalid tag' >&2; exit 1;; esac
+          test "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
