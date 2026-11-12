@@ -1,0 +1,84 @@
+name: Server release draft
+
+# Prepares a draft server prerelease for a main commit whose CI run (checks,
+# AMD64/ARM64 installation and upgrade drills, published-image acceptance)
+# succeeded. It pins the published image by digest and attaches the matching
+# Compose bundle. A maintainer reviews and publishes the draft.
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Full 40-character main commit with a successful CI run
+        required: true
+      tag:
+        description: Release tag (e.g. server-v0.1.0-beta.2)
+        required: true
+      title:
+        description: Release title
+        required: true
+      notes:
+        description: Release notes (markdown); the image and digest are appended
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: server-release
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check inputs and the revision's CI result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVISION: ${{ inputs.revision }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          case "$REVISION" in *[!a-f0-9]*|'') echo 'Invalid revision' >&2; exit 1;; esac
+          test "${#REVISION}" = 40
+          case "$TAG" in server-v*) ;; *) echo 'Tag must start with server-v' >&2; exit 1;; esac
+          case "$TAG" in *[!a-zA-Z0-9._-]*) echo 'Invalid tag' >&2; exit 1;; esac
+          conclusion=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$REVISION&status=completed" \
+            --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')
+          test "$conclusion" -ge 1 || { echo 'No successful CI run for this revision' >&2; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          ref: ${{ inputs.revision }}
+          persist-credentials: false
+      - name: Resolve the published image digest
+        id: image
+        env:
+          REVISION: ${{ inputs.revision }}
+        run: |
+          image="ghcr.io/ultra-tasks/ultra-tasks-server:sha-$REVISION"
+          digest=$(docker buildx imagetools inspect "$image" --format '{{json .Manifest}}' | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).digest')
+          case "$digest" in sha256:*) ;; *) echo 'Could not resolve digest' >&2; exit 1;; esac
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Package the matching operator bundle
+        run: sh scripts/package-release.sh
+      - name: Create the draft prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVISION: ${{ inputs.revision }}
+          TAG: ${{ inputs.tag }}
+          TITLE: ${{ inputs.title }}
+          NOTES: ${{ inputs.notes }}
+          IMAGE: ${{ steps.image.outputs.image }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          {
+            printf '%s\n\n' "$NOTES"
+            printf '%s\n\n' "The attached Compose bundle is built from \`$REVISION\` and pins this public multi-architecture image:"
+            printf '%s\n%s\n%s\n\n' '```text' "$IMAGE" '```'
+            printf '%s\n\n' "Registry digest: \`$DIGEST\`."
+            printf '%s\n\n%s\n%s\n%s\n' 'Update an existing installation by digest (it stops traffic, takes a paired backup, migrates and health-checks):' '```sh' "sh scripts/update.sh ghcr.io/ultra-tasks/ultra-tasks-server@$DIGEST" '```'
+          } > .tmp/release-notes.md
+          gh release create "$TAG" .tmp/releases/* \
+            --repo "$GITHUB_REPOSITORY" --target "$REVISION" --draft --prerelease \
+            --title "$TITLE" --notes-file .tmp/release-notes.md
