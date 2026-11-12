@@ -19,13 +19,65 @@ import {
 
 declare global {
   interface Window {
+    turnstile?: {
+      render(
+        element: HTMLElement,
+        options: {
+          sitekey: string;
+          callback: (token: string) => void;
+          'expired-callback': () => void;
+          'error-callback': () => void;
+        },
+      ): string;
+      reset(id: string): void;
+    };
     SimpleWebAuthnBrowser: {
       startRegistration(input: { optionsJSON: object }): Promise<unknown>;
       startAuthentication(input: { optionsJSON: object }): Promise<unknown>;
     };
   }
 }
-const client = new AccountClient(httpTransport(location.origin));
+let turnstileToken = '';
+let turnstileRequired = false;
+let turnstileWidget = '';
+const accountTransport = httpTransport(location.origin);
+const client = new AccountClient((path, body, accessToken, method) =>
+  accountTransport(
+    path,
+    path === '/register/start' && turnstileRequired ? { ...body, turnstileToken } : body,
+    accessToken,
+    method,
+  ),
+);
+const configureTurnstile = (siteKey: string): void => {
+  turnstileRequired = true;
+  const container = document.getElementById('signup-turnstile')!;
+  container.hidden = false;
+  const script = document.createElement('script');
+  script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+  script.async = true;
+  script.onload = () => {
+    if (!window.turnstile) {
+      status('Security check could not load. Please refresh and try again.', 'error');
+      return;
+    }
+    turnstileWidget = window.turnstile!.render(container, {
+      sitekey: siteKey,
+      callback: (value) => {
+        turnstileToken = value;
+      },
+      'expired-callback': () => {
+        turnstileToken = '';
+      },
+      'error-callback': () => {
+        turnstileToken = '';
+      },
+    });
+  };
+  script.onerror = () =>
+    status('Security check could not load. Please refresh and try again.', 'error');
+  document.head.appendChild(script);
+};
 const params = new URLSearchParams(location.search);
 const loginBinding = new URLSearchParams(location.hash.slice(1)).get('binding');
 const loginReferenceKey = 'ultra-browser-login-v1';
@@ -244,15 +296,22 @@ on('signup', async () => {
   const password = secret('signup-password');
   const confirmation = secret('signup-confirm');
   if (password !== confirmation) throw new Error('Passwords do not match');
-  prepared = await client.prepareRegistration(
-    {
-      email: value('signup-email'),
-      ...(value('signup-username') ? { username: value('signup-username') } : {}),
-      displayName: value('signup-name'),
-      termsAccepted: element<HTMLInputElement>('signup-consent-accepted').checked,
-    },
-    password,
-  );
+  if (turnstileRequired && !turnstileToken)
+    throw new Error('Complete the security check before continuing.');
+  try {
+    prepared = await client.prepareRegistration(
+      {
+        email: value('signup-email'),
+        ...(value('signup-username') ? { username: value('signup-username') } : {}),
+        displayName: value('signup-name'),
+        termsAccepted: element<HTMLInputElement>('signup-consent-accepted').checked,
+      },
+      password,
+    );
+  } finally {
+    turnstileToken = '';
+    if (turnstileWidget) window.turnstile?.reset(turnstileWidget);
+  }
   recoverySheet('vault recovery key', prepared.recoveryKey);
   show('auth', false);
   show('finish-signup');
@@ -270,6 +329,7 @@ on('finish-signup', async () => {
   show('finish-signup', false);
   show('auth');
   authView('verify-email');
+  element<HTMLInputElement>('verify-identifier').value = value('signup-email');
   status('Check your email to verify the account, then sign in.');
 });
 on('signup-back', async () => {
@@ -463,10 +523,25 @@ on('recover-finish', async () => {
   status('Password recovered. Sign in with the new password.');
 });
 on('verify-email', async () => {
-  await client.transport('/verify-email', { token: value('verify-token') });
+  const entered = value('verify-token');
+  if (/^\d{8}$/.test(entered)) {
+    const identifier = value('verify-identifier');
+    if (!identifier) throw new Error('Enter your email or username.');
+    await client.transport('/verify-email', { identifier, code: entered });
+  } else {
+    await client.transport('/verify-email', { token: entered });
+  }
   element<HTMLInputElement>('verify-token').value = '';
   authView('login');
   status('Email verified. You can sign in.');
+});
+on('verify-resend', async () => {
+  const identifier = value('verify-identifier');
+  if (!identifier) throw new Error('Enter your email or username.');
+  await client.transport('/verification/resend', { identifier });
+  status(
+    'If verification is needed, check your email for a new code. If registration expired, start again.',
+  );
 });
 on('resend-verification', async () => {
   await client.transport('/verification/resend', { identifier: value('login-id') });
@@ -633,6 +708,9 @@ if (params.has('device')) {
 void client
   .init()
   .then(async (capabilities) => {
+    const siteKey = (capabilities as typeof capabilities & { turnstileSiteKey?: string })
+      .turnstileSiteKey;
+    if (siteKey) configureTurnstile(siteKey);
     registrationOpen = capabilities.features['registrationOpen'] !== false;
     for (const button of document.querySelectorAll<HTMLElement>('[data-registration]'))
       button.hidden = !registrationOpen;

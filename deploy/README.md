@@ -58,3 +58,12 @@ The development overlay uses loopback ports and Mailpit. Its generated persisten
 `ULTRA_LOAD_QUOTA=true sh scripts/test-installation.sh` creates disposable projects/configuration/mail, verifies signup and encrypted sync, drives concurrent devices against real PostgreSQL, tests quota preservation, restores the paired bundle into a fresh volume, refuses a second restore into the nonempty database, and verifies restart/decryption. It also restores the privacy document with consent enabled. Only its own test volumes are removed. Aggregate measurements go to `.tmp/private-load.json`; credentials are never logged.
 
 `sh scripts/test-update.sh BASELINE_IMAGE CANDIDATE_SHA_IMAGE` verifies that an existing account and encrypted data survive a real image upgrade. CI builds the initial private-server baseline from public source and runs both drills on native AMD64 and ARM64 before publishing a revision image. These checks do not substitute for a physical-device trial, independent crypto review, or an off-machine production recovery exercise.
+
+# Optional Turnstile registration protection
+
+Create a Cloudflare Turnstile widget for the hostname in `PUBLIC_URL`. Set both
+`ULTRA_TURNSTILE_SITE_KEY` and `ULTRA_TURNSTILE_SECRET_KEY` in the operator's
+environment file. Keep the secret private. The server refuses to start with only
+one key, and rejects registration if validation fails or the hostname differs.
+Leave both values empty to use email verification and rate limits without
+Turnstile on a self-hosted installation.

@@ -18,6 +18,19 @@ export const createServer = (overrides: Partial<ServerConfig> = {}) => {
   if (!process.env.CORS_ORIGINS && !overrides.cors)
     config.cors.allowedOrigins = [new URL(config.publicUrl).origin];
   const accountConfig = loadUltraConfig(config.publicUrl);
+  const turnstileSiteKey = process.env.ULTRA_TURNSTILE_SITE_KEY || '';
+  const turnstileSecret = process.env.ULTRA_TURNSTILE_SECRET_KEY || '';
+  if (!!turnstileSiteKey !== !!turnstileSecret)
+    throw new Error(
+      'Configure both ULTRA_TURNSTILE_SITE_KEY and ULTRA_TURNSTILE_SECRET_KEY',
+    );
+  const turnstile = turnstileSiteKey
+    ? {
+        siteKey: turnstileSiteKey,
+        secret: turnstileSecret,
+        hostname: new URL(config.publicUrl).hostname,
+      }
+    : undefined;
   if (!accountConfig)
     throw new Error('Ultra Tasks server requires ULTRA_ACCOUNTS_ENABLED=true');
   let app: FastifyInstance | undefined;
@@ -64,7 +77,19 @@ export const createServer = (overrides: Partial<ServerConfig> = {}) => {
         contentSecurityPolicy: {
           directives: {
             defaultSrc: ["'self'"],
-            scriptSrc: ["'self'", "'wasm-unsafe-eval'"],
+            scriptSrc: [
+              "'self'",
+              "'wasm-unsafe-eval'",
+              ...(turnstile ? ['https://challenges.cloudflare.com'] : []),
+            ],
+            frameSrc: [
+              "'self'",
+              ...(turnstile ? ['https://challenges.cloudflare.com'] : []),
+            ],
+            connectSrc: [
+              "'self'",
+              ...(turnstile ? ['https://challenges.cloudflare.com'] : []),
+            ],
             styleSrc: ["'self'"],
             frameAncestors: ["'none'"],
             baseUri: ["'none'"],
@@ -92,6 +117,7 @@ export const createServer = (overrides: Partial<ServerConfig> = {}) => {
           prisma.$transaction(run, { maxWait: 10000, timeout: 30000 }),
         config: { ...accountConfig, privateOnly: true },
         registrationOpen,
+        turnstile,
         requireTermsConsent: requireConsent,
         hasOperatorTerms: hasTerms,
         sendMail: sendUltraAccountEmail,

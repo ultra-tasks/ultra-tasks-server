@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
 import { Prisma } from '@prisma/client';
-import { createHmac } from 'node:crypto';
+import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
 import { z, ZodError } from 'zod';
 import {
   generateRegistrationOptions,
@@ -73,6 +73,7 @@ export interface UltraRoutesOptions {
   requireTermsConsent?: boolean;
   hasOperatorTerms?: boolean;
   registrationOpen?: boolean;
+  turnstile?: { siteKey: string; secret: string; hostname: string };
   sendMail: (
     email: string,
     kind: 'verify' | 'recover',
@@ -87,6 +88,7 @@ const opaqueMessage = z
   .max(4096)
   .regex(/^[A-Za-z0-9_+/=-]+$/);
 const challengeToken = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+const REGISTRATION_LIFETIME = 30 * 60 * 1000;
 const identifier = z.string().trim().toLowerCase().min(3).max(254);
 const credential = z.custom<RegistrationResponseJSON>(
   (value) => !!value && typeof value === 'object',
@@ -137,6 +139,24 @@ export const ultraAccountRoutes = async (
     if (!account) throw new AccountError(401);
     return account;
   };
+  const purgeExpiredRegistrations = async (): Promise<void> => {
+    await transaction(async (tx) => {
+      const expired = await tx.$queryRaw<{ id: string }[]>(
+        Prisma.sql`DELETE FROM ultra_accounts WHERE verified=false AND created_at<=${BigInt(Date.now() - REGISTRATION_LIFETIME)} RETURNING id`,
+      );
+      for (const account of expired)
+        await tx.$executeRaw(
+          Prisma.sql`DELETE FROM ultra_challenges WHERE account_id=${account.id}`,
+        );
+    });
+  };
+  const cleanupTimer = setInterval(() => {
+    void purgeExpiredRegistrations().catch(() =>
+      app.log.error('Expired registration cleanup failed'),
+    );
+  }, 60000);
+  cleanupTimer.unref();
+  app.addHook('onClose', async () => clearInterval(cleanupTimer));
   const route = (
     method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     url: string,
@@ -189,6 +209,39 @@ export const ultraAccountRoutes = async (
     kind: 'verify' | 'recover',
     data: object = {},
   ) => {
+    if (kind === 'verify' && !account.verified) {
+      let code = '';
+      const issued = await transaction(async (tx) => {
+        const locked = await lockAccount(tx, account.id);
+        if (
+          locked.verified ||
+          Number(locked.created_at) + REGISTRATION_LIFETIME <= Date.now()
+        )
+          return false;
+        const previous = await one<{ digest: string }>(
+          tx,
+          Prisma.sql`SELECT digest FROM ultra_challenges WHERE account_id=${account.id} AND kind='verify-code'`,
+        );
+        let codeDigest: string;
+        do {
+          code = randomInt(0, 100000000).toString().padStart(8, '0');
+          codeDigest = createHmac('sha256', config.authSecret)
+            .update(`email-verification:${account.id}:${code}`)
+            .digest('hex');
+        } while (codeDigest === previous?.digest);
+        await tx.$executeRaw(
+          Prisma.sql`DELETE FROM ultra_challenges WHERE account_id=${account.id} AND kind='verify-code'`,
+        );
+        await tx.$executeRaw(
+          Prisma.sql`INSERT INTO ultra_challenges(digest,kind,account_id,expires_at,data) VALUES (${codeDigest},'verify-code',${account.id},${BigInt(Number(locked.created_at) + REGISTRATION_LIFETIME)},'{}'::jsonb)`,
+        );
+        return true;
+      });
+      if (!issued) return;
+      if (!(await sendMail(account.email, kind, code)))
+        throw new AccountError(503, 'Email could not be delivered. Please try again.');
+      return;
+    }
     const value = await challenge(
       db,
       config,
@@ -249,6 +302,7 @@ export const ultraAccountRoutes = async (
       },
       requireTermsConsent: options.requireTermsConsent ?? false,
       hasOperatorTerms: options.hasOperatorTerms ?? false,
+      turnstileSiteKey: options.turnstile?.siteKey,
     }),
     300,
   );
@@ -256,6 +310,7 @@ export const ultraAccountRoutes = async (
   post('/register/start', async (req) => {
     if (options.registrationOpen === false)
       throw new AccountError(403, 'Account registration is closed on this server');
+    await purgeExpiredRegistrations();
     const input = body(
       req,
       z
@@ -264,10 +319,42 @@ export const ultraAccountRoutes = async (
           username: UltraUsernameSchema.optional(),
           displayName: z.string().trim().max(100).default(''),
           registrationRequest: opaqueMessage,
+          turnstileToken: z.string().min(1).max(2048).optional(),
           termsAccepted: z.boolean().optional(),
         })
         .strict(),
     );
+    if (options.turnstile) {
+      if (!input.turnstileToken)
+        throw new AccountError(400, 'Complete the security check');
+      let verified = false;
+      try {
+        const response = await fetch(
+          'https://challenges.cloudflare.com/turnstile/v0/siteverify',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              secret: options.turnstile.secret,
+              response: input.turnstileToken,
+            }),
+            signal: AbortSignal.timeout(10000),
+          },
+        );
+        const result = (await response.json()) as {
+          success?: boolean;
+          hostname?: string;
+        };
+        verified =
+          response.ok &&
+          result.success === true &&
+          result.hostname === options.turnstile.hostname;
+      } catch {
+        throw new AccountError(503, 'Security check unavailable. Please try again.');
+      }
+      if (!verified)
+        throw new AccountError(400, 'Security check failed. Please try again.');
+    }
     if (options.requireTermsConsent && !input.termsAccepted)
       throw new AccountError(
         400,
@@ -354,7 +441,48 @@ export const ultraAccountRoutes = async (
     };
   });
   post('/verify-email', async (req) => {
-    const { token: value } = body(req, z.object({ token: challengeToken }).strict());
+    await purgeExpiredRegistrations();
+    const input = body(
+      req,
+      z.union([
+        z.object({ token: challengeToken }).strict(),
+        z.object({ identifier, code: z.string().regex(/^\d{8}$/) }).strict(),
+      ]),
+    );
+    if ('code' in input) {
+      const account = await accountByIdentifier(db, input.identifier);
+      if (!account) throw new AccountError(401);
+      const valid = await transaction(async (tx) => {
+        const locked = await lockAccount(tx, account.id);
+        if (
+          locked.verified ||
+          Number(locked.created_at) + REGISTRATION_LIFETIME <= Date.now()
+        )
+          return false;
+        const row = await one<{ digest: string }>(
+          tx,
+          Prisma.sql`UPDATE ultra_challenges SET attempts=attempts+1 WHERE account_id=${account.id} AND kind='verify-code' AND expires_at>${BigInt(Date.now())} AND attempts<5 RETURNING digest`,
+        );
+        if (!row) return false;
+        const candidate = createHmac('sha256', config.authSecret)
+          .update(`email-verification:${account.id}:${input.code}`)
+          .digest('hex');
+        if (
+          !timingSafeEqual(Buffer.from(row.digest, 'hex'), Buffer.from(candidate, 'hex'))
+        )
+          return false;
+        await tx.$executeRaw(
+          Prisma.sql`DELETE FROM ultra_challenges WHERE account_id=${account.id} AND kind='verify-code'`,
+        );
+        await tx.$executeRaw(
+          Prisma.sql`UPDATE ultra_accounts SET verified=true WHERE id=${account.id}`,
+        );
+        return true;
+      });
+      if (!valid) throw new AccountError(401, 'Invalid or expired verification code');
+      return { verified: true };
+    }
+    const value = input.token;
     await transaction(async (tx) => {
       const pending = await readChallenge<{
         email?: string;
@@ -362,6 +490,11 @@ export const ultraAccountRoutes = async (
         version?: number;
       }>(tx, config, value, 'verify', true);
       const account = await lockAccount(tx, pending.accountId!);
+      if (
+        !account.verified &&
+        Number(account.created_at) + REGISTRATION_LIFETIME <= Date.now()
+      )
+        throw new AccountError(401, 'Registration expired. Start again.');
       if (
         pending.data.email &&
         (pending.data.version !== account.vault_version ||
@@ -382,6 +515,7 @@ export const ultraAccountRoutes = async (
   post(
     '/verification/resend',
     async (req) => {
+      await purgeExpiredRegistrations();
       const { identifier: name } = body(req, z.object({ identifier }).strict());
       const account = await accountByIdentifier(db, name);
       if (account && !account.verified) await newMail(account, 'verify');

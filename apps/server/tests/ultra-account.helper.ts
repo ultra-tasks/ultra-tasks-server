@@ -35,6 +35,7 @@ export const createHarness = async (
     privateOnly?: boolean;
     authEngine?: 'native' | 'better-auth';
     disableRateLimit?: boolean;
+    turnstile?: { siteKey: string; secret: string; hostname: string };
   } = {},
 ) => {
   const { disableRateLimit, ...accountSettings } = settings;
@@ -42,6 +43,17 @@ export const createHarness = async (
   const database = new PGlite();
   await database.waitReady;
   await database.exec(migration);
+  await database.exec(
+    readFileSync(
+      fileURLToPath(
+        new URL(
+          '../prisma/migrations/20261109000000_ultra_registration_expiry/migration.sql',
+          import.meta.url,
+        ),
+      ),
+      'utf8',
+    ),
+  );
   await database.exec(
     readFileSync(
       fileURLToPath(
@@ -194,7 +206,7 @@ export const createHarness = async (
     const verifyToken = mail.findLast(
       (message) => message.email === email && message.kind === 'verify',
     )!.token;
-    await transport('/verify-email', { token: verifyToken });
+    await transport('/verify-email', { identifier: email, code: verifyToken });
     await account.login(email, password);
     return { client: account, prepared, verifyToken };
   };

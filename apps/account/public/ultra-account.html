@@ -270,20 +270,44 @@
                 >Terms of Service</a
               ></span
             >.</label
-          ><button class="primary">Continue to recovery key</button>
+          >
+          <div
+            id="signup-turnstile"
+            hidden=""
+          ></div>
+          <button class="primary">Continue to recovery key</button>
         </form>
         <form
           id="verify-email"
           hidden=""
         >
           <h1>Verify email</h1>
+          <p>
+            Enter the eight-digit code sent to your email. Registration expires 30 minutes
+            after signup; requesting a new code does not extend it. If it expires, start
+            registration again.
+          </p>
           <label
-            >Verification token from email
+            >Email or username
+            <input
+              id="verify-identifier"
+              autocomplete="username"
+            />
+          </label>
+          <label
+            >Verification code
             <input
               id="verify-token"
               autocomplete="off"
               required="" /></label
           ><button class="primary">Verify email</button>
+          <button
+            type="button"
+            id="verify-resend"
+            class="text-button"
+          >
+            Send a new code
+          </button>
         </form>
         <form
           id="recover-request"

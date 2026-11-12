@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Prisma } from '@prisma/client';
 import { createHarness, password } from './ultra-account.helper';
 import { totp, totpStep, digest } from '../src/ultra-account/security';
-import { unlockBundle, randomKey } from '@ultra-tasks/account-crypto';
+import { AccountClient, unlockBundle, randomKey } from '@ultra-tasks/account-crypto';
 
 // Production-strength Argon2/OPAQUE can exceed the default 5s under parallel suite load.
 vi.setConfig({ testTimeout: 20000, hookTimeout: 30000 });
@@ -14,6 +14,175 @@ describe('Ultra accounts: real routes, real PostgreSQL SQL and real client crypt
   });
   afterEach(async () => {
     await h.close();
+    vi.unstubAllGlobals();
+  });
+
+  it('invalidates the previous verification code when a new code is sent', async () => {
+    const client = h.client();
+    const identifier = 'resend@example.test';
+    await client.register(
+      await client.prepareRegistration(
+        { email: identifier, displayName: 'Resend' },
+        password,
+      ),
+    );
+    const previous = h.mail.at(-1)!.token;
+    const initial = await h.database.query<{ expires_at: string }>(
+      "SELECT expires_at FROM ultra_challenges WHERE kind='verify-code'",
+    );
+    await h.transport('/verification/resend', { identifier });
+    const resent = await h.database.query<{ expires_at: string }>(
+      "SELECT expires_at FROM ultra_challenges WHERE kind='verify-code'",
+    );
+    expect(resent.rows[0].expires_at).toEqual(initial.rows[0].expires_at);
+    const replacement = h.mail.at(-1)!.token;
+    expect(replacement).not.toBe(previous);
+    await expect(
+      h.transport('/verify-email', { identifier, code: previous }),
+    ).rejects.toThrow();
+    await h.transport('/verify-email', { identifier, code: replacement });
+  });
+
+  it('cancels expired registrations and permits a fresh signup without deleting verified accounts', async () => {
+    const existing = await h.register('verified@example.test', 'verified');
+    const client = h.client();
+    const identifier = 'expired@example.test';
+    const old = await client.prepareRegistration(
+      { email: identifier, displayName: 'Expired' },
+      password,
+    );
+    await client.register(old);
+    const expiredCode = h.mail.at(-1)!.token;
+    await h.database.query('UPDATE ultra_accounts SET created_at=$1', [
+      Date.now() - 1800001,
+    ]);
+    await h.transport('/verification/resend', { identifier });
+    await expect(
+      h.transport('/verify-email', { identifier, code: expiredCode }),
+    ).rejects.toThrow();
+    const remaining = await h.database.query<{ email: string }>(
+      'SELECT email FROM ultra_accounts',
+    );
+    expect(remaining.rows.map((row) => row.email)).toEqual(['verified@example.test']);
+    const replacement = await client.prepareRegistration(
+      { email: identifier, displayName: 'Fresh' },
+      password,
+    );
+    expect(replacement.recoveryKey).not.toBe(old.recoveryKey);
+    await client.register(replacement);
+    const freshCode = h.mail.at(-1)!.token;
+    if (expiredCode !== freshCode)
+      await expect(
+        h.transport('/verify-email', { identifier, code: expiredCode }),
+      ).rejects.toThrow();
+    await h.transport('/verify-email', { identifier, code: freshCode });
+    await client.login(identifier, password);
+    expect(existing.client.account!.email).toBe('verified@example.test');
+  });
+
+  it('expires and limits account-bound email verification codes', async () => {
+    const client = h.client();
+    const identifier = 'code@example.test';
+    await client.register(
+      await client.prepareRegistration(
+        { email: identifier, displayName: 'Code' },
+        password,
+      ),
+    );
+    const code = h.mail.at(-1)!.token;
+    expect(code).toMatch(/^\d{8}$/);
+    const challenge = await h.database.query<{ expires_at: string }>(
+      "SELECT expires_at FROM ultra_challenges WHERE kind='verify-code'",
+    );
+    expect(Number(challenge.rows[0].expires_at) - Date.now()).toBeGreaterThan(1700000);
+    expect(Number(challenge.rows[0].expires_at) - Date.now()).toBeLessThanOrEqual(
+      1800000,
+    );
+    const wrong = code === '00000000' ? '00000001' : '00000000';
+    for (let i = 0; i < 5; i++)
+      await expect(
+        h.transport('/verify-email', { identifier, code: wrong }),
+      ).rejects.toThrow();
+    await expect(h.transport('/verify-email', { identifier, code })).rejects.toThrow();
+    await h.transport('/verification/resend', { identifier });
+    const replacement = h.mail.at(-1)!.token;
+    await h.database.query(
+      "UPDATE ultra_challenges SET expires_at=$1 WHERE kind='verify-code'",
+      [Date.now() - 1],
+    );
+    await expect(
+      h.transport('/verify-email', { identifier, code: replacement }),
+    ).rejects.toThrow();
+    await h.transport('/verification/resend', { identifier });
+    const finalCode = h.mail.at(-1)!.token;
+    await expect(
+      h.transport('/verify-email', {
+        identifier: 'someone-else@example.test',
+        code: finalCode,
+      }),
+    ).rejects.toThrow();
+    await h.transport('/verify-email', { identifier, code: finalCode });
+    await client.login(identifier, password);
+    await expect(
+      h.transport('/verify-email', { identifier, code: finalCode }),
+    ).rejects.toThrow();
+  });
+
+  it('enforces Turnstile before enrollment and rejects a different hostname', async () => {
+    const secured = await createHarness({
+      turnstile: { siteKey: 'site-key', secret: 'secret-key', hostname: 'localhost' },
+    });
+    try {
+      const result = await secured.app.inject({
+        method: 'POST',
+        url: '/api/v2/accounts/register/start',
+        payload: { email: 'check@example.test', registrationRequest: 'x'.repeat(64) },
+      });
+      expect(result.statusCode).toBe(400);
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ success: true, hostname: 'other.example' }), {
+          status: 200,
+        }),
+      );
+      vi.stubGlobal('fetch', mockFetch);
+      const client = new AccountClient((path, body, token, method) =>
+        secured.transport(
+          path,
+          path === '/register/start'
+            ? { ...body, turnstileToken: 'response-token' }
+            : body,
+          token,
+          method,
+        ),
+      );
+      await expect(
+        client.prepareRegistration(
+          { email: 'check@example.test', displayName: 'Check' },
+          password,
+        ),
+      ).rejects.toThrow('Security check failed');
+      mockFetch.mockRejectedValueOnce(new Error('network unavailable'));
+      await expect(
+        client.prepareRegistration(
+          { email: 'check@example.test', displayName: 'Check' },
+          password,
+        ),
+      ).rejects.toThrow('Security check unavailable');
+      mockFetch.mockResolvedValue(
+        new Response(JSON.stringify({ success: true, hostname: 'localhost' }), {
+          status: 200,
+        }),
+      );
+      const prepared = await client.prepareRegistration(
+        { email: 'check@example.test', displayName: 'Check' },
+        password,
+      );
+      await client.register(prepared);
+      expect(secured.mail).toHaveLength(1);
+      expect(JSON.stringify(await client.init())).not.toContain('secret-key');
+    } finally {
+      await secured.close();
+    }
   });
 
   it('honors the operator consent policy before account enrollment and records acceptance', async () => {
@@ -52,13 +221,21 @@ describe('Ultra accounts: real routes, real PostgreSQL SQL and real client crypt
     await client.register(prepared);
     await expect(client.login('alice', password)).rejects.toThrow('Verify your email');
     const verification = h.mail[0].token;
-    await h.transport('/verify-email', { token: verification });
+    await h.transport('/verify-email', {
+      identifier: 'alice@example.test',
+      code: verification,
+    });
     await client.login('ALICE', password);
     expect(client.unlocked).toBeDefined();
     expect(client.account?.username).toBe('alice');
     expect(h.requests.join('')).not.toContain(password);
     expect(h.requests.join('')).not.toContain(prepared.recoveryKey);
-    await expect(h.transport('/verify-email', { token: verification })).rejects.toThrow();
+    await expect(
+      h.transport('/verify-email', {
+        identifier: 'alice@example.test',
+        code: verification,
+      }),
+    ).rejects.toThrow();
     const rows = await h.database.query<{ bundle: unknown }>(
       'SELECT bundle FROM ultra_accounts',
     );
@@ -110,8 +287,13 @@ describe('Ultra accounts: real routes, real PostgreSQL SQL and real client crypt
       'a different pending password',
     );
     await second.register(replacement);
-    await expect(h.transport('/verify-email', { token: stale })).rejects.toThrow();
-    await h.transport('/verify-email', { token: h.mail.at(-1)!.token });
+    await expect(
+      h.transport('/verify-email', { identifier: 'pending@example.test', code: stale }),
+    ).rejects.toThrow();
+    await h.transport('/verify-email', {
+      identifier: 'pending@example.test',
+      code: h.mail.at(-1)!.token,
+    });
     await second.login('pending@example.test', 'a different pending password');
     expect(second.unlocked!.masterKey).toBe(
       (

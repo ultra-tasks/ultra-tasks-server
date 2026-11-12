@@ -65,7 +65,10 @@ describe('opt-in Better Auth + existing OPAQUE/vault compatibility', () => {
     );
     await expect(client.login('unverified@example.test', password)).rejects.toThrow();
     expect(await count()).toBe(0);
-    await h.transport('/verify-email', { token: h.mail[0].token });
+    await h.transport('/verify-email', {
+      identifier: 'unverified@example.test',
+      code: h.mail[0].token,
+    });
     await expect(
       client.login('unverified@example.test', 'a wrong account password'),
     ).rejects.toThrow();
