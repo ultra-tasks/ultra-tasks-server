@@ -82,12 +82,15 @@ async function main() {
       const message = await (
         await fetch('http://mailpit:8025/api/v1/message/' + item.ID)
       ).json();
-      verification = message.Text.match(/[?&]verify=([A-Za-z0-9_-]+)/)?.[1];
+      // New registrations receive an eight-digit code; older links remain valid.
+      const code = message.Text.match(/verification code is: (\d{8})/)?.[1];
+      const token = message.Text.match(/[?&]verify=([A-Za-z0-9_-]+)/)?.[1];
+      verification = code ? { identifier: email, code } : token ? { token } : undefined;
     }
     if (!verification) await new Promise((resolve) => setTimeout(resolve, 100));
   }
   assert.ok(verification, 'Development verification email was not delivered');
-  await transport('/verify-email', { token: verification });
+  await transport('/verify-email', verification);
   await firstAccount.login(email, password);
   const first = new SyncClient(firstAccount, storage());
   await first.init();
