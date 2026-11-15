@@ -8,7 +8,10 @@
 
     # Paths the account server owns. Everything else on this origin is the web
     # task application when a bundle is installed (scripts/install-web.sh).
-    @server path /account /account/* /api/* /live /health /privacy.html /terms.html
+    # The dashboard page also loads its CSS, scripts and logo from root paths that
+    # @fastify/static serves out of account-public/ (private-server.ts), so those
+    # belong to the server too. /cal/* is the public calendar feed.
+    @server path /account /account/* /api/* /live /health /privacy.html /terms.html /cal/* /ultra-account.html /ultra-account.css /account-theme.css /account-assets/* /simplewebauthn-browser.min.js /ultra-account/*
     handle @server {
         reverse_proxy server:1900
     }

@@ -35,12 +35,12 @@ sh scripts/install-web.sh ultra-tasks-web-VERSION.tar.gz
 
 The script verifies that the checksum file names that archive and matches it, rejects unsafe archive paths, unpacks into `deploy/web/VERSION/` (set `ULTRA_WEB_DIRECTORY` to move it), and switches `deploy/web/current`. To roll back, point `current` at an older version directory (`ln -sfn OLD_VERSION deploy/web/current`); no restart is needed. Hashed files from the previous release are carried forward for 30 days (`--keep-days`) and old version directories are pruned after that.
 
-With the bundled Caddy, `deploy/Caddyfile` sends `/account`, `/api/`, `/live`, `/health`, `/privacy.html` and `/terms.html` to the server and serves everything else from `current`. With no bundle installed, `/` still reaches the server and redirects to `/account`. The web application and the dashboard share an origin, so no CORS entry is needed; leave `CORS_ORIGINS` empty unless you host the web application on a different origin.
+With the bundled Caddy, `deploy/Caddyfile` sends `/account`, `/api/`, `/live`, `/health`, `/privacy.html`, `/terms.html`, `/cal/` and the dashboard's own root files (`/ultra-account.css`, `/account-theme.css`, `/account-assets/`, `/simplewebauthn-browser.min.js`, `/ultra-account/`, `/ultra-account.html`) to the server and serves everything else from `current`. The dashboard page loads those root files, so a proxy that sends them to the web bundle leaves `/account` without styling or scripts. With no bundle installed, `/` still reaches the server and redirects to `/account`. The web application and the dashboard share an origin, so no CORS entry is needed; leave `CORS_ORIGINS` empty unless you host the web application on a different origin.
 
 Behind an existing HTTPS proxy (`ULTRA_EXTERNAL_PROXY=true`), give that proxy the same split. This nginx fragment is illustrative; adapt paths and TLS to your host and keep the WebSocket upgrade headers:
 
 ```nginx
-location ~ ^/(account(/|$)|api/|live$|health$|privacy.html$|terms.html$) {
+location ~ ^/(account(/|$)|account-assets/|account-theme\.css$|ultra-account(/|\.css$|\.html$)|simplewebauthn-browser\.min\.js$|api/|live$|health$|privacy\.html$|terms\.html$|cal/) {
     proxy_pass http://127.0.0.1:1900;
     proxy_http_version 1.1;
     proxy_set_header Upgrade $http_upgrade;
