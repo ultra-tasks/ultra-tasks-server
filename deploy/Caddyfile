@@ -34,14 +34,17 @@
         root * /srv/web/current
 
         # OAuth providers redirect to /oauth/callback/<provider>; one static page
-        # handles every provider.
-        rewrite /oauth/callback/* /oauth-callback.html
+        # handles every provider. The page ships in the bundle under assets/.
+        rewrite /oauth/callback/* /assets/oauth-callback.html
 
         # Files the service worker uses to detect a new release must always be
-        # revalidated. Hashed build output never changes under the same name.
-        @revalidate path / /index.html /sw.js /ngsw-worker.js /ngsw.json /manifest.json /oauth-callback.html
+        # revalidated. That includes the un-hashed worker scripts (safety-worker.js and
+        # worker-basic.min.js), which keep the same name in every release.
+        @revalidate path / /index.html /sw.js /ngsw-worker.js /safety-worker.js /worker-basic.min.js /ngsw.json /manifest.json /assets/oauth-callback.html
         header @revalidate Cache-Control "no-cache"
-        @hashed path /main-* /chunk-* /polyfills-* /styles-* /worker-* /media/*
+        # Only files whose name carries an 8-character content hash are immutable. A
+        # looser /worker-* match would also catch worker-basic.min.js.
+        @hashed path_regexp ^/((main|chunk|polyfills|styles|worker)-[A-Za-z0-9_-]{8}\.(js|css)|media/.+)$
         header @hashed Cache-Control "public, max-age=31536000, immutable"
 
         # The web application is a different trust zone from the dashboard, so it

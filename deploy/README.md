@@ -51,15 +51,23 @@ location ~ ^/(account(/|$)|account-assets/|account-theme\.css$|ultra-account(/|\
 }
 location /oauth/callback/ {
     root /srv/ultra-tasks/deploy/web/current;
-    rewrite ^ /oauth-callback.html break;
+    rewrite ^ /assets/oauth-callback.html break;
 }
 location / {
     root /srv/ultra-tasks/deploy/web/current;
-    location ~ ^/(index.html|sw.js|ngsw-worker.js|ngsw.json|manifest.json)$ {
+    # The service worker scripts keep their names in every release, so they must be
+    # revalidated, including safety-worker.js and worker-basic.min.js.
+    location ~ ^/(index\.html|sw\.js|ngsw-worker\.js|safety-worker\.js|worker-basic\.min\.js|ngsw\.json|manifest\.json|assets/oauth-callback\.html)$ {
         add_header Cache-Control "no-cache";
+    }
+    # Only names carrying an 8-character content hash are immutable.
+    location ~ "^/((main|chunk|polyfills|styles|worker)-[A-Za-z0-9_-]{8}\.(js|css)|media/.+)$" {
+        add_header Cache-Control "public, max-age=31536000, immutable";
     }
 }
 ```
+
+The regular expression with `{8}` must be quoted in nginx. In `add_header`, a location that sets its own headers drops those set at the server level, so repeat any security headers there (or `include` a shared file).
 
 Do not change the server ID or regenerate OPAQUE/authentication secrets during upgrades or hostname changes. Reusing an email on a new installation does not transfer encrypted data. Never use `down -v` for a database you intend to keep.
 
