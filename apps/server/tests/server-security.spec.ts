@@ -49,6 +49,11 @@ const getCaddyLogBlocks = (): { runtime: string; access: string } => {
 
 describe('Server Security Configuration', () => {
   describe('request log sanitization', () => {
+    it('omits public calendar bearer tokens from application logs', () => {
+      expect(sanitizeRequestUrlForLog('/cal/private-token.ics?x=secret')).toBe(
+        '/cal/redacted.ics',
+      );
+    });
     it('should omit every query value from application error logs', () => {
       expect(
         sanitizeRequestUrlForLog(

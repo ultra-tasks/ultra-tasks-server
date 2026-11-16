@@ -59,6 +59,7 @@ import { UltraRealtimeHub, registerUltraRealtime } from './realtime';
 import { deleteUltraAccount } from './account-deletion';
 import { registerBrowserMfa } from './browser-mfa';
 import { registerBrowserLogin } from './browser-login';
+import { registerCalendarFeeds } from './calendar-feeds';
 import { registerAccountOverview } from './overview-routes';
 import {
   createUltraBetterAuth,
@@ -111,6 +112,7 @@ export const ultraAccountRoutes = async (
   await registerUltraRealtime(app, { db, transaction, config, hub: realtime });
   await app.register(ultraScopeRoutes, { ...options, realtime, prefix: '/sync' });
   await registerAccountOverview(app, options);
+  await registerCalendarFeeds(app, options);
   await opaqueReady;
   // Fail at startup if a corrupt setup was supplied, without logging the secret.
   try {

@@ -43,3 +43,7 @@ The beta defaults to [Better Auth + OPAQUE](docs/better-auth-prototype.md): OPAQ
 `ULTRA_LOAD_QUOTA=true sh scripts/test-installation.sh` exercises real PostgreSQL, personal realtime, concurrent devices, quota preservation, paired backup/restore, and restart. `scripts/test-update.sh` exercises an actual image upgrade. See [security and recovery evidence](docs/security-and-recovery.md) for the remaining stable-release gates.
 
 For checks, use `npm run quiet -- <script>`; logs are written to .tmp/logs. `checkFile` checks formatting; server/package TypeScript builds and tests provide the owner checks for files ignored by the client repository's Angular ESLint configuration.
+
+### Optional calendar publications
+
+After applying database migrations, set `ULTRA_CALENDAR_FEEDS_ENABLED=true` to offer opt-in calendar publishing to supported app clients. It stays off by default. The selected published copy is readable by the operator and anyone with the subscription URL; it is outside end-to-end encryption. Update your privacy notice first. Route `/cal/*` to the server, disable proxy/CDN caching and redact these bearer-token paths from access/error logs. Feed data is included in PostgreSQL backups and deleted with the account. See [security and recovery](docs/security-and-recovery.md#optional-public-calendar-publications-040-client).

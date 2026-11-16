@@ -11,6 +11,7 @@ import { prisma } from './db';
 import { sendUltraAccountEmail } from './email';
 import { parsePrivacyPolicyUrl } from './privacy-url';
 import { loadUltraConfig, ultraAccountRoutes } from './ultra-account';
+import { registerPublicCalendarFeeds } from './ultra-account/calendar-feeds';
 
 /** The v1 entry point exposes accounts and personal sync, independently of legacy routes. */
 export const createServer = (overrides: Partial<ServerConfig> = {}) => {
@@ -110,6 +111,7 @@ export const createServer = (overrides: Partial<ServerConfig> = {}) => {
         index: false,
         cacheControl: false,
       });
+      await registerPublicCalendarFeeds(app, prisma);
       await app.register(ultraAccountRoutes, {
         prefix: '/api/v2/accounts',
         db: prisma,

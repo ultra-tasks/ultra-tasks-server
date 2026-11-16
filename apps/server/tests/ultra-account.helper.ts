@@ -12,6 +12,7 @@ import {
   opaqueServer,
   AccountApiError,
 } from '@ultra-tasks/account-crypto';
+import { registerPublicCalendarFeeds } from '../src/ultra-account/calendar-feeds';
 import { ultraAccountRoutes } from '../src/ultra-account/routes';
 import { UltraConfig } from '../src/ultra-account/security';
 import { UltraDb, UltraTransaction } from '../src/ultra-account/store';
@@ -43,6 +44,15 @@ export const createHarness = async (
   const database = new PGlite();
   await database.waitReady;
   await database.exec(migration);
+  await database.exec(
+    readFileSync(
+      new URL(
+        '../prisma/migrations/20261115000000_calendar_feeds/migration.sql',
+        import.meta.url,
+      ),
+      'utf8',
+    ),
+  );
   await database.exec(
     readFileSync(
       fileURLToPath(
@@ -162,6 +172,7 @@ export const createHarness = async (
     global: false,
     ...(disableRateLimit ? { allowList: () => true } : {}),
   });
+  await registerPublicCalendarFeeds(app, db);
   await app.register(ultraAccountRoutes, {
     prefix: '/api/v2/accounts',
     realtime,

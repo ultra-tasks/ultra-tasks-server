@@ -16,6 +16,7 @@ export default defineConfig({
       'tests/ultra-accounts.browser.spec.ts',
       'tests/ultra-sync.browser.spec.ts',
       'tests/private.browser.spec.ts',
+      'tests/calendar-publication.browser.spec.ts',
       'tests/better-auth.browser.spec.ts',
       'tests/browser-login.browser.spec.ts',
       'tests/better-auth-refresh.integration.spec.ts',

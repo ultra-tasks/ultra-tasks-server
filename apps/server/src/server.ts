@@ -34,6 +34,7 @@ import {
 import { testRoutes } from './test-routes';
 import { captureMcpRoutes, captureRoutes } from './capture';
 import { loadUltraConfig, ultraAccountRoutes } from './ultra-account';
+import { registerPublicCalendarFeeds } from './ultra-account/calendar-feeds';
 import { sendUltraAccountEmail, sendUltraInviteEmail } from './email';
 
 // HTML escape to prevent XSS in generated HTML
@@ -108,6 +109,7 @@ export const pickErrorLogLevel = (
 };
 
 export const sanitizeRequestUrlForLog = (rawUrl: string): string => {
+  if (rawUrl.startsWith('/cal/')) return '/cal/redacted.ics';
   const queryStart = rawUrl.indexOf('?');
   return queryStart === -1 ? rawUrl : `${rawUrl.slice(0, queryStart)}?redacted`;
 };
@@ -499,6 +501,7 @@ export const createServer = (
       // API Routes
       const ultraConfig = loadUltraConfig(fullConfig.publicUrl);
       if (ultraConfig) {
+        await registerPublicCalendarFeeds(fastifyServer, prisma);
         await fastifyServer.register(ultraAccountRoutes, {
           prefix: '/api/v2/accounts',
           db: prisma,

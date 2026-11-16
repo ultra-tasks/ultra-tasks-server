@@ -260,6 +260,7 @@ const signedIn = async (): Promise<void> => {
   element<HTMLInputElement>('profile-username').value = client.account?.username ?? '';
   element<HTMLInputElement>('profile-name').value = client.account?.displayName ?? '';
   await refreshOverview();
+  await refreshCalendars();
   await refreshDevices();
   status('Signed in. Your encrypted account keys are unlocked on this device.');
 };
@@ -325,6 +326,9 @@ on('finish-signup', async () => {
   prepared = undefined;
   recoveryText = '';
   element('recovery-material').textContent = '';
+  element('calendar-feed-list').replaceChildren();
+  element('calendar-feed-url').textContent = '';
+  show('calendar-publications', false);
   show('recovery-sheet', false);
   show('finish-signup', false);
   show('auth');
@@ -593,6 +597,55 @@ on('sessions-refresh', async () => {
   await refreshDevices();
   status('Device sessions loaded.');
 });
+const refreshCalendars = async (): Promise<void> => {
+  const list = element('calendar-feed-list');
+  list.replaceChildren();
+  element('calendar-feed-url').textContent = '';
+  try {
+    const { feeds } = await client.request<{
+      feeds: { id: string; label: string; privacy: string }[];
+    }>('/calendar-feeds');
+    show('calendar-publications');
+    for (const feed of feeds) {
+      const row = document.createElement('li');
+      const label = document.createElement('span');
+      label.textContent =
+        feed.label +
+        (feed.privacy === 'busy' ? ' — busy only' : ' — task titles and times');
+      const rotate = document.createElement('button');
+      rotate.textContent = 'Rotate URL';
+      rotate.addEventListener(
+        'click',
+        run(async () => {
+          const result = await client.request<{ url: string }>(
+            `/calendar-feeds/${feed.id}/rotate`,
+            {},
+          );
+          element('calendar-feed-url').textContent =
+            'New subscription URL (shown only now): ' + result.url;
+        }),
+      );
+      const stop = document.createElement('button');
+      stop.textContent = 'Stop publishing';
+      stop.addEventListener(
+        'click',
+        run(async () => {
+          await client.request(`/calendar-feeds/${feed.id}`, undefined, 'DELETE');
+          row.remove();
+          element('calendar-feed-url').textContent = '';
+          status(
+            'Calendar publication stopped. Previously downloaded copies may remain in calendar apps.',
+          );
+        }),
+      );
+      row.append(label, rotate, stop);
+      list.append(row);
+    }
+    if (!feeds.length) list.textContent = 'No calendars published.';
+  } catch {
+    show('calendar-publications', false);
+  }
+};
 const refreshOverview = async (): Promise<void> => {
   const overview = await client.request<{
     server: { url: string };
@@ -617,7 +670,10 @@ const refreshOverview = async (): Promise<void> => {
   element('history-usage').textContent =
     `${mib(overview.personal?.historyBytes ?? 0)} of ${mib(overview.limits.historyBytes)}`;
 };
-on('overview-refresh', refreshOverview);
+on('overview-refresh', async () => {
+  await refreshOverview();
+  await refreshCalendars();
+});
 on('delete-account', async () => {
   if (
     value('delete-confirm-email').trim().toLowerCase() !== client.account?.email ||

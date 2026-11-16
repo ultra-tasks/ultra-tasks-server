@@ -8,6 +8,8 @@
   },
   "include": [
     "tests/ultra-account.helper.ts",
+    "tests/calendar-feeds.spec.ts",
+    "tests/calendar-publication.browser.spec.ts",
     "tests/ultra-config.spec.ts",
     "tests/ultra-accounts.spec.ts",
     "tests/ultra-accounts.browser.spec.ts",

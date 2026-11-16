@@ -38,3 +38,13 @@ A separate agent reviewed the client/server changes and ran native41/41 and SDK 
 - Public GHCR creation and the server package visibility were approved by the maintainer. Published-image acceptance must verify anonymous pulls and recovery on both architectures.
 
 No stable 1.0.0 tag or production deployment is implied by these automated checks.
+
+## Optional public calendar publications (0.4.0 client)
+
+Calendar publishing is disabled unless the operator sets `ULTRA_CALENDAR_FEEDS_ENABLED=true`. Apply the calendar-feed database migration before enabling it. The app asks for separate consent for each feed and defaults to busy-only, with optional task titles and times. Notes are excluded. The published ICS is plaintext: the operator and anyone with the URL can read it. This is explicitly outside the encrypted-account guarantee. Update the operator's privacy notice before enabling it.
+
+Feeds belong to an account and cascade on its deletion. Full PostgreSQL dumps include their bodies; backup operators must protect them as readable personal data. There are at most ten feeds per account and 1 MiB per body. Stop or rotate from the app or account dashboard. Rotation/revocation immediately invalidates the old token, including conditional requests, but cannot delete copies a subscriber already downloaded.
+
+Tokens contain 256 random bits, and only SHA-256 hashes persist. Authenticated writes are account-scoped, compare-and-swap revisions prevent old uploads from replacing newer data, and rotation fences queued uploads with a new generation. Public responses require revalidation and carry noindex. App error logs redact feed tokens. Operators must also exclude `/cal/*` from proxy/CDN access and error logs and disable caching on that path. The bundled proxy routes the path to the server; exercise the actual production proxy and an active service worker before release.
+
+Automated acceptance covers real account authentication, SQL, the Angular publishing flow, updates, stable event IDs, URL rotation and revocation. Real Google Calendar, Apple Calendar, Outlook and Thunderbird subscriptions remain a manual release gate. No general encrypted sync schema or existing client contract changes.

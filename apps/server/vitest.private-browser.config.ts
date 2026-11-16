@@ -2,7 +2,10 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['tests/private.browser.spec.ts'],
+    include: [
+      'tests/private.browser.spec.ts',
+      'tests/calendar-publication.browser.spec.ts',
+    ],
     testTimeout: 180000,
     hookTimeout: 60000,
   },

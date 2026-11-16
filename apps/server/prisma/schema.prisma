@@ -274,6 +274,7 @@ model UltraAccount {
   vaultVersion Int @default(1) @map("vault_version")
   createdAt BigInt @map("created_at")
   sessions UltraSession[]
+  calendarFeeds UltraCalendarFeed[]
   factors UltraFactor[]
   recoveryCodes UltraRecoveryCode[]
   @@index([verified, createdAt], map: "ultra_accounts_verified_created_at_idx")
@@ -455,4 +456,19 @@ model UltraScopeTransfer {
   scope UltraScope @relation(fields: [scopeId], references: [id], onDelete: Cascade)
   @@index([recipientId])
   @@map("ultra_scope_transfers")
+}
+
+model UltraCalendarFeed {
+  id String @id
+  accountId String @map("account_id")
+  account UltraAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  label String
+  privacy String
+  tokenHash String @unique @map("token_hash")
+  body String
+  revision Int @default(0)
+  generation Int @default(1)
+  updatedAt BigInt @map("updated_at")
+  @@index([accountId], map: "ultra_calendar_feeds_account_id_idx")
+  @@map("ultra_calendar_feeds")
 }
