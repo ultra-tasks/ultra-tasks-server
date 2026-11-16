@@ -200,6 +200,9 @@ describe('website-to-app encrypted login on independent server origins', () => {
             ])
               localStorage.setItem(key, 'true');
           });
+          // The app may already be at this hash: a same-document goto does not
+          // run addInitScript. Reload to apply the first-run flags before sign-in.
+          await page.reload({ waitUntil: 'domcontentloaded' });
           await page.goto(origin + '/#/native-sync');
           await selectAppAccountServer(page, origin);
           await page.getByLabel('Email or username').fill('handoff');
