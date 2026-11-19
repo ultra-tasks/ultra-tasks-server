@@ -1,5 +1,7 @@
 /* Default Ultra Tasks roles, generated from client b79c0f94d5 palette-normalize.util.ts.
-   Keep both modes aligned when the app's default palette changes. */
+   Keep both modes aligned when the app's default palette changes. The warning and success
+   roles are the same normalizer's documented default semantic tones (used here for notices
+   and the done-step marker only; text always stays in the ink role). */
 :root {
   --palette-background: #f8f8f7;
   --palette-surface: #ffffff;
@@ -14,6 +16,8 @@
   --palette-hover: #ebf2f2;
   --palette-danger: #c0161b;
   --palette-danger-ink: #ffffff;
+  --palette-warning: #8d5300;
+  --palette-success: #00703e;
   --palette-border: rgba(0, 0, 0, 0.123);
   --palette-separator: rgba(0, 0, 0, 0.091);
   --palette-outline: rgba(0, 0, 0, 0.43);
@@ -33,6 +37,8 @@
     --palette-hover: #293133;
     --palette-danger: #ff877b;
     --palette-danger-ink: #000000;
+    --palette-warning: #f0951b;
+    --palette-success: #43c07a;
     --palette-border: rgba(255, 255, 255, 0.125);
     --palette-separator: rgba(255, 255, 255, 0.1);
     --palette-outline: rgba(255, 255, 255, 0.345);

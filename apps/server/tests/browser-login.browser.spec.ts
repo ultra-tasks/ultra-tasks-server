@@ -90,18 +90,41 @@ describe('website-to-app encrypted login on independent server origins', () => {
       ),
     );
   };
-  const loginAndApprove = async (page: Page, url: string, recoveryCode: string) => {
+  const loginAndApprove = async (
+    page: Page,
+    url: string,
+    recoveryCode: string,
+    deviceName?: string,
+  ) => {
     await preparePage(page);
     await page.goto(url);
     await ui(page.locator('#app-login-context')).toBeVisible();
-    await page.locator('#login-id').fill('handoff');
+    // The request is described before anything is typed: which app, which server, which code.
+    const requestCode = (await page.locator('#app-login-code').textContent())!;
+    expect(requestCode).toMatch(/^[A-Z0-9_-]{8}$/);
+    await ui(page.locator('#app-login-context')).toContainText(
+      'Continue only if you started this sign-in in the app',
+    );
+    if (deviceName) await ui(page.locator('#app-login-device')).toHaveText(deviceName);
+    await ui(page.getByRole('heading', { level: 1 })).toHaveText(
+      'Sign in to your Ultra Tasks account',
+    );
+    await page.locator('#login-id').fill('handoff@example.test');
     await page.locator('#login-password').fill(password);
     await page.locator('#login button.primary').click();
-    await ui(page.locator('#mfa')).toBeVisible();
+    await ui(page.locator('#mfa')).toBeVisible({ timeout: 30000 });
     await ui(page.locator('#app-login-approval')).toBeHidden();
+    // The banner stays above the second step so the code can still be compared.
+    await ui(page.locator('#app-login-context')).toBeVisible();
     await page.locator('#mfa-code').fill(recoveryCode);
     await page.locator('#mfa button.primary').click();
     await ui(page.locator('#app-login-account')).toHaveText('handoff@example.test');
+    // The decision point repeats the code and names the device, in the same words.
+    await ui(page.getByRole('heading', { level: 1 })).toHaveText('Connect your app');
+    await ui(page.locator('#app-login-approval-code')).toHaveText(requestCode);
+    if (deviceName)
+      await ui(page.locator('#app-login-approval-device')).toHaveText(deviceName);
+    await ui(page.locator('#app-login-context')).toBeHidden();
     await page.screenshot({
       path: resolve(output, 'website-approval.png'),
       fullPage: true,
@@ -116,11 +139,8 @@ describe('website-to-app encrypted login on independent server origins', () => {
         'app.ultratasks://account-login',
       ] as const) {
         const client = new AccountClient(httpTransport(origin));
-        const flow = await client.startBrowserLogin(
-          origin,
-          redirectUri,
-          'My ' + redirectUri.split(':')[0],
-        );
+        const deviceName = 'My ' + redirectUri.split(':')[0];
+        const flow = await client.startBrowserLogin(origin, redirectUri, deviceName);
         const context = await browser.newContext();
         const page = await context.newPage();
         try {
@@ -128,6 +148,7 @@ describe('website-to-app encrypted login on independent server origins', () => {
             page,
             await browserLoginUrl(flow.request),
             recoveryCodes.shift()!,
+            deviceName,
           );
           const returned = await page.evaluate(
             () => (window as unknown as { appReturn: string }).appReturn,

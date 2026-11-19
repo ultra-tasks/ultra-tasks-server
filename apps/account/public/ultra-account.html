@@ -10,7 +10,11 @@
       name="referrer"
       content="no-referrer"
     />
-    <title>Ultra Tasks account</title>
+    <meta
+      name="color-scheme"
+      content="light dark"
+    />
+    <title>Sign in – Ultra Tasks account</title>
     <link
       rel="stylesheet"
       href="/ultra-account.css"
@@ -30,6 +34,82 @@
     />
   </head>
   <body>
+    <svg
+      class="sprite"
+      xmlns="http://www.w3.org/2000/svg"
+      width="0"
+      height="0"
+      focusable="false"
+      aria-hidden="true"
+    >
+      <symbol
+        id="i-info"
+        viewBox="0 0 24 24"
+      >
+        <path
+          d="M11 7h2v2h-2zm0 4h2v6h-2zm1-9C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"
+        />
+      </symbol>
+      <symbol
+        id="i-success"
+        viewBox="0 0 24 24"
+      >
+        <path
+          d="M16.59 7.58 10 14.17l-3.59-3.58L5 12l5 5 8-8zM12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8z"
+        />
+      </symbol>
+      <symbol
+        id="i-warning"
+        viewBox="0 0 24 24"
+      >
+        <path
+          d="M12 5.99 19.53 19H4.47L12 5.99M12 2 1 21h22L12 2zm1 14h-2v2h2v-2zm0-6h-2v4h2v-4z"
+        />
+      </symbol>
+      <symbol
+        id="i-error"
+        viewBox="0 0 24 24"
+      >
+        <path
+          d="M11 15h2v2h-2zm0-8h2v6h-2zm.99-5C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8z"
+        />
+      </symbol>
+      <symbol
+        id="i-eye"
+        viewBox="0 0 24 24"
+      >
+        <path
+          d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"
+        />
+      </symbol>
+      <symbol
+        id="i-eye-off"
+        viewBox="0 0 24 24"
+      >
+        <path
+          d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78 3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z"
+        />
+      </symbol>
+      <symbol
+        id="i-copy"
+        viewBox="0 0 24 24"
+      >
+        <path
+          d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"
+        />
+      </symbol>
+      <symbol
+        id="i-check"
+        viewBox="0 0 24 24"
+      >
+        <path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
+      </symbol>
+    </svg>
+    <a
+      class="skip-link"
+      href="#main"
+      >Skip to main content</a
+    >
     <header class="site-header">
       <a
         class="brand"
@@ -43,49 +123,92 @@
         /><span>Ultra Tasks</span></a
       ><span class="header-context">Account</span>
     </header>
-    <main>
+    <main
+      id="main"
+      tabindex="-1"
+    >
       <p
-        id="status"
+        id="live"
+        class="visually-hidden"
         role="status"
         aria-live="polite"
-      >
-        Loading account encryption…
-      </p>
+      ></p>
+
+      <!-- Browser sign-in started from the Ultra Tasks app. -->
       <section
         id="app-login-context"
-        class="auth-card"
+        class="banner"
+        aria-labelledby="app-login-context-title"
         hidden
       >
-        <p class="eyebrow">Connect Ultra Tasks</p>
-        <p><strong id="app-login-device"></strong></p>
         <p
-          id="app-login-server"
-          class="muted"
-        ></p>
-        <p>Request code: <strong id="app-login-code"></strong></p>
+          id="app-login-context-title"
+          class="banner-title"
+        >
+          Signing in for the Ultra Tasks app
+        </p>
+        <p>
+          <strong id="app-login-device"></strong> on
+          <span
+            id="app-login-server"
+            class="mono"
+          ></span>
+        </p>
+        <p>
+          Request code:
+          <strong
+            id="app-login-code"
+            class="mono"
+            translate="no"
+          ></strong>
+        </p>
         <p class="muted">
-          Continue only if you started sign-in in your app. Check that its request code
+          Continue only if you started this sign-in in the app and its request code
           matches.
         </p>
       </section>
       <section
         id="app-login-approval"
-        class="auth-card"
+        class="card"
+        aria-labelledby="app-login-approval-title"
+        data-notice-host=""
         hidden
       >
-        <h1>Connect your app</h1>
+        <h1
+          id="app-login-approval-title"
+          tabindex="-1"
+        >
+          Connect your app
+        </h1>
+        <div
+          class="notices"
+          data-notices=""
+        >
+          <div role="status"></div>
+          <div role="alert"></div>
+        </div>
         <p>Signed in as <strong id="app-login-account"></strong>.</p>
         <p>
-          This gives the requesting app access to your encrypted account. Your vault keys
-          will be encrypted for that device.
+          Approving gives the Ultra Tasks app on
+          <strong id="app-login-approval-device"></strong> access to your encrypted
+          account. Your vault keys will be encrypted for that device.
+        </p>
+        <p class="muted">
+          Check that the request code in the app matches
+          <strong
+            id="app-login-approval-code"
+            class="mono"
+          ></strong
+          >.
         </p>
         <div class="actions">
           <button
             id="app-login-approve"
             type="button"
             class="primary"
+            data-busy-label="Approving…"
           >
-            Approve & return to app</button
+            Approve and return to app</button
           ><button
             id="app-login-deny"
             type="button"
@@ -96,427 +219,1151 @@
       </section>
       <section
         id="app-login-finished"
-        class="auth-card"
+        class="card"
+        aria-labelledby="app-login-finished-title"
         hidden
       >
-        <h1>You're ready to sync</h1>
-        <p>
-          Return to Ultra Tasks to finish connecting your data. If it didn't open
-          automatically, use the button below or switch back to the app.
-        </p>
-        <p><a id="app-login-return">Open Ultra Tasks</a></p>
-        <button
-          id="app-login-dashboard"
-          type="button"
+        <h1
+          id="app-login-finished-title"
+          tabindex="-1"
         >
-          Account dashboard
-        </button>
+          Return to Ultra Tasks
+        </h1>
+        <p>
+          Sign-in approved. Go back to the app to finish connecting your data. If it did
+          not open automatically, use the button below or switch back to the app.
+        </p>
+        <div class="actions">
+          <a
+            id="app-login-return"
+            class="button primary"
+            >Open Ultra Tasks</a
+          ><button
+            id="app-login-dashboard"
+            type="button"
+          >
+            Go to account
+          </button>
+        </div>
       </section>
       <section
         id="device-approval"
+        class="card"
+        aria-labelledby="device-approval-title"
+        data-notice-host=""
         hidden=""
       >
-        <h1>Approve a device login</h1>
+        <h1
+          id="device-approval-title"
+          tabindex="-1"
+        >
+          Approve a device sign-in
+        </h1>
+        <div
+          class="notices"
+          data-notices=""
+        >
+          <div role="status"></div>
+          <div role="alert"></div>
+        </div>
         <p>
           Continue only if you just entered your password in the Ultra Tasks app on your
-          own device. This approves that device’s login.
+          own device. This approves that device’s sign-in.
         </p>
         <p id="approval-device-name"></p>
         <button
           id="device-approve"
           type="button"
+          class="primary"
+          data-busy-label="Waiting for your security key…"
         >
           Approve using a security key or passkey
         </button>
       </section>
+
       <section
         id="auth"
-        class="auth-card"
+        class="card auth-card"
       >
-        <div class="auth-context">Your Ultra Tasks account</div>
-        <p
-          id="registration-closed"
-          hidden=""
+        <noscript>
+          <p>
+            JavaScript is required to sign in, because your password and keys are
+            processed on your device.
+          </p>
+        </noscript>
+
+        <form
+          id="login"
+          aria-labelledby="login-title"
+          data-notice-host=""
         >
-          New accounts are not available on this server.
-        </p>
-        <form id="login">
-          <h1>Sign in</h1>
-          <label
-            >Email or username
-            <input
-              id="login-id"
-              autocomplete="username"
-              required="" /></label
-          ><label
-            >Password
-            <input
-              id="login-password"
-              type="password"
-              autocomplete="current-password"
-              required="" /></label
-          ><button class="primary">Sign in</button>
-          <details class="signin-help">
-            <summary>Device &amp; sign-in help</summary>
-            <label
-              >Device name
-              <input
-                id="device-name"
-                value="This device"
-                maxlength="100"
-                required=""
-            /></label>
+          <h1
+            id="login-title"
+            tabindex="-1"
+          >
+            Sign in to your Ultra Tasks account
+          </h1>
+          <div
+            class="notices"
+            data-notices=""
+          >
+            <div role="status"></div>
+            <div role="alert"></div>
+          </div>
+          <div
+            id="login-verify-help"
+            class="stack"
+            hidden=""
+          >
+            <p class="muted">
+              Use the 8-digit code we emailed you, or ask for a new one.
+            </p>
             <div class="actions">
               <button
                 type="button"
-                id="offline-unlock"
-              >
-                Unlock cached account offline</button
-              ><button
-                type="button"
                 id="resend-verification"
+                class="small"
+                data-busy-label="Sending…"
               >
                 Resend verification email</button
               ><button
                 type="button"
+                class="small"
                 data-auth-view="verify-email"
               >
-                Verify email with a token
+                Enter a verification code
               </button>
             </div>
-          </details>
-          <p class="form-switch">
-            New here?
+          </div>
+          <p
+            id="registration-closed"
+            class="muted"
+            hidden=""
+          >
+            New accounts are not available on this server.
+          </p>
+          <div class="field">
+            <label for="login-id">Email</label>
+            <input
+              id="login-id"
+              name="email"
+              type="text"
+              inputmode="email"
+              autocomplete="username"
+              autocapitalize="none"
+              autocorrect="off"
+              spellcheck="false"
+              required=""
+            />
+          </div>
+          <div class="field">
+            <label for="login-password">Password</label>
+            <div class="password-field">
+              <input
+                id="login-password"
+                name="password"
+                type="password"
+                autocomplete="current-password"
+                required=""
+              /><button
+                type="button"
+                class="icon-button"
+                data-toggle-password="login-password"
+                aria-pressed="false"
+                aria-label="Show password"
+              >
+                <svg
+                  class="icon"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <use href="#i-eye" />
+                </svg>
+              </button>
+            </div>
+            <p class="field-aside">
+              <button
+                type="button"
+                class="text-button"
+                data-auth-view="recover-request"
+              >
+                Forgot password?
+              </button>
+            </p>
+          </div>
+          <button
+            class="primary block"
+            type="submit"
+            data-busy-label="Signing in…"
+          >
+            Sign in
+          </button>
+          <div
+            class="alt-action"
+            data-registration=""
+          >
+            <p>New to Ultra Tasks?</p>
             <button
               type="button"
+              class="block outline"
               data-auth-view="signup"
-              data-registration=""
             >
-              Create an account
+              Create account
             </button>
-          </p>
-          <button
-            class="text-button"
-            type="button"
-            data-auth-view="recover-request"
+          </div>
+          <details
+            id="login-advanced"
+            class="disclosure"
           >
-            Forgot your password?
-          </button>
+            <summary>Advanced</summary>
+            <div class="disclosure-body">
+              <div class="field">
+                <label for="device-name">Device name</label>
+                <input
+                  id="device-name"
+                  name="device-name"
+                  maxlength="100"
+                  autocomplete="off"
+                  aria-describedby="device-name-help"
+                />
+                <p
+                  id="device-name-help"
+                  class="field-help"
+                >
+                  Shown in your device list so you can recognize this browser. It is only
+                  a label.
+                </p>
+              </div>
+              <div
+                id="offline-option"
+                class="field"
+                hidden=""
+              >
+                <button
+                  type="button"
+                  id="offline-unlock"
+                  aria-describedby="offline-unlock-help"
+                  data-busy-label="Unlocking…"
+                >
+                  Unlock cached account offline
+                </button>
+                <p
+                  id="offline-unlock-help"
+                  class="field-help"
+                >
+                  Enter your email and password above, then unlock the encrypted copy
+                  saved on this device. It works without a connection to the server.
+                </p>
+              </div>
+            </div>
+          </details>
         </form>
+
         <form
           id="signup"
+          aria-labelledby="signup-title"
+          data-notice-host=""
           hidden=""
         >
-          <h1>Create an account</h1>
-          <label
-            >Email
+          <ol
+            class="steps"
+            aria-label="Create account progress"
+          >
+            <li
+              data-state="current"
+              aria-current="step"
+            >
+              <span
+                class="step-mark"
+                aria-hidden="true"
+                >1</span
+              ><span class="step-label">Account</span>
+            </li>
+            <li data-state="todo">
+              <span
+                class="step-mark"
+                aria-hidden="true"
+                >2</span
+              ><span class="step-label">Recovery key</span>
+            </li>
+            <li data-state="todo">
+              <span
+                class="step-mark"
+                aria-hidden="true"
+                >3</span
+              ><span class="step-label">Verify email</span>
+            </li>
+          </ol>
+          <h1
+            id="signup-title"
+            tabindex="-1"
+          >
+            Create your Ultra Tasks account
+          </h1>
+          <p class="lede">
+            Sync your tasks across devices with end-to-end encryption. Next you will save
+            a recovery key, then verify your email.
+          </p>
+          <div
+            class="notices"
+            data-notices=""
+          >
+            <div role="status"></div>
+            <div role="alert"></div>
+          </div>
+          <div class="field">
+            <label for="signup-email">Email</label>
             <input
               id="signup-email"
+              name="email"
               type="email"
-              autocomplete="email"
-              required="" /></label
-          ><label
-            >Username (optional)
-            <input
-              id="signup-username"
               autocomplete="username"
-              pattern="[A-Za-z][A-Za-z0-9_]{2,31}" /></label
-          ><label
-            >Display name
-            <input
-              id="signup-name"
-              autocomplete="name"
-              maxlength="100" /></label
-          ><label
-            >Password (12 or more characters)
-            <input
-              id="signup-password"
-              type="password"
-              autocomplete="new-password"
-              minlength="12"
-              maxlength="1024"
-              required="" /></label
-          ><label
-            >Confirm password
-            <input
-              id="signup-confirm"
-              type="password"
-              autocomplete="new-password"
-              minlength="12"
-              maxlength="1024"
-              required="" /></label
-          ><label
+              autocapitalize="none"
+              autocorrect="off"
+              spellcheck="false"
+              required=""
+            />
+          </div>
+          <div class="field">
+            <label for="signup-password">Password</label>
+            <div class="password-field">
+              <input
+                id="signup-password"
+                name="new-password"
+                type="password"
+                autocomplete="new-password"
+                minlength="12"
+                maxlength="1024"
+                required=""
+                aria-describedby="signup-password-help"
+              /><button
+                type="button"
+                class="icon-button"
+                data-toggle-password="signup-password"
+                aria-pressed="false"
+                aria-label="Show password"
+              >
+                <svg
+                  class="icon"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <use href="#i-eye" />
+                </svg>
+              </button>
+            </div>
+            <p
+              id="signup-password-help"
+              class="field-help"
+            >
+              Use at least 12 characters. A password manager makes this easy.
+            </p>
+          </div>
+          <div class="field">
+            <label for="signup-confirm">Confirm password</label>
+            <div class="password-field">
+              <input
+                id="signup-confirm"
+                name="confirm-password"
+                type="password"
+                autocomplete="new-password"
+                minlength="12"
+                maxlength="1024"
+                required=""
+              /><button
+                type="button"
+                class="icon-button"
+                data-toggle-password="signup-confirm"
+                aria-pressed="false"
+                aria-label="Show confirmation password"
+              >
+                <svg
+                  class="icon"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <use href="#i-eye" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div
             id="signup-consent"
+            class="checkbox-row"
             hidden=""
-            ><input
+          >
+            <input
               id="signup-consent-accepted"
               type="checkbox"
-            />
-            I agree to the
-            <a
-              href="/privacy.html"
-              target="_blank"
-              rel="noreferrer noopener"
-              >Privacy Policy</a
-            ><span
-              id="signup-terms"
-              hidden=""
-            >
-              and
+            /><label for="signup-consent-accepted"
+              >I agree to the
               <a
-                href="/terms.html"
+                href="/privacy.html"
                 target="_blank"
                 rel="noreferrer noopener"
-                >Terms of Service</a
-              ></span
-            >.</label
-          >
+                >Privacy Policy</a
+              ><span
+                id="signup-terms"
+                hidden=""
+              >
+                and
+                <a
+                  href="/terms.html"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  >Terms of Service</a
+                ></span
+              >.</label
+            >
+          </div>
           <div
             id="signup-turnstile"
             hidden=""
           ></div>
-          <button class="primary">Continue to recovery key</button>
+          <button
+            class="primary block"
+            type="submit"
+            data-busy-label="Preparing your recovery key…"
+          >
+            Continue
+          </button>
+          <p class="alt-line">
+            <button
+              type="button"
+              class="text-button"
+              data-auth-view="login"
+            >
+              Back to sign in
+            </button>
+          </p>
         </form>
+
         <form
           id="verify-email"
+          aria-labelledby="verify-title"
+          data-notice-host=""
           hidden=""
         >
-          <h1>Verify email</h1>
-          <p>
-            Enter the eight-digit code sent to your email. Registration expires 30 minutes
-            after signup; requesting a new code does not extend it. If it expires, start
-            registration again.
+          <ol
+            id="verify-steps"
+            class="steps"
+            aria-label="Create account progress"
+            hidden=""
+          >
+            <li data-state="done">
+              <span
+                class="step-mark"
+                aria-hidden="true"
+                >1</span
+              ><span class="step-label"
+                >Account<span class="visually-hidden"> (done)</span></span
+              >
+            </li>
+            <li data-state="done">
+              <span
+                class="step-mark"
+                aria-hidden="true"
+                >2</span
+              ><span class="step-label"
+                >Recovery key<span class="visually-hidden"> (done)</span></span
+              >
+            </li>
+            <li
+              data-state="current"
+              aria-current="step"
+            >
+              <span
+                class="step-mark"
+                aria-hidden="true"
+                >3</span
+              ><span class="step-label">Verify email</span>
+            </li>
+          </ol>
+          <h1
+            id="verify-title"
+            tabindex="-1"
+          >
+            Verify your email
+          </h1>
+          <p
+            id="verify-lede"
+            class="lede"
+          >
+            Enter the 8-digit code we emailed you.
           </p>
-          <label
-            >Email or username
+          <div
+            class="notices"
+            data-notices=""
+          >
+            <div role="status"></div>
+            <div role="alert"></div>
+          </div>
+          <div class="field">
+            <label for="verify-identifier">Email</label>
             <input
               id="verify-identifier"
+              name="email"
+              type="text"
+              inputmode="email"
               autocomplete="username"
+              autocapitalize="none"
+              autocorrect="off"
+              spellcheck="false"
             />
-          </label>
-          <label
-            >Verification code
+          </div>
+          <div class="field">
+            <label for="verify-token">Verification code</label>
             <input
               id="verify-token"
-              autocomplete="off"
-              required="" /></label
-          ><button class="primary">Verify email</button>
+              name="code"
+              inputmode="numeric"
+              autocomplete="one-time-code"
+              autocapitalize="none"
+              spellcheck="false"
+              required=""
+              aria-describedby="verify-token-help"
+            />
+            <p
+              id="verify-token-help"
+              class="field-help"
+            >
+              Registration expires 30 minutes after you started, and asking for a new code
+              does not extend that time. If it expires, start again. You can also paste
+              the verification token from the email link here.
+            </p>
+          </div>
           <button
-            type="button"
-            id="verify-resend"
-            class="text-button"
+            class="primary block"
+            type="submit"
+            data-busy-label="Verifying…"
           >
-            Send a new code
+            Verify email
           </button>
+          <div class="actions center">
+            <button
+              type="button"
+              id="verify-resend"
+              class="text-button"
+              data-busy-label="Sending…"
+            >
+              Send a new code</button
+            ><button
+              type="button"
+              class="text-button"
+              data-auth-view="login"
+            >
+              Back to sign in
+            </button>
+          </div>
         </form>
+
         <form
           id="recover-request"
+          aria-labelledby="recover-title"
+          data-notice-host=""
           hidden=""
         >
-          <h1>Forgot your password?</h1>
-          <p>
-            Your vault recovery key and, if enabled, your authenticator or MFA recovery
-            code are required. Email alone cannot decrypt your data.
+          <h1
+            id="recover-title"
+            tabindex="-1"
+          >
+            Reset your password
+          </h1>
+          <p class="lede">
+            Enter your email and we will send a recovery link. You will also need your
+            vault recovery key and, if enabled, an authenticator or recovery code. Email
+            alone cannot decrypt your data.
           </p>
-          <label
-            >Email or username
+          <div
+            class="notices"
+            data-notices=""
+          >
+            <div role="status"></div>
+            <div role="alert"></div>
+          </div>
+          <div class="field">
+            <label for="recover-id">Email</label>
             <input
               id="recover-id"
+              name="email"
+              type="text"
+              inputmode="email"
               autocomplete="username"
-              required="" /></label
-          ><button class="primary">Send recovery link</button>
+              autocapitalize="none"
+              autocorrect="off"
+              spellcheck="false"
+              required=""
+            />
+          </div>
+          <button
+            class="primary block"
+            type="submit"
+            data-busy-label="Sending…"
+          >
+            Send recovery link
+          </button>
+          <p class="alt-line">
+            <button
+              type="button"
+              class="text-button"
+              data-auth-view="login"
+            >
+              Back to sign in
+            </button>
+          </p>
         </form>
-        <button
-          type="button"
-          id="auth-back"
-          class="text-button"
-          data-auth-view="login"
-          hidden=""
-        >
-          Back to sign in
-        </button>
+
         <p class="privacy-note">
           End-to-end encrypted. Your password and vault keys stay on your device.
         </p>
       </section>
-      <section
-        id="recovery-sheet"
+
+      <form
+        id="mfa"
+        class="card"
+        aria-labelledby="mfa-title"
+        data-notice-host=""
         hidden=""
       >
-        <h1 id="recovery-label">Vault recovery key</h1>
-        <p>
-          Save this recovery key in your password manager or print it and store it safely.
-          If you lose both your password and recovery key and have no unlocked device, you
-          will lose access to your encrypted data. Ultra Tasks cannot recover it for you.
+        <h1
+          id="mfa-title"
+          tabindex="-1"
+        >
+          Two-factor authentication
+        </h1>
+        <p class="lede">
+          Enter the code from your authenticator app, or one of your recovery codes.
         </p>
-        <pre id="recovery-material"></pre>
-        <p>
-          MFA recovery codes recover login only; they cannot decrypt your data. Keep all
-          recovery material private.
+        <div
+          class="notices"
+          data-notices=""
+        >
+          <div role="status"></div>
+          <div role="alert"></div>
+        </div>
+        <div class="field">
+          <label for="mfa-code">Authenticator or recovery code</label>
+          <input
+            id="mfa-code"
+            name="code"
+            type="password"
+            autocomplete="one-time-code"
+            autocapitalize="none"
+            spellcheck="false"
+            required=""
+          />
+        </div>
+        <button
+          class="primary block"
+          type="submit"
+          data-busy-label="Verifying…"
+        >
+          Verify code
+        </button>
+        <button
+          id="webauthn-login"
+          type="button"
+          class="block"
+          data-busy-label="Waiting for your security key…"
+          hidden=""
+        >
+          Use security key or passkey
+        </button>
+        <p class="alt-line">
+          <button
+            id="mfa-cancel"
+            type="button"
+            class="text-button"
+          >
+            Back to sign in
+          </button>
         </p>
-        <nav>
+      </form>
+
+      <form
+        id="device-verify"
+        class="card"
+        aria-labelledby="device-verify-title"
+        data-notice-host=""
+        hidden=""
+      >
+        <h1
+          id="device-verify-title"
+          tabindex="-1"
+        >
+          Verify this device
+        </h1>
+        <p class="lede">
+          We sent an 8-digit code to
+          <strong
+            id="device-verify-hint"
+            class="mono"
+            translate="no"
+          ></strong
+          >. Enter it to sign in on this device. We only ask on devices we do not
+          recognize.
+        </p>
+        <div
+          class="notices"
+          data-notices=""
+        >
+          <div role="status"></div>
+          <div role="alert"></div>
+        </div>
+        <div class="field">
+          <label for="device-code">Verification code</label>
+          <input
+            id="device-code"
+            name="code"
+            inputmode="numeric"
+            autocomplete="one-time-code"
+            class="code-input"
+            autocapitalize="none"
+            spellcheck="false"
+            maxlength="14"
+            required=""
+            aria-describedby="device-code-help device-remember-note"
+          />
+          <p
+            id="device-code-help"
+            class="field-help"
+          >
+            The code expires in 10 minutes.
+          </p>
+          <p
+            id="device-remember-note"
+            class="field-help"
+          >
+            After you verify, we remember this browser so you will not need a code next
+            time. You can remove it from Devices at any time.
+          </p>
+        </div>
+        <button
+          class="primary block"
+          type="submit"
+          data-busy-label="Verifying…"
+        >
+          Verify and sign in
+        </button>
+        <div class="actions center">
+          <button
+            id="device-resend"
+            type="button"
+            class="text-button"
+            data-busy-label="Sending…"
+          >
+            Send a new code</button
+          ><button
+            id="device-cancel"
+            type="button"
+            class="text-button"
+          >
+            Back to sign in
+          </button>
+        </div>
+      </form>
+
+      <section
+        id="recovery-sheet"
+        class="card wide"
+        aria-labelledby="recovery-title"
+        data-notice-host=""
+        hidden=""
+      >
+        <ol
+          id="recovery-steps"
+          class="steps"
+          aria-label="Create account progress"
+        >
+          <li data-state="done">
+            <span
+              class="step-mark"
+              aria-hidden="true"
+              >1</span
+            ><span class="step-label"
+              >Account<span class="visually-hidden"> (done)</span></span
+            >
+          </li>
+          <li
+            data-state="current"
+            aria-current="step"
+          >
+            <span
+              class="step-mark"
+              aria-hidden="true"
+              >2</span
+            ><span class="step-label">Recovery key</span>
+          </li>
+          <li data-state="todo">
+            <span
+              class="step-mark"
+              aria-hidden="true"
+              >3</span
+            ><span class="step-label">Verify email</span>
+          </li>
+        </ol>
+        <h1
+          id="recovery-title"
+          tabindex="-1"
+        >
+          Save your recovery key
+        </h1>
+        <div
+          class="notices"
+          data-notices=""
+        >
+          <div role="status"></div>
+          <div role="alert"></div>
+        </div>
+        <div data-recovery="vault">
+          <p>
+            Your recovery key is the only way to get your encrypted tasks back if you
+            forget your password and have no signed-in device. Ultra Tasks cannot recover
+            it for you. Copy it into your password manager, save the file, or print it.
+          </p>
+          <div class="callout callout-warning">
+            <svg
+              class="icon"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <use href="#i-warning" />
+            </svg>
+            <p>
+              If you lose both your password and your recovery key and have no unlocked
+              device, you will lose access to your encrypted data.
+            </p>
+          </div>
+        </div>
+        <div
+          data-recovery="mfa"
+          hidden=""
+        >
+          <p>
+            Each recovery code works once if you lose your authenticator or security key.
+            Save them somewhere private now. They are shown only this once, and adding
+            another method replaces this set.
+          </p>
+        </div>
+        <pre
+          id="recovery-material"
+          tabindex="0"
+          translate="no"
+          aria-label="Recovery material"
+        ></pre>
+        <div
+          class="actions"
+          role="group"
+          aria-label="Save recovery material"
+        >
           <button
             id="copy-recovery"
             type="button"
           >
-            Copy recovery material</button
+            Copy</button
           ><button
             id="download-recovery"
             type="button"
           >
-            Save recovery file</button
+            Save as file</button
           ><button
             id="print-recovery"
             type="button"
           >
             Print
           </button>
-        </nav>
+        </div>
+        <p class="muted">
+          Two-factor recovery codes only recover sign-in; they cannot decrypt your data.
+          Keep all recovery material private.
+        </p>
         <form
           id="finish-signup"
           hidden=""
         >
-          <label
-            ><input
+          <div class="checkbox-row">
+            <input
               id="saved-key"
               type="checkbox"
               required=""
-            />
-            I saved my recovery key and understand the data loss warning.</label
-          ><button class="primary">Create account</button>
+            /><label for="saved-key"
+              >I saved my recovery key and understand the data loss warning.</label
+            >
+          </div>
+          <div class="actions">
+            <button
+              class="primary"
+              type="submit"
+              data-busy-label="Creating account…"
+            >
+              Create account</button
+            ><button
+              id="signup-back"
+              type="button"
+            >
+              Back to account details
+            </button>
+          </div>
+        </form>
+        <form
+          id="finish-codes"
+          hidden=""
+        >
+          <div class="checkbox-row">
+            <input
+              id="saved-codes"
+              type="checkbox"
+              required=""
+            /><label for="saved-codes">I saved these recovery codes.</label>
+          </div>
           <button
-            id="signup-back"
-            type="button"
+            class="primary"
+            type="submit"
           >
-            Back to account details
+            Done
           </button>
         </form>
       </section>
-      <form
-        id="mfa"
-        hidden=""
-      >
-        <h1>Two-factor authentication</h1>
-        <label
-          >Authenticator or MFA recovery code
-          <input
-            id="mfa-code"
-            type="password"
-            autocomplete="one-time-code" /></label
-        ><button class="primary">Verify code</button
-        ><button
-          id="webauthn-login"
-          type="button"
-          hidden=""
-        >
-          Use security key or passkey
-        </button>
-        <button
-          id="mfa-cancel"
-          type="button"
-        >
-          Back to sign in
-        </button>
-      </form>
+
       <section
         id="offline-state"
+        class="card"
+        aria-labelledby="offline-title"
+        data-notice-host=""
         hidden=""
       >
-        <h2>Cached account unlocked</h2>
-        <button id="resume-session">Resume online session</button>
+        <h1
+          id="offline-title"
+          tabindex="-1"
+        >
+          Cached account unlocked
+        </h1>
+        <div
+          class="notices"
+          data-notices=""
+        >
+          <div role="status"></div>
+          <div role="alert"></div>
+        </div>
+        <p>
+          <strong id="offline-email"></strong> is unlocked from the encrypted copy on this
+          device. Actions that need the server are unavailable until you resume an online
+          session.
+        </p>
+        <div class="actions">
+          <button
+            id="resume-session"
+            type="button"
+            class="primary"
+            data-busy-label="Resuming…"
+          >
+            Resume online session</button
+          ><button
+            id="offline-lock"
+            type="button"
+          >
+            Back to sign in
+          </button>
+        </div>
       </section>
+
       <form
         id="recover-finish"
+        class="card"
+        aria-labelledby="recover-finish-title"
+        data-notice-host=""
         hidden=""
       >
-        <h1>Recover encrypted account</h1>
-        <label
-          >Recovery link token (filled automatically from email)
+        <h1
+          id="recover-finish-title"
+          tabindex="-1"
+        >
+          Set a new password
+        </h1>
+        <p class="lede">
+          Enter your vault recovery key and choose a new password. Your encrypted data
+          stays intact.
+        </p>
+        <div
+          class="notices"
+          data-notices=""
+        >
+          <div role="status"></div>
+          <div role="alert"></div>
+        </div>
+        <div class="field">
+          <label for="recover-token">Recovery link token</label>
           <input
             id="recover-token"
-            autocomplete="off" /></label
-        ><label
-          >Vault recovery key
+            autocomplete="off"
+            autocapitalize="none"
+            spellcheck="false"
+            aria-describedby="recover-token-help"
+          />
+          <p
+            id="recover-token-help"
+            class="field-help"
+          >
+            Filled in automatically when you open the link from your email.
+          </p>
+        </div>
+        <div class="field">
+          <label for="recover-key">Vault recovery key</label>
           <input
             id="recover-key"
             type="password"
             autocomplete="off"
-            required="" /></label
-        ><label
-          >New password
-          <input
-            id="recover-password"
-            type="password"
-            autocomplete="new-password"
-            minlength="12"
-            maxlength="1024"
-            required="" /></label
-        ><label
-          >Confirm new password
-          <input
-            id="recover-password-confirm"
-            type="password"
-            autocomplete="new-password"
-            minlength="12"
-            maxlength="1024"
-            required="" /></label
-        ><label
-          >Authenticator or MFA recovery code (if enabled)
+            required=""
+          />
+        </div>
+        <div class="field">
+          <label for="recover-password">New password</label>
+          <div class="password-field">
+            <input
+              id="recover-password"
+              type="password"
+              autocomplete="new-password"
+              minlength="12"
+              maxlength="1024"
+              required=""
+            /><button
+              type="button"
+              class="icon-button"
+              data-toggle-password="recover-password"
+              aria-pressed="false"
+              aria-label="Show password"
+            >
+              <svg
+                class="icon"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <use href="#i-eye" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="field">
+          <label for="recover-password-confirm">Confirm new password</label>
+          <div class="password-field">
+            <input
+              id="recover-password-confirm"
+              type="password"
+              autocomplete="new-password"
+              minlength="12"
+              maxlength="1024"
+              required=""
+            /><button
+              type="button"
+              class="icon-button"
+              data-toggle-password="recover-password-confirm"
+              aria-pressed="false"
+              aria-label="Show confirmation password"
+            >
+              <svg
+                class="icon"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <use href="#i-eye" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="field">
+          <label for="recover-mfa">Authenticator or recovery code (if enabled)</label>
           <input
             id="recover-mfa"
             type="password"
-            autocomplete="one-time-code" /></label
-        ><button class="primary">Recover account</button>
+            autocomplete="one-time-code"
+            autocapitalize="none"
+            spellcheck="false"
+          />
+        </div>
+        <button
+          class="primary block"
+          type="submit"
+          data-busy-label="Recovering…"
+        >
+          Recover account
+        </button>
       </form>
+
       <section
         id="dashboard"
+        aria-labelledby="dash-title"
         hidden=""
       >
-        <header class="account-heading">
-          <div>
-            <p class="eyebrow">Account</p>
-            <h1 id="who">Account</h1>
+        <header class="dash-header">
+          <div class="dash-heading">
+            <h1
+              id="dash-title"
+              tabindex="-1"
+            >
+              Ultra Tasks account
+            </h1>
+            <p
+              id="who"
+              class="dash-email"
+            ></p>
           </div>
-          <div class="actions">
+          <div
+            class="actions"
+            role="group"
+            aria-label="This browser’s session"
+          >
             <button
               id="lock"
               type="button"
+              title="Clears your encryption keys from this page. You will need your password to continue. Your session is not ended on the server."
+              aria-describedby="lock-help"
             >
-              Lock this page</button
+              Lock</button
             ><button
               id="logout"
               type="button"
+              title="Ends this browser’s session and clears your encryption keys from this page."
+              aria-describedby="logout-help"
+              data-busy-label="Signing out…"
             >
               Sign out
             </button>
           </div>
+          <p
+            id="lock-help"
+            class="visually-hidden"
+          >
+            Lock clears your encryption keys from this page. You will need your password
+            to continue. Your session is not ended on the server; Sign out does that.
+          </p>
+          <p
+            id="logout-help"
+            class="visually-hidden"
+          >
+            Sign out ends this browser’s session on the server and clears your encryption
+            keys from this page.
+          </p>
         </header>
         <div class="settings-layout">
           <nav
             class="settings-nav"
-            aria-label="Account navigation"
+            aria-label="Account sections"
           >
             <button
               type="button"
-              data-panel="account-overview"
+              data-panel="panel-account"
               aria-current="page"
             >
-              Overview</button
+              Account</button
             ><button
               type="button"
-              data-panel="account-security"
+              data-panel="panel-security"
               aria-current="false"
             >
               Security</button
             ><button
               type="button"
-              data-panel="account-profile"
-              aria-current="false"
-            >
-              Profile</button
-            ><button
-              type="button"
-              data-panel="account-devices"
+              data-panel="panel-devices"
               aria-current="false"
             >
               Devices
@@ -524,226 +1371,618 @@
           </nav>
           <div class="settings-content">
             <section
-              id="account-overview"
-              aria-labelledby="overview-heading"
+              id="panel-account"
+              aria-labelledby="account-heading"
+              data-notice-host=""
             >
-              <h2 id="overview-heading">Private sync</h2>
-              <p>
-                Sign in to this server from Ultra Tasks on each device. Your task content
-                is encrypted before it leaves your device.
-              </p>
-              <dl>
-                <dt>Server address</dt>
-                <dd id="server-address"></dd>
-                <dt>Personal data</dt>
-                <dd id="personal-state"></dd>
-                <dt>Encrypted records</dt>
-                <dd>
-                  <span id="storage-usage"></span
-                  ><progress
-                    id="storage-meter"
-                    value="0"
-                    max="1"
-                    aria-label="Encrypted record storage used"
-                  ></progress>
-                </dd>
-                <dt>Encrypted history</dt>
-                <dd id="history-usage"></dd>
-              </dl>
-              <button
-                type="button"
-                id="overview-refresh"
+              <h2
+                id="account-heading"
+                tabindex="-1"
               >
-                Refresh sync information
-              </button>
-              <a
-                href="https://ultratasks.app/#download"
-                rel="noreferrer noopener"
-                >Get Ultra Tasks</a
-              >
+                Account
+              </h2>
               <div
+                class="notices"
+                data-notices=""
+              >
+                <div role="status"></div>
+                <div role="alert"></div>
+              </div>
+              <dl class="facts">
+                <div class="fact">
+                  <dt>Email</dt>
+                  <dd>
+                    <div class="value-row">
+                      <span id="account-email"></span
+                      ><button
+                        type="button"
+                        id="change-email"
+                        class="small"
+                        aria-expanded="false"
+                        aria-controls="email-change"
+                      >
+                        Change email
+                      </button>
+                    </div>
+                    <form
+                      id="email-change"
+                      class="inline-form"
+                      hidden=""
+                    >
+                      <div class="field">
+                        <label for="new-email">New email address</label>
+                        <input
+                          id="new-email"
+                          name="new-email"
+                          type="email"
+                          autocomplete="email"
+                          autocapitalize="none"
+                          autocorrect="off"
+                          spellcheck="false"
+                          required=""
+                          aria-describedby="new-email-help"
+                        />
+                        <p
+                          id="new-email-help"
+                          class="field-help"
+                        >
+                          We send a link to the new address. Your email changes after you
+                          open it.
+                        </p>
+                      </div>
+                      <div class="actions">
+                        <button
+                          class="primary"
+                          type="submit"
+                          data-busy-label="Sending…"
+                        >
+                          Send verification link</button
+                        ><button
+                          id="change-email-cancel"
+                          type="button"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </form>
+                  </dd>
+                </div>
+                <div class="fact">
+                  <dt id="account-id-label">Account ID</dt>
+                  <dd>
+                    <div class="value-row">
+                      <code
+                        id="account-id"
+                        class="mono id-value"
+                        translate="no"
+                        aria-labelledby="account-id-label"
+                      ></code
+                      ><button
+                        type="button"
+                        id="copy-account-id"
+                        class="small"
+                        aria-describedby="account-id-help"
+                      >
+                        <svg
+                          class="icon"
+                          aria-hidden="true"
+                          focusable="false"
+                        >
+                          <use href="#i-copy" />
+                        </svg>
+                        Copy
+                      </button>
+                      <span
+                        id="copy-account-id-status"
+                        class="inline-status"
+                        role="status"
+                      ></span>
+                    </div>
+                    <p
+                      id="account-id-help"
+                      class="field-help"
+                    >
+                      Share this ID with support. It is not a password and does not prove
+                      you own the account.
+                    </p>
+                  </dd>
+                </div>
+                <div class="fact">
+                  <dt>Server address</dt>
+                  <dd>
+                    <span
+                      id="server-address"
+                      class="mono"
+                    ></span>
+                  </dd>
+                </div>
+                <div class="fact">
+                  <dt>Sync storage</dt>
+                  <dd>
+                    <p id="storage-summary">Loading…</p>
+                    <progress
+                      id="storage-meter"
+                      value="0"
+                      max="1"
+                      aria-label="Encrypted storage used"
+                      hidden=""
+                    ></progress>
+                    <p
+                      id="history-summary"
+                      class="field-help"
+                      hidden=""
+                    ></p>
+                  </dd>
+                </div>
+              </dl>
+              <p class="get-app">
+                <a
+                  href="https://ultratasks.app/#download"
+                  rel="noreferrer noopener"
+                  >Get Ultra Tasks</a
+                >
+                for your phone, tablet and computer.
+              </p>
+              <section
                 id="calendar-publications"
+                class="group"
+                aria-labelledby="calendars-heading"
                 hidden
               >
-                <h3>Published calendars</h3>
-                <p>
-                  These selected task copies are readable by the server operator and
-                  anyone with their subscription URL. Notes stay private. Manage which
-                  tasks are published in the app. Rotating or stopping a feed blocks
-                  future requests; calendar apps may retain downloaded copies.
-                </p>
+                <h3 id="calendars-heading">Published calendars</h3>
+                <div class="callout">
+                  <svg
+                    class="icon"
+                    aria-hidden="true"
+                    focusable="false"
+                  >
+                    <use href="#i-info" />
+                  </svg>
+                  <p>
+                    These selected task copies are readable by the server operator and
+                    anyone with their subscription URL. Notes stay private. Manage which
+                    tasks are published in the app. Rotating or stopping a feed blocks
+                    future requests; calendar apps may retain downloaded copies.
+                  </p>
+                </div>
                 <ul
                   id="calendar-feed-list"
                   class="item-list"
                 ></ul>
-                <p
+                <div
                   id="calendar-feed-url"
                   role="status"
-                ></p>
-              </div>
+                ></div>
+              </section>
             </section>
+
             <section
-              id="account-security"
-              hidden=""
+              id="panel-security"
               aria-labelledby="security-heading"
+              data-notice-host=""
+              hidden=""
             >
-              <h2 id="security-heading">Security</h2>
-              <div class="settings-group">
-                <h3>Two-factor authentication</h3>
-                <p class="muted">Add another layer of protection when you sign in.</p>
-                <ul
-                  id="factors"
-                  class="item-list"
-                ></ul>
-                <div class="actions">
+              <h2
+                id="security-heading"
+                tabindex="-1"
+              >
+                Security
+              </h2>
+              <div
+                class="notices"
+                data-notices=""
+              >
+                <div role="status"></div>
+                <div role="alert"></div>
+              </div>
+
+              <section
+                class="group"
+                aria-labelledby="protection-heading"
+              >
+                <h3 id="protection-heading">Sign-in protection</h3>
+                <p class="muted">
+                  Your password never leaves your device. These settings add checks for
+                  people who might have it.
+                </p>
+
+                <div
+                  id="new-device-row"
+                  class="setting-row"
+                  hidden=""
+                >
                   <button
-                    id="totp-start"
                     type="button"
-                  >
-                    Set up authenticator</button
-                  ><button
-                    id="webauthn-enroll"
-                    type="button"
-                  >
-                    Add security key or passkey
-                  </button>
+                    role="switch"
+                    id="new-device-toggle"
+                    class="switch"
+                    aria-checked="true"
+                    aria-labelledby="new-device-label"
+                    aria-describedby="new-device-help"
+                  ></button>
+                  <div class="setting-text">
+                    <label
+                      id="new-device-label"
+                      for="new-device-toggle"
+                      >New-device email verification</label
+                    >
+                    <p
+                      id="new-device-help"
+                      class="field-help"
+                    >
+                      When you sign in on a device we do not recognize, we email an
+                      8-digit code to your account address first. It helps if your
+                      password leaks, but it is not as strong as an authenticator app or
+                      security key.
+                    </p>
+                    <p
+                      id="new-device-2fa-note"
+                      class="field-help"
+                      hidden=""
+                    >
+                      Two-factor authentication is on, so we ask for your second factor on
+                      new devices instead of an email code.
+                    </p>
+                  </div>
                 </div>
                 <form
-                  id="totp-enroll"
+                  id="new-device-confirm"
+                  class="inline-form"
                   hidden=""
                 >
-                  <p>
-                    Enter this secret in your authenticator:
-                    <code id="totp-secret"></code>
-                  </p>
-                  <a id="totp-uri">Open authenticator app</a
-                  ><label
-                    >Code
+                  <div class="callout callout-warning">
+                    <svg
+                      class="icon"
+                      aria-hidden="true"
+                      focusable="false"
+                    >
+                      <use href="#i-warning" />
+                    </svg>
+                    <p id="new-device-confirm-text"></p>
+                  </div>
+                  <div
+                    id="new-device-code-field"
+                    class="field"
+                    hidden=""
+                  >
+                    <label for="new-device-code">Authenticator or recovery code</label>
                     <input
-                      id="totp-code"
+                      id="new-device-code"
+                      type="password"
                       autocomplete="one-time-code"
-                      pattern="[0-9]{6}"
-                      required="" /></label
-                  ><button class="primary">Enable authenticator</button>
+                      autocapitalize="none"
+                      spellcheck="false"
+                    />
+                  </div>
+                  <div class="actions">
+                    <button
+                      id="new-device-apply"
+                      class="primary"
+                      type="submit"
+                      data-busy-label="Turning off…"
+                    >
+                      Turn off</button
+                    ><button
+                      id="new-device-cancel"
+                      type="button"
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </form>
-                <form
-                  id="remove-factor"
-                  hidden=""
+
+                <div class="subgroup">
+                  <h4 id="mfa-heading">Two-factor authentication</h4>
+                  <p class="muted">
+                    Add a second step when you sign in: a code from an authenticator app,
+                    or a security key or passkey. It protects your account even if your
+                    password is stolen. Changing these settings signs out your other
+                    devices.
+                  </p>
+                  <p
+                    id="factors-summary"
+                    class="state-line"
+                  ></p>
+                  <ul
+                    id="factors"
+                    class="item-list"
+                    aria-labelledby="mfa-heading"
+                  ></ul>
+                  <div class="actions">
+                    <button
+                      id="totp-start"
+                      type="button"
+                      data-busy-label="Starting…"
+                    >
+                      Set up authenticator</button
+                    ><button
+                      id="webauthn-enroll"
+                      type="button"
+                      data-busy-label="Waiting for your security key…"
+                    >
+                      Add security key or passkey
+                    </button>
+                  </div>
+                  <form
+                    id="totp-enroll"
+                    class="inline-form"
+                    hidden=""
+                  >
+                    <p>
+                      Enter this secret in your authenticator app, then type the 6-digit
+                      code it shows.
+                    </p>
+                    <p><code id="totp-secret"></code></p>
+                    <p><a id="totp-uri">Open authenticator app</a></p>
+                    <div class="field">
+                      <label for="totp-code">6-digit code</label>
+                      <input
+                        id="totp-code"
+                        class="code-input"
+                        inputmode="numeric"
+                        autocomplete="one-time-code"
+                        pattern="[0-9]{6}"
+                        maxlength="6"
+                        required=""
+                      />
+                    </div>
+                    <div class="actions">
+                      <button
+                        class="primary"
+                        type="submit"
+                        data-busy-label="Enabling…"
+                      >
+                        Enable authenticator</button
+                      ><button
+                        id="totp-cancel"
+                        type="button"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                  <form
+                    id="remove-factor"
+                    class="inline-form"
+                    hidden=""
+                  >
+                    <input
+                      id="remove-factor-id"
+                      type="hidden"
+                    />
+                    <div class="field">
+                      <label for="remove-factor-code"
+                        >Authenticator or recovery code</label
+                      >
+                      <input
+                        id="remove-factor-code"
+                        type="password"
+                        autocomplete="one-time-code"
+                        autocapitalize="none"
+                        spellcheck="false"
+                        required=""
+                      />
+                    </div>
+                    <div class="actions">
+                      <button
+                        class="primary"
+                        type="submit"
+                        data-busy-label="Removing…"
+                      >
+                        Remove second factor</button
+                      ><button
+                        id="remove-factor-cancel"
+                        type="button"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                  <p class="field-help">
+                    Recovery codes: turning on two-factor authentication gives you ten
+                    one-time codes. They recover sign-in only and cannot decrypt your
+                    data; your vault recovery key does that. Adding another method
+                    replaces the set.
+                  </p>
+                </div>
+              </section>
+
+              <section
+                class="group"
+                aria-labelledby="password-heading"
+              >
+                <h3 id="password-heading">Password</h3>
+                <details
+                  id="password-details"
+                  class="disclosure"
                 >
-                  <input
-                    id="remove-factor-id"
-                    type="hidden"
-                  /><label
-                    >Authenticator or MFA recovery code
-                    <input
-                      id="remove-factor-code"
-                      type="password"
-                      autocomplete="one-time-code"
-                      required="" /></label
-                  ><button class="primary">Remove second factor</button>
-                </form>
-              </div>
-              <div class="settings-group">
-                <form id="password-change">
-                  <h3>Change password</h3>
-                  <p>
-                    Your recovery key and encrypted content remain valid. Other device
-                    sessions will be revoked.
-                  </p>
-                  <label
-                    >New password
-                    <input
-                      id="new-password"
-                      type="password"
-                      autocomplete="new-password"
-                      minlength="12"
-                      maxlength="1024"
-                      required="" /></label
-                  ><label
-                    >Confirm new password
-                    <input
-                      id="new-password-confirm"
-                      type="password"
-                      autocomplete="new-password"
-                      minlength="12"
-                      maxlength="1024"
-                      required="" /></label
-                  ><button class="primary">Change password</button>
-                </form>
-              </div>
-              <details>
-                <summary>Delete account</summary>
+                  <summary>Change password</summary>
+                  <form
+                    id="password-change"
+                    class="disclosure-body"
+                  >
+                    <p>
+                      Your recovery key and encrypted content remain valid. Your other
+                      devices will be signed out.
+                    </p>
+                    <div class="field">
+                      <label for="new-password">New password</label>
+                      <div class="password-field">
+                        <input
+                          id="new-password"
+                          type="password"
+                          autocomplete="new-password"
+                          minlength="12"
+                          maxlength="1024"
+                          required=""
+                        /><button
+                          type="button"
+                          class="icon-button"
+                          data-toggle-password="new-password"
+                          aria-pressed="false"
+                          aria-label="Show password"
+                        >
+                          <svg
+                            class="icon"
+                            aria-hidden="true"
+                            focusable="false"
+                          >
+                            <use href="#i-eye" />
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
+                    <div class="field">
+                      <label for="new-password-confirm">Confirm new password</label>
+                      <div class="password-field">
+                        <input
+                          id="new-password-confirm"
+                          type="password"
+                          autocomplete="new-password"
+                          minlength="12"
+                          maxlength="1024"
+                          required=""
+                        /><button
+                          type="button"
+                          class="icon-button"
+                          data-toggle-password="new-password-confirm"
+                          aria-pressed="false"
+                          aria-label="Show confirmation password"
+                        >
+                          <svg
+                            class="icon"
+                            aria-hidden="true"
+                            focusable="false"
+                          >
+                            <use href="#i-eye" />
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
+                    <button
+                      class="primary"
+                      type="submit"
+                      data-busy-label="Changing…"
+                    >
+                      Change password
+                    </button>
+                  </form>
+                </details>
+              </section>
+
+              <section
+                class="group danger-zone"
+                aria-labelledby="danger-heading"
+              >
+                <h3 id="danger-heading">Delete account</h3>
                 <p>
                   This permanently deletes your account and its personal encrypted data
                   from the live server. Export a backup from Ultra Tasks first. Offline
                   copies on your devices are not erased remotely. Server backups may
                   retain encrypted copies until the operator's retention period expires.
                 </p>
-                <form id="delete-account">
-                  <label
-                    >Type your account email to confirm<input
-                      id="delete-confirm-email"
-                      type="email"
-                      autocomplete="off"
-                      required=""
-                  /></label>
-                  <label
-                    ><input
-                      id="delete-confirm"
-                      type="checkbox"
-                      required=""
-                    />I understand this cannot be undone.</label
+                <details class="disclosure">
+                  <summary>Delete my account…</summary>
+                  <form
+                    id="delete-account"
+                    class="disclosure-body"
                   >
-                  <button type="submit">Permanently delete account</button>
-                </form>
-              </details>
+                    <div class="field">
+                      <label for="delete-confirm-email"
+                        >Type your account email to confirm</label
+                      >
+                      <input
+                        id="delete-confirm-email"
+                        type="email"
+                        autocomplete="off"
+                        autocapitalize="none"
+                        spellcheck="false"
+                        required=""
+                      />
+                    </div>
+                    <div class="checkbox-row">
+                      <input
+                        id="delete-confirm"
+                        type="checkbox"
+                        required=""
+                      /><label for="delete-confirm"
+                        >I understand this cannot be undone.</label
+                      >
+                    </div>
+                    <button
+                      type="submit"
+                      class="danger"
+                      data-busy-label="Deleting…"
+                    >
+                      Permanently delete account
+                    </button>
+                  </form>
+                </details>
+              </section>
             </section>
+
             <section
-              id="account-profile"
-              hidden=""
-              aria-labelledby="profile-heading"
-            >
-              <h2 id="profile-heading">Profile</h2>
-              <form id="profile">
-                <label
-                  >Username
-                  <input
-                    id="profile-username"
-                    autocomplete="username" /></label
-                ><label
-                  >Display name
-                  <input
-                    id="profile-name"
-                    autocomplete="name" /></label
-                ><label
-                  >New email (optional, requires verification)
-                  <input
-                    id="profile-email"
-                    type="email"
-                    autocomplete="email" /></label
-                ><button class="primary">Save profile</button>
-              </form>
-            </section>
-            <section
-              id="account-devices"
-              hidden=""
+              id="panel-devices"
               aria-labelledby="devices-heading"
+              data-notice-host=""
+              hidden=""
             >
-              <h2 id="devices-heading">Devices</h2>
-              <p class="muted">
-                Manage the devices signed in to this server. Revoking a session stops its
-                access; downloaded data stays on the device.
-              </p>
-              <button
-                id="sessions-refresh"
-                type="button"
+              <div class="panel-head">
+                <h2
+                  id="devices-heading"
+                  tabindex="-1"
+                >
+                  Devices
+                </h2>
+                <button
+                  id="sessions-refresh"
+                  type="button"
+                  class="small"
+                  data-busy-label="Refreshing…"
+                >
+                  Refresh
+                </button>
+              </div>
+              <div
+                class="notices"
+                data-notices=""
               >
-                Refresh devices
-              </button>
+                <div role="status"></div>
+                <div role="alert"></div>
+              </div>
+              <p class="muted">
+                Devices and browsers signed in to your account. Removing a device signs it
+                out; tasks already downloaded to it stay there.
+                <span
+                  id="devices-trusted-note"
+                  hidden=""
+                  >A trusted device skips the new-device email check when you sign in with
+                  your password.</span
+                >
+              </p>
               <ul
                 id="sessions"
-                class="item-list"
+                class="device-list"
+                aria-labelledby="devices-heading"
               ></ul>
+              <p
+                id="sessions-empty"
+                class="muted"
+                hidden=""
+              >
+                No other devices are signed in.
+              </p>
+              <details
+                id="sessions-ended"
+                class="disclosure"
+                hidden=""
+              >
+                <summary id="sessions-ended-summary">Signed-out devices</summary>
+                <ul
+                  id="sessions-ended-list"
+                  class="device-list quiet"
+                ></ul>
+              </details>
             </section>
           </div>
         </div>

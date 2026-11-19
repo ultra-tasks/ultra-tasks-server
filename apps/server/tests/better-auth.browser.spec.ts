@@ -12,6 +12,7 @@ import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHarness, password } from './ultra-account.helper';
+import { openAccountPage, fitsWidth } from './account-dashboard.helper';
 import { selectAppAccountServer } from './app-account-ui.helper';
 import { totp } from '../src/ultra-account/security';
 
@@ -22,6 +23,7 @@ describe('Better Auth + OPAQUE through the account website and real app', () => 
   let origin: string;
   let mfaSecret: string;
   let recoveryCode: string;
+  let accountId: string;
   const output = resolve(
     process.env.ULTRA_AUTH_SCREENSHOTS || '.tmp/better-auth-screenshots',
   );
@@ -58,6 +60,7 @@ describe('Better Auth + OPAQUE through the account website and real app', () => 
     origin = 'http://localhost:' + address.port;
     h.config.publicUrl = origin;
     const { client } = await h.register('preview@example.test', 'preview');
+    accountId = client.account!.id;
     const enrollment = await client.request<{ secret: string; enrollmentToken: string }>(
       '/factors/totp/start',
       {},
@@ -90,28 +93,32 @@ describe('Better Auth + OPAQUE through the account website and real app', () => 
     });
     const page = await context.newPage();
     try {
-      await page.goto(origin + '/account');
-      await page.locator('#status').filter({ hasText: 'Ready.' }).waitFor();
-      await page.locator('#login-id').fill('preview');
+      await openAccountPage(page, origin);
+      await page.locator('#login-id').fill('preview@example.test');
       await page.locator('#login-password').fill(password);
       await screenshot(page, 'website-01-sign-in');
-      await page.locator('#login button:not([type])').click();
-      await page.locator('#status').filter({ hasText: 'Complete two-factor' }).waitFor();
+      await page.locator('#login button.primary').click();
+      await browserExpect(page.locator('#mfa')).toBeVisible({ timeout: 30000 });
       await browserExpect(page.locator('#auth')).toBeHidden();
       await page.locator('#mfa-cancel').click();
       await browserExpect(page.locator('#mfa')).toBeHidden();
       await browserExpect(page.locator('#auth')).toBeVisible();
       await page.locator('#login-password').fill(password);
-      await page.locator('#login button:not([type])').click();
-      await page.locator('#status').filter({ hasText: 'Complete two-factor' }).waitFor();
+      await page.locator('#login button.primary').click();
+      await browserExpect(page.locator('#mfa')).toBeVisible({ timeout: 30000 });
       await page.locator('#mfa').scrollIntoViewIfNeeded();
       await screenshot(page, 'website-02-two-factor');
       await page.locator('#mfa-code').fill(recoveryCode);
-      await page.locator('#mfa button').first().click();
-      await page.locator('#status').filter({ hasText: 'Signed in.' }).waitFor();
+      await page.locator('#mfa button.primary').click();
+      await browserExpect(page.locator('#dashboard')).toBeVisible({ timeout: 30000 });
+      await browserExpect(page.locator('#storage-summary')).not.toHaveText('Loading…');
       await page.evaluate(() => window.scrollTo(0, 0));
       await screenshot(page, 'website-03-dashboard');
-      await browserExpect(page.locator('#storage-meter')).toHaveAttribute('max', /[1-9]/);
+      // The account page offers the immutable account ID instead of profile name fields.
+      await browserExpect(page.locator('#account-id')).toHaveText(accountId);
+      await browserExpect(
+        page.getByRole('button', { name: 'Profile', exact: true }),
+      ).toHaveCount(0);
       await page.getByRole('button', { name: 'Security', exact: true }).click();
       await browserExpect(
         page.getByText('Authenticator app', { exact: true }),
@@ -119,8 +126,6 @@ describe('Better Auth + OPAQUE through the account website and real app', () => 
       await screenshot(page, 'website-04-security');
       await page.getByRole('button', { name: 'Devices', exact: true }).click();
       await browserExpect(page.locator('#sessions')).toContainText('This device');
-      await page.getByRole('button', { name: 'Profile', exact: true }).click();
-      await browserExpect(page.locator('#profile-username')).toHaveValue('preview');
       expect(await h.transport('/capabilities')).toMatchObject({
         features: { betterAuthSessions: true },
       });
@@ -148,31 +153,26 @@ describe('Better Auth + OPAQUE through the account website and real app', () => 
       });
       try {
         const page = await context.newPage();
-        await page.goto(origin + '/account');
-        await page.locator('#status').filter({ hasText: 'Ready.' }).waitFor();
+        await openAccountPage(page, origin);
         await browserExpect(page.locator('#signup')).toBeHidden();
-        await page
-          .getByRole('button', { name: 'Create an account', exact: true })
-          .click();
+        await page.getByRole('button', { name: 'Create account', exact: true }).click();
         await browserExpect(page.locator('#signup-email')).toBeFocused();
         await browserExpect(page.locator('#login')).toBeHidden();
         await screenshot(page, 'website-05-create-account-' + colorScheme);
         await page.getByRole('button', { name: 'Back to sign in' }).click();
-        await page.getByRole('button', { name: 'Forgot your password?' }).click();
+        await page.getByRole('button', { name: 'Forgot password?' }).click();
         await browserExpect(page.locator('#recover-request')).toBeVisible();
         await browserExpect(page.locator('#signup')).toBeHidden();
         await page.getByRole('button', { name: 'Back to sign in' }).click();
-        await page.locator('#login-id').fill('preview');
+        await page.locator('#login-id').fill('preview@example.test');
         await page.locator('#login-password').fill('incorrect password');
         await page.locator('#login button.primary').click();
-        await browserExpect(page.locator('#status')).toHaveAttribute(
-          'data-tone',
-          'error',
-        );
+        // The error sits inside the sign-in card, and the password field is cleared.
+        await browserExpect(
+          page.locator('#login .notice[data-tone="error"]'),
+        ).toBeVisible({ timeout: 30000 });
         await browserExpect(page.locator('#login-password')).toHaveValue('');
-        expect(
-          await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
-        ).toBe(true);
+        expect(await fitsWidth(page)).toBe(true);
         await screenshot(page, 'website-06-sign-in-mobile-' + colorScheme);
       } finally {
         await context.close();
