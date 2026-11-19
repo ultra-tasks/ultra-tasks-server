@@ -7,10 +7,15 @@ import websocket from '@fastify/websocket';
 import { resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { loadConfigFromEnv, type ServerConfig } from './config';
+import { Logger } from './logger';
 import { prisma } from './db';
 import { sendUltraAccountEmail } from './email';
 import { parsePrivacyPolicyUrl } from './privacy-url';
-import { loadUltraConfig, ultraAccountRoutes } from './ultra-account';
+import {
+  loadDeviceEmailSetting,
+  loadUltraConfig,
+  ultraAccountRoutes,
+} from './ultra-account';
 import { registerPublicCalendarFeeds } from './ultra-account/calendar-feeds';
 
 /** The v1 entry point exposes accounts and personal sync, independently of legacy routes. */
@@ -34,6 +39,13 @@ export const createServer = (overrides: Partial<ServerConfig> = {}) => {
     : undefined;
   if (!accountConfig)
     throw new Error('Ultra Tasks server requires ULTRA_ACCOUNTS_ENABLED=true');
+  // The email check needs working mail; without SMTP the capability stays off.
+  const deviceEmailRequested = loadDeviceEmailSetting();
+  const deviceEmailVerification = deviceEmailRequested && !!config.smtp;
+  if (deviceEmailRequested && !deviceEmailVerification)
+    Logger.warn(
+      'New-device email verification is off because SMTP is not configured (set SMTP_HOST).',
+    );
   let app: FastifyInstance | undefined;
   const production = process.env.NODE_ENV === 'production';
   const registrationOpen =
@@ -122,6 +134,7 @@ export const createServer = (overrides: Partial<ServerConfig> = {}) => {
         turnstile,
         requireTermsConsent: requireConsent,
         hasOperatorTerms: hasTerms,
+        deviceEmailVerification,
         sendMail: sendUltraAccountEmail,
       });
       app.get('/', async (_request, reply) => reply.redirect('/account'));

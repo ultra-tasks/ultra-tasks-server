@@ -71,6 +71,22 @@ The regular expression with `{8}` must be quoted in nginx. In `add_header`, a lo
 
 Do not change the server ID or regenerate OPAQUE/authentication secrets during upgrades or hostname changes. Reusing an email on a new installation does not transfer encrypted data. Never use `down -v` for a database you intend to keep.
 
+## Sign-in verification and session lifetime
+
+Three settings in `deploy/.env` control how sessions behave. Details, the threat model and the failure matrix are in [account devices and sessions](../docs/account-devices-and-sessions.md).
+
+| Variable                          | Default | Meaning                                                                                                                      |
+| --------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `ULTRA_DEVICE_EMAIL_VERIFICATION` | `true`  | A sign-in from a device the account does not recognise needs an emailed code. `false` is the kill switch. Needs working SMTP |
+| `ULTRA_SESSION_IDLE_DAYS`         | `180`   | A session signs out after this many days without a refresh; every refresh renews it                                          |
+| `ULTRA_SESSION_MAX_DAYS`          | `1095`  | Absolute session limit, fixed at sign-in; `0` removes it; not shorter than the idle days                                     |
+
+New-device email verification is a second check on a password-only sign-in. It is **not** multi-factor authentication and it does not resist phishing. Enrolled authenticator or security-key factors always take precedence and are never replaced by email. Existing sessions keep syncing; the code is requested only when the password is used on a device with no valid device token.
+
+**Staged rollout.** Applications older than the SDK that understands the code step cannot sign in on a new device while the setting is on; they are told to update and are never allowed through. For an installation with those applications in the field: apply the update with `ULTRA_DEVICE_EMAIL_VERIFICATION=false`, ship the applications, confirm a test account completes the code step, then set `true` and restart (`sh scripts/compose.sh up -d --wait`). To switch the check off in an emergency (for example an SMTP outage), set `false` and restart; pending codes simply expire. Setting the variable to anything other than `true` or `false` stops the server at startup.
+
+The update adds a database migration (`20261118000000_account_devices_sessions`). It only adds columns and a table, so the paired backup taken by `scripts/update.sh` is the rollback point and a previous image continues to run against the migrated schema (it accepts only the older 43-character refresh tokens, so sessions that already hold a newer one sign in again). Device records hold a user-chosen device name and timestamps; no IP address or user agent is stored, and they are deleted with the account.
+
 ## Backup, restore, and upgrade
 
 ```sh

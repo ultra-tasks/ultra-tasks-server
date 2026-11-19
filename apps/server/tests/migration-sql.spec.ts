@@ -604,6 +604,114 @@ describe('performance migrations', () => {
   });
 });
 
+describe('account devices and sessions migration', () => {
+  const name = '20261118000000_account_devices_sessions';
+  const sql = (): string => readMigration(name);
+  const statements = (): string =>
+    sql()
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('--'))
+      .join('\n');
+
+  it('keeps semicolons out of comments, for tooling that splits a migration into statements', () => {
+    for (const line of sql()
+      .split('\n')
+      .filter((entry) => entry.trim().startsWith('--')))
+      expect(line).not.toContain(';');
+    const parts = sql()
+      .split(';')
+      .map((part) => part.trim())
+      .filter(Boolean);
+    // Every piece, once comment lines are removed, is one whole statement.
+    for (const part of parts)
+      expect(
+        part
+          .split('\n')
+          .filter((line) => !line.trim().startsWith('--'))
+          .join('\n')
+          .trim(),
+      ).toMatch(/^(ALTER TABLE|CREATE TABLE|CREATE (UNIQUE )?INDEX)\b/);
+  });
+
+  it('is additive: no destructive, rewriting or out-of-band statements', () => {
+    const body = statements();
+    // Every statement must start with ALTER/CREATE (checked below), so no UPDATE or DELETE
+    // statement can hide here; "ON DELETE/UPDATE" are only foreign-key actions.
+    expect(body).not.toMatch(/\bDROP\b|\bTRUNCATE\b|\bRENAME\b/i);
+    expect(body).not.toMatch(
+      /\bBEGIN\b|\bCOMMIT\b|\bCONCURRENTLY\b|\bSET\s+NOT\s+NULL\b/i,
+    );
+    for (const statement of body
+      .split(';')
+      .map((part) => part.trim())
+      .filter(Boolean))
+      expect(statement).toMatch(/^(ALTER TABLE|CREATE TABLE|CREATE (UNIQUE )?INDEX)\b/);
+  });
+
+  it('adds the opt-out setting, the bounded device table, session binding and receipt time', () => {
+    const body = statements();
+    expect(body).toMatch(
+      /ALTER TABLE "ultra_accounts" ADD COLUMN "new_device_email" BOOLEAN NOT NULL DEFAULT true/,
+    );
+    // Refresh tokens name their own generation: the session stores the counter and the activity
+    // time. NULL marks a session issued before generations; no per-token column is added.
+    expect(body).toMatch(
+      /ALTER TABLE "ultra_sessions" ADD COLUMN "refresh_generation" INTEGER;/,
+    );
+    expect(body).toMatch(
+      /ALTER TABLE "ultra_sessions" ADD COLUMN "refreshed_at" BIGINT NOT NULL DEFAULT 0;/,
+    );
+    expect(body).not.toMatch(/ALTER TABLE "ultra_refresh_tokens"/);
+    expect(body).toMatch(/ALTER TABLE "ultra_sessions" ADD COLUMN "device_id" TEXT;/);
+    expect(body).toMatch(/CREATE TABLE "ultra_devices"/);
+    for (const column of [
+      '"id" TEXT NOT NULL',
+      '"account_id" TEXT NOT NULL',
+      '"token_digest" TEXT NOT NULL',
+      '"label" TEXT NOT NULL',
+      '"created_at" BIGINT NOT NULL',
+      '"last_seen_at" BIGINT NOT NULL',
+      '"revoked" BOOLEAN NOT NULL DEFAULT false',
+    ])
+      expect(body).toContain(column);
+    // Only a digest is stored, and it is unique across accounts.
+    expect(body).toContain('CREATE UNIQUE INDEX "ultra_devices_token_digest_key"');
+    expect(body).toContain('CREATE INDEX "ultra_devices_account_id_idx"');
+    expect(body).toMatch(
+      /"ultra_devices_account_id_fkey" FOREIGN KEY \("account_id"\) REFERENCES "ultra_accounts"\("id"\) ON DELETE CASCADE/,
+    );
+    expect(body).toMatch(
+      /"ultra_sessions_device_id_fkey" FOREIGN KEY \("device_id"\) REFERENCES "ultra_devices"\("id"\) ON DELETE SET NULL/,
+    );
+    // No IP address, user agent or fingerprint is stored.
+    expect(body).not.toMatch(/ip_address|user_agent|fingerprint/i);
+  });
+
+  it('runs after the migrations whose tables it alters and matches schema.prisma', () => {
+    const names = readdirSync(migrationsDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+    for (const earlier of [
+      '20261105000000_ultra_accounts',
+      '20261115000000_calendar_feeds',
+    ])
+      expect(names.indexOf(name)).toBeGreaterThan(names.indexOf(earlier));
+    const schema = readFileSync(join(currentDir, '../prisma/schema.prisma'), 'utf8');
+    for (const mapped of [
+      'new_device_email',
+      'token_digest',
+      'last_seen_at',
+      'device_id',
+      'refresh_generation',
+      'refreshed_at',
+    ])
+      expect(schema).toContain(`@map("${mapped}")`);
+    expect(schema).toContain('@@map("ultra_devices")');
+    expect(schema).toMatch(/onDelete: SetNull/);
+  });
+});
+
 // Regression coverage for issue #8187: the migration chain must be able to
 // create a fresh database on its own, and must stay in sync with schema.prisma.
 describe('schema bootstrap and drift (#8187)', () => {

@@ -45,33 +45,57 @@ const getTransporter = async (): Promise<nodemailer.Transporter> => {
   return transporter;
 };
 
-/** V2 account links contain only short-lived bearer tokens, never vault keys. */
+export type UltraAccountMailKind = 'verify' | 'recover' | 'device';
+
+/**
+ * Subject and body of an account email. Account links contain only short-lived bearer tokens,
+ * never vault keys. The new-device message holds the eight-digit code and nothing else that a
+ * caller controls: no link, no device name, no address (an attacker chooses what a device is
+ * called, and this mail is sent from the operator's address).
+ */
+export const ultraAccountMail = (
+  kind: UltraAccountMailKind,
+  token: string,
+  publicUrl: string,
+): { subject: string; text: string } => {
+  if (kind === 'device') {
+    if (!/^\d{8}$/.test(token)) throw new Error('Invalid new-device code');
+    return {
+      subject: 'Your Ultra Tasks account verification code',
+      text: `Your Ultra Tasks account verification code is: ${token}\n\nEnter it where you are signing in to finish adding a new device. It expires in 10 minutes and works once. If you did not try to sign in, ignore this email and consider changing your password.`,
+    };
+  }
+  const link = `${publicUrl}/account?${kind}=${encodeURIComponent(token)}`;
+  if (kind === 'recover')
+    return {
+      subject: 'Recover your Ultra Tasks account',
+      text: `Open this link to recover your Ultra Tasks account: ${link}\nYour printed recovery key is also required. This link expires in one hour. Ultra Tasks cannot decrypt your data without your password or recovery key.`,
+    };
+  return {
+    subject: 'Verify your Ultra Tasks account',
+    text: /^\d{8}$/.test(token)
+      ? `Your Ultra Tasks account verification code is: ${token}\nEnter it at ${publicUrl}/account. Registration expires 30 minutes after signup; requesting a new code does not extend that time. If you did not request this, ignore this email.`
+      : `Open this link to verify your email: ${link}\nThis link expires in 24 hours.`,
+  };
+};
+
 export const sendUltraAccountEmail = async (
   to: string,
-  kind: 'verify' | 'recover',
+  kind: UltraAccountMailKind,
   token: string,
 ): Promise<boolean> => {
   try {
     const config = loadConfigFromEnv();
-    const link = `${config.publicUrl}/account?${kind}=${encodeURIComponent(token)}`;
     await (
       await getTransporter()
     ).sendMail({
       from: config.smtp?.from || '"Ultra Tasks" <noreply@example.com>',
       to,
-      subject:
-        kind === 'verify'
-          ? 'Verify your Ultra Tasks account'
-          : 'Recover your Ultra Tasks account',
-      text:
-        kind === 'verify'
-          ? /^\d{8}$/.test(token)
-            ? `Your Ultra Tasks verification code is: ${token}\nEnter it at ${config.publicUrl}/account. Registration expires 30 minutes after signup; requesting a new code does not extend that time. If you did not request this, ignore this email.`
-            : `Open this link to verify your email: ${link}\nThis link expires in 24 hours.`
-          : `Open this link to recover your account: ${link}\nYour printed recovery key is also required. This link expires in one hour. Ultra Tasks cannot decrypt your data without your password or recovery key.`,
+      ...ultraAccountMail(kind, token, config.publicUrl),
     });
     return true;
   } catch {
+    // Never log the message: it can hold a code or a bearer token.
     Logger.error('Ultra account email delivery failed');
     return false;
   }

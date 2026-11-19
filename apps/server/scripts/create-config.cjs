@@ -26,6 +26,8 @@ opaqueReady.then(() => {
     ULTRA_AUTH_ENGINE: 'better-auth',
     ULTRA_REGISTRATION_OPEN: 'false',
     ULTRA_REQUIRE_TERMS_CONSENT: 'true',
+    // Email check for sign-ins from unrecognised devices; false is the operator kill switch.
+    ULTRA_DEVICE_EMAIL_VERIFICATION: 'true',
     SMTP_HOST: '',
     SMTP_PORT: '587',
     SMTP_SECURE: 'false',

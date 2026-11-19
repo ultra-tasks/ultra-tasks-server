@@ -13,6 +13,8 @@ export interface AccountRow {
   bundle: AccountBundle;
   vault_version: number;
   created_at: bigint;
+  /** New-device email verification; on unless the owner opted out. */
+  new_device_email: boolean;
 }
 export interface SessionRow {
   id: string;
@@ -22,6 +24,12 @@ export interface SessionRow {
   expires_at: bigint;
   idle_expires_at: bigint;
   revoked: boolean;
+  /** The trusted device this session was issued for; null for older or undeclared clients. */
+  device_id: string | null;
+  /** Generation of the current refresh token; null for a session issued before generations. */
+  refresh_generation: number | null;
+  /** Last sign-in or refresh; 0 for a session that has not refreshed since the upgrade. */
+  refreshed_at: bigint;
 }
 export interface FactorRow {
   id: string;

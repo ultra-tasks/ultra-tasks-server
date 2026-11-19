@@ -38,15 +38,18 @@ import {
 import {
   AccountError,
   UltraConfig,
+  accountErrorBody,
   authenticateAccount,
   challenge,
+  lockAccount,
   readChallenge,
   digest,
   token,
   DAY,
   issueSession,
-  issueTokens,
+  requireLiveSession,
   requireRecent,
+  rotateRefresh,
   newTotpSecret,
   encodePrivate,
   decodePrivate,
@@ -59,6 +62,15 @@ import { UltraRealtimeHub, registerUltraRealtime } from './realtime';
 import { deleteUltraAccount } from './account-deletion';
 import { registerBrowserMfa } from './browser-mfa';
 import { registerBrowserLogin } from './browser-login';
+import { isRefreshTokenShape } from './refresh-token';
+import { registerDeviceRoutes } from './device-routes';
+import { decideLogin, mfaTrust, openSession, type MfaLoginData } from './device-login';
+import {
+  deletePendingDeviceChallenges,
+  deliverDeviceCode,
+  deviceTrustFrom,
+  revokeDevicesExcept,
+} from './device-store';
 import { registerCalendarFeeds } from './calendar-feeds';
 import { registerAccountOverview } from './overview-routes';
 import {
@@ -75,11 +87,17 @@ export interface UltraRoutesOptions {
   hasOperatorTerms?: boolean;
   registrationOpen?: boolean;
   turnstile?: { siteKey: string; secret: string; hostname: string };
+  /** `device` mails the eight-digit new-device code; the others mail a code or a link token. */
   sendMail: (
     email: string,
-    kind: 'verify' | 'recover',
+    kind: 'verify' | 'recover' | 'device',
     token: string,
   ) => Promise<boolean>;
+  /**
+   * Email check for sign-ins from unrecognised devices (needs working mail). Off unless the
+   * deployment wiring turns it on; `ULTRA_DEVICE_EMAIL_VERIFICATION=false` is the kill switch.
+   */
+  deviceEmailVerification?: boolean;
   sendInviteMail?: (email: string) => Promise<boolean>;
   realtime?: UltraRealtimeHub;
 }
@@ -120,27 +138,13 @@ export const ultraAccountRoutes = async (
   } catch {
     throw new Error('Invalid ULTRA_OPAQUE_SETUP');
   }
+  const deviceEmail = options.deviceEmailVerification === true;
   const auth = (req: FastifyRequest) =>
     authenticateAccount(db, config, req.headers.authorization);
-  const requireLiveSession = async (tx: UltraDb, session: SessionRow) => {
-    const live = await one(
-      tx,
-      Prisma.sql`SELECT id FROM ultra_sessions WHERE id=${session.id} AND account_id=${session.account_id} AND revoked=false AND expires_at>${BigInt(Date.now())} AND idle_expires_at>${BigInt(Date.now())} FOR UPDATE`,
-    );
-    if (!live) throw new AccountError(401);
-  };
   const identity = (accountId: string): VaultContext => ({
     serverId: config.serverId,
     accountId,
   });
-  const lockAccount = async (tx: UltraDb, id: string) => {
-    const account = await one<AccountRow>(
-      tx,
-      Prisma.sql`SELECT * FROM ultra_accounts WHERE id=${id} FOR UPDATE`,
-    );
-    if (!account) throw new AccountError(401);
-    return account;
-  };
   const purgeExpiredRegistrations = async (): Promise<void> => {
     await transaction(async (tx) => {
       const expired = await tx.$queryRaw<{ id: string }[]>(
@@ -182,7 +186,7 @@ export const ultraAccountRoutes = async (
           if (error instanceof ZodError)
             return reply.code(400).send({ error: 'Invalid account request' });
           if (error instanceof AccountError)
-            return reply.code(error.statusCode).send({ error: error.message });
+            return reply.code(error.statusCode).send(accountErrorBody(error));
           throw error;
         }
       },
@@ -193,8 +197,9 @@ export const ultraAccountRoutes = async (
     handler: (req: FastifyRequest) => Promise<unknown>,
     max?: number,
   ) => route('POST', url, handler, max);
-  registerBrowserMfa({ db, transaction, config, post });
-  registerBrowserLogin({ db, transaction, config, post });
+  registerBrowserMfa({ db, transaction, config, post, deviceEmail });
+  registerBrowserLogin({ db, transaction, config, post, deviceEmail });
+  registerDeviceRoutes({ db, transaction, config, deviceEmail, sendMail, auth, route });
   const startRegistration = (accountId: string, registrationRequest: string) => {
     try {
       return opaqueServer.createRegistrationResponse({
@@ -255,22 +260,28 @@ export const ultraAccountRoutes = async (
     if (!(await sendMail(account.email, kind, value)))
       throw new AccountError(503, 'Email could not be delivered. Please try again.');
   };
-  const loginResult = (accountId: string, deviceName: string) =>
-    transaction(async (tx) => {
+  const loginResult = async (
+    accountId: string,
+    deviceName: string,
+    device: { deviceToken?: string; clientFeatures?: string[] },
+  ) => {
+    const decision = await transaction(async (tx) => {
       const account = await lockAccount(tx, accountId);
       if (!account.verified)
         throw new AccountError(403, 'Verify your email before signing in');
-      const enrolled = await factors(tx, accountId);
-      if (enrolled.length)
-        return {
-          mfaToken: await challenge(tx, config, 'mfa', accountId, { deviceName }),
-          factors: [...new Set(enrolled.map((factor) => factor.kind))],
-        };
-      return {
-        ...(await issueSession(tx, config, accountId, deviceName)),
-        account: publicAccount(account),
-      };
+      return decideLogin(
+        tx,
+        { config, deviceEmail },
+        account,
+        deviceName,
+        deviceTrustFrom(device, deviceEmail),
+      );
     });
+    if (decision.kind === 'body') return decision.body;
+    // Mail goes out after the commit; a failure removes the challenge and issues nothing.
+    await deliverDeviceCode(sendMail, db, decision.email, decision.code, decision.token);
+    return { verification: decision.verification };
+  };
 
   route(
     'GET',
@@ -301,6 +312,9 @@ export const ultraAccountRoutes = async (
         browserMfa: true,
         browserLogin: true,
         betterAuthSessions: config.authEngine === 'better-auth',
+        newDeviceEmailVerification: deviceEmail,
+        trustedDevices: true,
+        sessionLifetime: 'sliding-v1',
       },
       requireTermsConsent: options.requireTermsConsent ?? false,
       hasOperatorTerms: options.hasOperatorTerms ?? false,
@@ -503,11 +517,13 @@ export const ultraAccountRoutes = async (
           pending.data.oldEmail !== account.email)
       )
         throw new AccountError(401);
-      if (pending.data.email)
+      if (pending.data.email) {
         await tx.$executeRaw(
           Prisma.sql`UPDATE ultra_accounts SET email=${pending.data.email},verified=true WHERE id=${pending.accountId}`,
         );
-      else
+        // A code mailed to the old address must not complete a sign-in after the change.
+        await deletePendingDeviceChallenges(tx, pending.accountId!);
+      } else
         await tx.$executeRaw(
           Prisma.sql`UPDATE ultra_accounts SET verified=true WHERE id=${pending.accountId}`,
         );
@@ -573,7 +589,7 @@ export const ultraAccountRoutes = async (
       throw new AccountError(401);
     }
     if (!pending.accountId) throw new AccountError(401);
-    return loginResult(pending.accountId, pending.data.deviceName);
+    return loginResult(pending.accountId, pending.data.deviceName, input);
   };
   const betterAuth =
     config.authEngine === 'better-auth'
@@ -596,21 +612,19 @@ export const ultraAccountRoutes = async (
       req,
       z.object({ mfaToken: challengeToken, code: z.string().min(6).max(64) }).strict(),
     );
-    const pending = await readChallenge<{ deviceName: string }>(
-      db,
-      config,
-      input.mfaToken,
-      'mfa',
-    );
+    const pending = await readChallenge<MfaLoginData>(db, config, input.mfaToken, 'mfa');
     return transaction(async (tx) => {
       const account = await lockAccount(tx, pending.accountId!);
       if (!(await verifyMfaCode(tx, config, account.id, input.code)))
         throw new AccountError(401);
       await readChallenge(tx, config, input.mfaToken, 'mfa', true);
-      return {
-        ...(await issueSession(tx, config, account.id, pending.data.deviceName)),
-        account: publicAccount(account),
-      };
+      return openSession(
+        tx,
+        config,
+        account,
+        pending.data.deviceName,
+        mfaTrust(pending.data, deviceEmail),
+      );
     });
   });
   post('/mfa/webauthn/options', async (req) => {
@@ -670,7 +684,7 @@ export const ultraAccountRoutes = async (
     if (!result.verified) throw new AccountError(401);
     return transaction(async (tx) => {
       const account = await lockAccount(tx, pending.accountId!);
-      const login = await readChallenge<{ deviceName: string }>(
+      const login = await readChallenge<MfaLoginData>(
         tx,
         config,
         pending.data.mfaToken,
@@ -681,46 +695,25 @@ export const ultraAccountRoutes = async (
         Prisma.sql`UPDATE ultra_factors SET data=${JSON.stringify({ ...data, counter: result.authenticationInfo.newCounter })}::jsonb WHERE id=${factor.id} AND enabled=true AND data=${JSON.stringify(factor.data)}::jsonb`,
       );
       if (!count) throw new AccountError(401);
-      return {
-        ...(await issueSession(tx, config, account.id, login.data.deviceName)),
-        account: publicAccount(account),
-      };
+      return openSession(
+        tx,
+        config,
+        account,
+        login.data.deviceName,
+        mfaTrust(login.data, deviceEmail),
+      );
     });
   });
 
   post(
     '/sessions/refresh',
     async (req) => {
+      // A legacy random token (43 characters) or a generation token (48 characters).
       const { refreshToken } = body(
         req,
-        z.object({ refreshToken: challengeToken }).strict(),
+        z.object({ refreshToken: z.string().refine(isRefreshTokenShape) }).strict(),
       );
-      const result = await transaction(async (tx) => {
-        const row = await one<SessionRow & { used: boolean }>(
-          tx,
-          Prisma.sql`SELECT s.*,t.used FROM ultra_refresh_tokens t JOIN ultra_sessions s ON t.session_id=s.id WHERE t.digest=${digest(refreshToken)} FOR UPDATE OF s,t`,
-        );
-        if (
-          !row ||
-          row.revoked ||
-          Number(row.expires_at) <= Date.now() ||
-          Number(row.idle_expires_at) <= Date.now()
-        )
-          return null;
-        if (row.used) {
-          await tx.$executeRaw(
-            Prisma.sql`UPDATE ultra_sessions SET revoked=true WHERE id=${row.id}`,
-          );
-          return null;
-        }
-        await tx.$executeRaw(
-          Prisma.sql`UPDATE ultra_refresh_tokens SET used=true WHERE digest=${digest(refreshToken)}`,
-        );
-        await tx.$executeRaw(
-          Prisma.sql`UPDATE ultra_sessions SET idle_expires_at=${BigInt(Math.min(Number(row.expires_at), Date.now() + 30 * DAY))} WHERE id=${row.id}`,
-        );
-        return issueTokens(tx, config, row);
-      });
+      const result = await transaction((tx) => rotateRefresh(tx, config, refreshToken));
       if (!result) throw new AccountError(401);
       return result;
     },
@@ -739,6 +732,7 @@ export const ultraAccountRoutes = async (
           id: factor.id,
           kind: factor.kind,
         })),
+        settings: { newDeviceEmailVerification: account!.new_device_email },
       };
     },
     300,
@@ -748,10 +742,25 @@ export const ultraAccountRoutes = async (
     '/sessions',
     async (req) => {
       const session = await auth(req);
+      // The caller's own session first, then the newest: at most 100 rows, so the list stays
+      // small even for an account that signs in often (revoked ones are purged after a month).
       const rows = await db.$queryRaw<
-        { id: string; device_name: string; created_at: bigint; revoked: boolean }[]
+        {
+          id: string;
+          device_name: string;
+          created_at: bigint;
+          revoked: boolean;
+          device_id: string | null;
+          trusted: boolean;
+          seen_at: bigint;
+        }[]
       >(
-        Prisma.sql`SELECT id,device_name,created_at,revoked FROM ultra_sessions WHERE account_id=${session.account_id} ORDER BY created_at DESC`,
+        Prisma.sql`SELECT s.id,s.device_name,s.created_at,s.revoked,s.device_id,
+          (d.id IS NOT NULL) AS trusted,
+          GREATEST(s.created_at, s.refreshed_at) AS seen_at
+          FROM ultra_sessions s LEFT JOIN ultra_devices d ON d.id=s.device_id
+          WHERE s.account_id=${session.account_id}
+          ORDER BY (s.id=${session.id}) DESC, s.created_at DESC LIMIT 100`,
       );
       return rows.map((row) => ({
         id: row.id,
@@ -759,6 +768,9 @@ export const ultraAccountRoutes = async (
         createdAt: Number(row.created_at),
         revoked: row.revoked,
         current: row.id === session.id,
+        deviceId: row.device_id,
+        lastSeenAt: Number(row.seen_at),
+        trusted: row.trusted,
       }));
     },
     300,
@@ -783,8 +795,9 @@ export const ultraAccountRoutes = async (
         .strict(),
     );
     return transaction(async (tx) => {
-      await requireLiveSession(tx, session);
+      // Account before session, the order every other security change uses.
       const account = await lockAccount(tx, session.account_id);
+      await requireLiveSession(tx, session);
       return deleteUltraAccount(tx, config, session, account, input);
     });
   });
@@ -840,6 +853,7 @@ export const ultraAccountRoutes = async (
       await tx.$executeRaw(
         Prisma.sql`UPDATE ultra_sessions SET revoked=true WHERE account_id=${session.account_id} AND id<>${session.id}`,
       );
+      await deletePendingDeviceChallenges(tx, session.account_id);
       return { recoveryCodes: await mfaCodes(tx, session.account_id) };
     });
   });
@@ -911,6 +925,7 @@ export const ultraAccountRoutes = async (
       await tx.$executeRaw(
         Prisma.sql`UPDATE ultra_sessions SET revoked=true WHERE account_id=${session.account_id} AND id<>${session.id}`,
       );
+      await deletePendingDeviceChallenges(tx, session.account_id);
       return { recoveryCodes: await mfaCodes(tx, session.account_id) };
     });
   });
@@ -954,11 +969,13 @@ export const ultraAccountRoutes = async (
       keyStretching: ULTRA_OPAQUE_KSF,
     };
   });
+  /** `keepDeviceId` is the trusted device that stays trusted: the current one, or none for recovery. */
   const updatePassword = async (
     tx: UltraDb,
     account: AccountRow,
     registrationRecord: string,
     bundle: AccountBundle,
+    keepDeviceId: string | null,
   ) => {
     if (
       canonical(bundle.encryptionPublicKey) !==
@@ -977,8 +994,9 @@ export const ultraAccountRoutes = async (
     await tx.$executeRaw(
       Prisma.sql`UPDATE ultra_sessions SET revoked=true WHERE account_id=${account.id}`,
     );
+    await revokeDevicesExcept(tx, account.id, keepDeviceId);
     await tx.$executeRaw(
-      Prisma.sql`DELETE FROM ultra_challenges WHERE account_id=${account.id} AND kind IN ('login','mfa','mfa-browser','webauthn-login','password','recover','recover-bootstrap')`,
+      Prisma.sql`DELETE FROM ultra_challenges WHERE account_id=${account.id} AND kind IN ('login','mfa','mfa-browser','webauthn-login','password','recover','recover-bootstrap','device-email','device-email-budget')`,
     );
   };
   post('/password/finish', async (req) => {
@@ -1005,7 +1023,8 @@ export const ultraAccountRoutes = async (
       throw new AccountError(401);
     return transaction(async (tx) => {
       const account = await lockAccount(tx, session.account_id);
-      await requireLiveSession(tx, session);
+      // Re-read under the lock: the device binding may have been pruned since authentication.
+      const live = await requireLiveSession(tx, session);
       if (
         account.vault_version !== pending.data.version ||
         !(await verify(
@@ -1021,8 +1040,16 @@ export const ultraAccountRoutes = async (
       )
         throw new AccountError(409, 'Vault changed or signature invalid. Sign in again.');
       await readChallenge(tx, config, input.changeToken, 'password', true);
-      await updatePassword(tx, account, input.registrationRecord, input.bundle);
-      return issueSession(tx, config, account.id, session.device_name);
+      await updatePassword(
+        tx,
+        account,
+        input.registrationRecord,
+        input.bundle,
+        live.device_id,
+      );
+      return issueSession(tx, config, account.id, session.device_name, {
+        deviceId: live.device_id,
+      });
     });
   });
   post(
@@ -1100,7 +1127,7 @@ export const ultraAccountRoutes = async (
         throw new AccountError(401, 'Enter an authenticator code or MFA recovery code');
       await readChallenge(tx, config, pending.data.mailToken, 'recover', true);
       await readChallenge(tx, config, input.recoveryToken, 'recover-bootstrap', true);
-      await updatePassword(tx, account, input.registrationRecord, input.bundle);
+      await updatePassword(tx, account, input.registrationRecord, input.bundle, null);
     });
     return {
       recovered: true,
@@ -1114,22 +1141,17 @@ export const ultraAccountRoutes = async (
       req,
       z
         .object({
-          username: UltraUsernameSchema.nullable(),
-          displayName: z.string().trim().max(100),
           email: z.string().trim().toLowerCase().email().max(254).optional(),
+          // Legacy keys: accepted so older apps keep working, but never applied. A username
+          // or display name is no longer collected or changed; stored values stay as they are.
+          username: UltraUsernameSchema.nullable().optional(),
+          displayName: z.string().trim().max(100).optional(),
         })
         .strict(),
     );
     const account = await transaction(async (tx) => {
       const current = await lockAccount(tx, session.account_id);
       await requireLiveSession(tx, session);
-      try {
-        await tx.$executeRaw(
-          Prisma.sql`UPDATE ultra_accounts SET username=${input.username},display_name=${input.displayName} WHERE id=${session.account_id}`,
-        );
-      } catch {
-        throw new AccountError(409, 'Username unavailable');
-      }
       return current;
     });
     if (input.email && input.email !== account!.email) {

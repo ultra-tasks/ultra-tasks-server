@@ -41,14 +41,53 @@ export interface Tokens {
 export interface Capabilities {
   protocol: 2;
   serverId: string;
-  features: Record<string, boolean>;
+  /**
+   * Boolean flags, plus a few string-valued descriptors such as
+   * `sessionLifetime: 'sliding-v1'`. Compare booleans with `=== true`.
+   */
+  features: Record<string, boolean | string>;
   requireTermsConsent?: boolean;
   hasOperatorTerms?: boolean;
+}
+/** Pending new-device email challenge returned by sign-in and by resend. */
+export interface DeviceVerification {
+  kind: 'email';
+  /** Opaque challenge handle; the SDK keeps it, apps only display the other fields. */
+  token: string;
+  /** Seconds until the code expires. */
+  expiresIn: number;
+  /** Seconds before another code may be requested. */
+  resendAfter: number;
+  resendsLeft?: number;
+  /** Masked address such as `d***@example.test`; never the full address. */
+  emailHint: string;
+}
+export interface LoginOptions {
+  /** The device token saved by an earlier sign-in on this installation, if any. */
+  deviceToken?: string;
 }
 export interface LoginResult extends Partial<Tokens> {
   mfaToken?: string;
   factors?: string[];
   account?: AccountInfo;
+  /** Present when the server needs an email code before it issues a session. */
+  verification?: DeviceVerification;
+  /** Present only when the server newly trusted this device; store it securely. */
+  deviceToken?: string;
+}
+export interface DeviceInfo {
+  id: string;
+  label: string;
+  createdAt: number;
+  lastSeenAt: number;
+  current: boolean;
+  /** Live sessions that belong to this device. */
+  sessions: number;
+}
+export interface SecuritySettings {
+  newDeviceEmailVerification: boolean;
+  /** False on servers that do not offer the feature; hide the control then. */
+  available: boolean;
 }
 export type Transport = (
   path: string,
@@ -60,10 +99,24 @@ export class AccountApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** Stable machine-readable reason, for example `client_update_required`. */
+    readonly code?: string,
   ) {
     super(message);
   }
 }
+/** Sign-in that stopped at an MFA or email-code step; the password stays in memory only. */
+interface PendingSignIn {
+  password: string;
+  mfaToken?: string;
+  verification?: DeviceVerification;
+  /** The valid device token presented at sign-in, kept for the MFA step. */
+  deviceToken?: string;
+}
+const DEVICE_TOKEN = /^[A-Za-z0-9_-]{43}$/;
+const CAPABILITIES_MAX_AGE = 600000;
+const validDeviceToken = (value?: string): string | undefined =>
+  value !== undefined && DEVICE_TOKEN.test(value) ? value : undefined;
 export const httpTransport =
   (baseUrl: string, timeoutMs = 30000): Transport =>
   async (path, body, accessToken, method = body ? 'POST' : 'GET') => {
@@ -84,11 +137,12 @@ export const httpTransport =
           ...(body ? { body: JSON.stringify(body) } : {}),
         },
       );
-      const result = (await response.json()) as { error?: string };
+      const result = (await response.json()) as { error?: string; code?: string };
       if (!response.ok)
         throw new AccountApiError(
           response.status,
           result.error ?? 'Account request failed',
+          typeof result.code === 'string' ? result.code : undefined,
         );
       return result;
     } catch (error) {
@@ -107,11 +161,28 @@ export class AccountClient {
   tokens?: Tokens;
   bundle?: AccountBundle;
   unlocked?: { masterKey: string; secrets: VaultSecrets };
-  private pending?: { password: string; mfaToken: string };
+  private pending?: PendingSignIn;
   private refreshAt = 0;
   private refreshing?: Promise<void>;
   private browserLogin?: PendingBrowserLogin;
+  private capabilitiesAt?: number;
+  private currentDeviceToken?: string;
   onTokensChanged?: () => Promise<void>;
+  /**
+   * The device token to persist after a sign-in on this client: the one the server newly
+   * issued, otherwise the valid one passed to `login()` or `pollBrowserLogin()`. Store it
+   * in protected storage and pass it to the next sign-in. `lock()` deliberately keeps it: it
+   * identifies the installation, not the unlocked session. A newly issued token is shown
+   * once, so it is kept as soon as it arrives, even if unlocking the vault then fails; a
+   * failed attempt that did not receive one leaves the previous value untouched.
+   */
+  get deviceToken(): string | undefined {
+    return this.currentDeviceToken;
+  }
+  /** The email challenge waiting for a code, if sign-in stopped at that step. */
+  get pendingDeviceVerification(): DeviceVerification | undefined {
+    return this.pending?.verification;
+  }
   adoptTokens(tokens: Tokens): void {
     this.tokens = tokens;
     const earlyRefreshSeconds = Math.max(0, Math.min(600, tokens.expiresIn) - 60);
@@ -125,7 +196,33 @@ export class AccountClient {
     if (capabilities.protocol !== 2 || !/^[0-9a-f-]{36}$/i.test(capabilities.serverId))
       throw new Error('Unsupported account server');
     this.capabilities = capabilities;
+    this.capabilitiesAt = Date.now();
     return capabilities;
+  }
+  /** Capabilities decide which keys a sign-in may send, so a stale copy is refreshed. */
+  private async freshCapabilities(): Promise<Capabilities> {
+    if (
+      !this.capabilities ||
+      (this.capabilitiesAt !== undefined &&
+        Date.now() - this.capabilitiesAt > CAPABILITIES_MAX_AGE)
+    )
+      await this.init();
+    return this.capabilities!;
+  }
+  private deviceEmailAdvertised(): boolean {
+    return this.capabilities?.features.newDeviceEmailVerification === true;
+  }
+  /** Keys that older servers reject are sent only after the server advertised support. */
+  private deviceFeatureKeys(deviceToken?: string): {
+    clientFeatures?: string[];
+    deviceToken?: string;
+  } {
+    if (!this.deviceEmailAdvertised()) return {};
+    const token = validDeviceToken(deviceToken);
+    return { clientFeatures: ['deviceEmail'], ...(token ? { deviceToken: token } : {}) };
+  }
+  private adoptDeviceToken(issued?: string, presented?: string): void {
+    this.currentDeviceToken = validDeviceToken(issued) ?? validDeviceToken(presented);
   }
   async startBrowserLogin(
     serverUrl: string,
@@ -187,7 +284,12 @@ export class AccountClient {
         serverId: flow.request.serverId,
       });
   }
-  async pollBrowserLogin(): Promise<boolean> {
+  /**
+   * Redeems an approved browser sign-in. Pass the device token saved by an earlier
+   * sign-in on this installation so the server reuses that device record; a newly
+   * trusted device is returned as `deviceToken` afterwards.
+   */
+  async pollBrowserLogin(options: LoginOptions = {}): Promise<boolean> {
     const flow = this.browserLogin;
     if (!flow) throw new Error('No pending app sign-in');
     await validatePendingBrowserLogin(flow);
@@ -196,9 +298,15 @@ export class AccountClient {
       state: flow.request.state,
       verifier: flow.verifier,
       serverId: flow.request.serverId,
+      ...this.deviceFeatureKeys(options.deviceToken),
     })) as
       | { pending: true }
-      | { request: BrowserLoginRequest; approval: BrowserLoginApproval; tokens: Tokens };
+      | {
+          request: BrowserLoginRequest;
+          approval: BrowserLoginApproval;
+          tokens: Tokens;
+          deviceToken?: string;
+        };
     if ('pending' in result) return false;
     if (this.browserLogin !== flow) {
       await this.revokeBrowserSession(result.tokens);
@@ -235,6 +343,7 @@ export class AccountClient {
       this.bundle = me.bundle;
       this.unlocked = unlocked;
       this.adoptTokens(result.tokens);
+      this.adoptDeviceToken(result.deviceToken, options.deviceToken);
       this.browserLogin = undefined;
       return true;
     } catch (error) {
@@ -267,8 +376,10 @@ export class AccountClient {
   async prepareRegistration(
     details: {
       email: string;
+      /** Legacy; new sign-ups send only email and password. */
       username?: string;
-      displayName: string;
+      /** Legacy; the server defaults it to an empty string. */
+      displayName?: string;
       termsAccepted?: boolean;
     },
     password: string,
@@ -319,13 +430,43 @@ export class AccountClient {
   ): Promise<void> {
     await this.transport('/register/finish', prepared.request);
   }
+  /**
+   * Password sign-in. The result is one of: a session (the client is unlocked), an MFA
+   * challenge (`mfaToken`, finish with `completeMfa`/WebAuthn), or a new-device email
+   * challenge (`verification`, finish with `completeDeviceVerification`). Pass the
+   * device token from the previous sign-in on this installation in `options`.
+   */
   async login(
     identifier: string,
     password: string,
     deviceName = 'This device',
+    options: LoginOptions = {},
   ): Promise<LoginResult> {
     this.lock();
-    if (!this.capabilities) await this.init();
+    await this.freshCapabilities();
+    try {
+      return await this.signIn(identifier, password, deviceName, options);
+    } catch (error) {
+      // A server that switched the feature on after our capabilities were fetched refuses a
+      // client that did not declare support. Look once more and retry with the right keys.
+      if (
+        error instanceof AccountApiError &&
+        error.code === 'client_update_required' &&
+        !this.deviceEmailAdvertised()
+      ) {
+        await this.init();
+        if (this.deviceEmailAdvertised())
+          return this.signIn(identifier, password, deviceName, options);
+      }
+      throw error;
+    }
+  }
+  private async signIn(
+    identifier: string,
+    password: string,
+    deviceName: string,
+    options: LoginOptions,
+  ): Promise<LoginResult> {
     const opaque = await opaqueClient();
     const started = opaque.startLogin({ password });
     const response = (await this.transport('/login/start', {
@@ -353,10 +494,57 @@ export class AccountClient {
     const result = (await this.transport('/login/finish', {
       loginToken: response.loginToken,
       finishLoginRequest: proof.finishLoginRequest,
+      ...this.deviceFeatureKeys(options.deviceToken),
     })) as LoginResult;
-    if (result.mfaToken) this.pending = { password, mfaToken: result.mfaToken };
-    else await this.finishLogin(result as Tokens, password);
+    const presented = validDeviceToken(options.deviceToken);
+    if (result.mfaToken)
+      this.pending = { password, mfaToken: result.mfaToken, deviceToken: presented };
+    else if (result.verification)
+      this.pending = { password, verification: result.verification };
+    else {
+      // A new token is shown once: keep it before the vault unlock, which can still fail.
+      this.adoptDeviceToken(result.deviceToken, presented);
+      await this.finishLogin(result as Tokens, password);
+    }
     return result;
+  }
+  /** Submits the emailed code. Failure leaves the challenge pending so the user can retry. */
+  async completeDeviceVerification(code: string): Promise<void> {
+    const pending = this.pending;
+    if (!pending?.verification) throw new Error('Sign in first');
+    const result = (await this.transport('/login/device/verify', {
+      token: pending.verification.token,
+      code: code.replace(/\s+/g, ''),
+    })) as Tokens & { deviceToken?: string };
+    if (this.pending !== pending) throw new Error('Login was cancelled');
+    this.adoptDeviceToken(result.deviceToken);
+    await this.finishLogin(result, pending.password);
+  }
+  /**
+   * Asks for a replacement code; the server enforces the cooldown and the resend limit (429,
+   * the challenge stays). A refusal that means the challenge is gone (expired, locked, or
+   * mail could not be delivered) ends the pending sign-in: sign in again.
+   */
+  async resendDeviceVerification(): Promise<DeviceVerification> {
+    const pending = this.pending;
+    if (!pending?.verification) throw new Error('Sign in first');
+    let result: { verification: DeviceVerification };
+    try {
+      result = (await this.transport('/login/device/resend', {
+        token: pending.verification.token,
+      })) as { verification: DeviceVerification };
+    } catch (error) {
+      if (
+        error instanceof AccountApiError &&
+        (error.status === 401 || error.status === 503) &&
+        this.pending === pending
+      )
+        this.pending = undefined;
+      throw error;
+    }
+    if (this.pending !== pending) throw new Error('Login was cancelled');
+    pending.verification = result.verification;
+    return result.verification;
   }
   async finishLogin(tokens: Tokens, password: string): Promise<void> {
     if (!tokens.accessToken || !tokens.refreshToken)
@@ -375,54 +563,63 @@ export class AccountClient {
     this.unlocked = unlocked;
     this.pending = undefined;
   }
-  async completeMfa(code: string): Promise<void> {
-    if (!this.pending) throw new Error('Sign in first');
+  private pendingMfa(): PendingSignIn & { mfaToken: string } {
     const pending = this.pending;
+    if (!pending?.mfaToken) throw new Error('Sign in first');
+    return pending as PendingSignIn & { mfaToken: string };
+  }
+  private async finishMfaLogin(
+    pending: PendingSignIn,
+    result: Tokens & { deviceToken?: string },
+  ): Promise<void> {
+    this.adoptDeviceToken(result.deviceToken, pending.deviceToken);
+    await this.finishLogin(result, pending.password);
+  }
+  async completeMfa(code: string): Promise<void> {
+    const pending = this.pendingMfa();
     const result = (await this.transport('/mfa/complete', {
       mfaToken: pending.mfaToken,
       code,
-    })) as Tokens;
-    await this.finishLogin(result, pending.password);
+    })) as Tokens & { deviceToken?: string };
+    await this.finishMfaLogin(pending, result);
   }
   async webauthnLoginOptions(): Promise<{ options: object; credentialToken: string }> {
-    if (!this.pending) throw new Error('Sign in first');
+    const pending = this.pendingMfa();
     return this.transport('/mfa/webauthn/options', {
-      mfaToken: this.pending.mfaToken,
+      mfaToken: pending.mfaToken,
     }) as Promise<{ options: object; credentialToken: string }>;
   }
   async completeWebauthn(credentialToken: string, credential: unknown): Promise<void> {
-    if (!this.pending) throw new Error('Sign in first');
-    const password = this.pending.password;
+    const pending = this.pendingMfa();
     const result = (await this.transport('/mfa/webauthn/complete', {
       credentialToken,
       credential,
-    })) as Tokens;
-    await this.finishLogin(result, password);
+    })) as Tokens & { deviceToken?: string };
+    await this.finishMfaLogin(pending, result);
   }
   async startBrowserMfa(): Promise<{
     url: string;
     ticket: string;
     deviceSecret: string;
   }> {
-    if (!this.pending) throw new Error('Sign in first');
+    const pending = this.pendingMfa();
     const deviceSecret = randomKey();
     const proofHash = encode(await crypto.subtle.digest('SHA-256', utf8(deviceSecret)));
     const result = (await this.transport('/mfa/browser/start', {
-      mfaToken: this.pending.mfaToken,
+      mfaToken: pending.mfaToken,
       proofHash,
     })) as { ticket: string; url: string };
     return { ...result, deviceSecret };
   }
   async pollBrowserMfa(flow: { ticket: string; deviceSecret: string }): Promise<boolean> {
-    const pending = this.pending;
-    if (!pending) throw new Error('Sign in first');
+    const pending = this.pendingMfa();
     const result = (await this.transport('/mfa/browser/poll', {
       ticket: flow.ticket,
       deviceSecret: flow.deviceSecret,
-    })) as Tokens | { pending: true };
+    })) as (Tokens & { deviceToken?: string }) | { pending: true };
     if (this.pending !== pending) throw new Error('Login was cancelled');
     if ('pending' in result) return false;
-    await this.finishLogin(result, pending.password);
+    await this.finishMfaLogin(pending, result);
     return true;
   }
   async request<T>(path: string, data?: object, method?: string): Promise<T> {
@@ -441,6 +638,45 @@ export class AccountClient {
       await this.refreshing;
     }
     return this.transport(path, data, this.tokens.accessToken, method) as Promise<T>;
+  }
+  /** Account security settings. `available` is false on servers without the feature. */
+  async getSecuritySettings(): Promise<SecuritySettings> {
+    const me = await this.request<{
+      settings?: { newDeviceEmailVerification?: boolean };
+    }>('/me');
+    const capabilities = await this.freshCapabilities();
+    return {
+      newDeviceEmailVerification: me.settings?.newDeviceEmailVerification === true,
+      available: capabilities.features.newDeviceEmailVerification === true,
+    };
+  }
+  /**
+   * Turns new-device email verification on or off. Needs a sign-in from the last ten
+   * minutes and, to turn it off while a second factor is enrolled, a valid MFA code.
+   */
+  async setNewDeviceEmailVerification(
+    enabled: boolean,
+    code?: string,
+  ): Promise<{ newDeviceEmailVerification: boolean }> {
+    return this.request('/security/new-device-email', {
+      enabled,
+      ...(code?.trim() ? { code: code.trim() } : {}),
+    });
+  }
+  /** Trusted devices, most recently active first. Check `features.trustedDevices` first. */
+  async devices(): Promise<DeviceInfo[]> {
+    return this.request<DeviceInfo[]>('/devices');
+  }
+  /**
+   * Removes a device and ends every session bound to it. Removing the device you are signed in on
+   * needs nothing more. Removing another one needs a sign-in from the last ten minutes and, while
+   * a second factor is enrolled, a valid MFA or recovery code in `code`.
+   */
+  async revokeDevice(deviceId: string, code?: string): Promise<void> {
+    await this.request('/devices/revoke', {
+      deviceId,
+      ...(code?.trim() ? { code: code.trim() } : {}),
+    });
   }
   async deleteAccount(): Promise<void> {
     if (!this.unlocked || !this.account) throw new Error('Unlock the account first');

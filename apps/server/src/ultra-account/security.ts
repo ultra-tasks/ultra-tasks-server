@@ -2,12 +2,18 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
 import { Prisma } from '@prisma/client';
 import * as jwt from 'jsonwebtoken';
 import { canonical, open, seal } from '@ultra-tasks/account-crypto';
-import { SessionRow, UltraDb, one } from './store';
+import { AccountRow, SessionRow, UltraDb, one } from './store';
 import {
   authenticateBetterAuth,
   BETTER_AUTH_TOKEN_PREFIX,
   issueBetterAuthAccess,
 } from './better-auth';
+import {
+  encodeRefresh,
+  isGenerationToken,
+  MAX_REFRESH_GENERATION,
+  parseRefresh,
+} from './refresh-token';
 
 export interface UltraConfig {
   serverId: string;
@@ -19,6 +25,10 @@ export interface UltraConfig {
   privateOnly?: boolean;
   /** Better Auth is the deployment default; native is retained for existing installations. */
   authEngine?: 'native' | 'better-auth';
+  /** Sliding session lifetime in days (default 180); renewed on every refresh. */
+  sessionIdleDays?: number;
+  /** Absolute session lifetime in days (default 1095); 0 removes the cap. */
+  sessionMaxDays?: number;
 }
 export const digest = (value: string): string =>
   createHash('sha256').update(value).digest('hex');
@@ -27,11 +37,49 @@ export class AccountError extends Error {
   constructor(
     public statusCode: number,
     message = 'Invalid or expired credentials',
+    /** Stable machine-readable reason sent next to the message; clients must not parse text. */
+    public code?: string,
   ) {
     super(message);
   }
 }
+/** The JSON body for a refused request: `{ error }`, plus `code` when the failure has one. */
+export const accountErrorBody = (
+  error: AccountError,
+): { error: string; code?: string } => ({
+  error: error.message,
+  ...(error.code ? { code: error.code } : {}),
+});
 export const DAY = 86400000;
+
+export const SESSION_IDLE_DAYS = 180;
+export const SESSION_MAX_DAYS = 1095;
+export const MAX_LIVE_SESSIONS = 30;
+/** A revoked session is kept this long after its last activity (for the sessions list), then purged. */
+export const REVOKED_SESSION_RETENTION = 30 * DAY;
+/** Stored as `expires_at` when the operator removes the absolute cap (the largest JS date). */
+export const NO_ABSOLUTE_EXPIRY = 8_640_000_000_000_000;
+/** The sliding idle window in milliseconds; trusted devices follow the same window. */
+export const sessionIdleMs = (config: UltraConfig): number =>
+  (config.sessionIdleDays ?? SESSION_IDLE_DAYS) * DAY;
+const idleWindow = sessionIdleMs;
+/**
+ * A live session with no sign-in or refresh for this long may be retired to make room for a new
+ * one at the live-session cap. Sessions active within it are never retired.
+ */
+export const STALE_SESSION_AFTER = DAY;
+/** Expiry values for a session issued at `now`: absolute cap set once, idle window slid. */
+export const sessionLimits = (config: UltraConfig, now = Date.now()) => {
+  const maxDays = config.sessionMaxDays ?? SESSION_MAX_DAYS;
+  const expiresAt = maxDays === 0 ? NO_ABSOLUTE_EXPIRY : now + maxDays * DAY;
+  return { expiresAt, idleExpiresAt: Math.min(expiresAt, now + idleWindow(config)) };
+};
+/** Refresh slides only the idle window; the absolute expiry never moves after issue. */
+export const renewedIdleExpiry = (
+  config: UltraConfig,
+  session: Pick<SessionRow, 'expires_at'>,
+  now = Date.now(),
+): number => Math.min(Number(session.expires_at), now + idleWindow(config));
 export const privateKey = (config: UltraConfig): string =>
   createHmac('sha256', config.authSecret)
     .update('ultra-account-storage-v1')
@@ -92,37 +140,107 @@ export const readChallenge = async <T>(
     data: await decodePrivate<T>(config, digest(value), row.data),
   };
 };
+/** The caller holds the account lock; see the lock order: account, challenge, then session. */
+export const lockAccount = async (tx: UltraDb, id: string): Promise<AccountRow> => {
+  const account = await one<AccountRow>(
+    tx,
+    Prisma.sql`SELECT * FROM ultra_accounts WHERE id=${id} FOR UPDATE`,
+  );
+  if (!account) throw new AccountError(401);
+  return account;
+};
+/** Locks and returns the caller's session as it is now (its device binding may have changed). */
+export const requireLiveSession = async (
+  tx: UltraDb,
+  session: SessionRow,
+): Promise<SessionRow> => {
+  const now = BigInt(Date.now());
+  const live = await one<SessionRow>(
+    tx,
+    Prisma.sql`SELECT * FROM ultra_sessions WHERE id=${session.id} AND account_id=${session.account_id} AND revoked=false AND expires_at>${now} AND idle_expires_at>${now} FOR UPDATE`,
+  );
+  if (!live) throw new AccountError(401);
+  return live;
+};
+
+/* Live-session cap: 30 per account. At the cap a new sign-in retires the least recently active
+   session, but only one with no sign-in or refresh for a day, so a session that is in use is never
+   evicted and a flood of fresh sign-ins is still refused. The usual cause is orphans: a client
+   that signs in again after a restart leaves its earlier session unused for the idle window. */
+const sessionActivity = Prisma.raw('GREATEST(s.created_at, s.refreshed_at)');
+const liveSessionCount = async (db: UltraDb, accountId: string, now: number) =>
+  Number(
+    (
+      await one<{ count: bigint }>(
+        db,
+        Prisma.sql`SELECT count(*) AS count FROM ultra_sessions WHERE account_id=${accountId} AND revoked=false AND expires_at>${BigInt(now)} AND idle_expires_at>${BigInt(now)}`,
+      )
+    )?.count ?? 0,
+  );
+const staleSessions = (db: UltraDb, accountId: string, now: number, limit: number) =>
+  db.$queryRaw<{ id: string }[]>(
+    Prisma.sql`SELECT s.id FROM ultra_sessions s WHERE s.account_id=${accountId} AND s.revoked=false AND s.expires_at>${BigInt(now)} AND s.idle_expires_at>${BigInt(now)} AND ${sessionActivity}<${BigInt(now - STALE_SESSION_AFTER)} ORDER BY ${sessionActivity} ASC, s.created_at ASC, s.id LIMIT ${Prisma.raw(String(Math.max(1, Math.trunc(limit))))}`,
+  );
+const sessionLimitReached = () =>
+  new AccountError(
+    409,
+    'Revoke an old device session before signing in again',
+    'session_limit',
+  );
+/**
+ * Read-only: could one more session be issued, directly or by retiring a stale one? Used before an
+ * email is sent. Nothing is retired here: a password alone must not be able to end sessions.
+ */
+export const assertSessionCapacity = async (
+  db: UltraDb,
+  accountId: string,
+): Promise<void> => {
+  const now = Date.now();
+  if ((await liveSessionCount(db, accountId, now)) < MAX_LIVE_SESSIONS) return;
+  if (!(await staleSessions(db, accountId, now, 1)).length) throw sessionLimitReached();
+};
+/** At issue time (policy already satisfied): retire stale sessions until there is room, or refuse. */
+const makeSessionRoom = async (db: UltraDb, accountId: string, now: number) => {
+  const needed = (await liveSessionCount(db, accountId, now)) - MAX_LIVE_SESSIONS + 1;
+  if (needed < 1) return;
+  const stale = await staleSessions(db, accountId, now, needed);
+  if (stale.length < needed) throw sessionLimitReached();
+  await db.$executeRaw(
+    Prisma.sql`UPDATE ultra_sessions SET revoked=true WHERE account_id=${accountId} AND id IN (${Prisma.join(stale.map((row) => row.id))})`,
+  );
+};
 export const issueSession = async (
   db: UltraDb,
   config: UltraConfig,
   accountId: string,
   deviceName: string,
+  options: { deviceId?: string | null } = {},
 ) => {
   const id = crypto.randomUUID();
   const now = Date.now();
+  // Expired sessions go, and so do revoked ones thirty days after their last activity: the list
+  // keeps a recent record of what was ended, not a permanent one.
   await db.$executeRaw(
-    Prisma.sql`DELETE FROM ultra_sessions WHERE expires_at<${BigInt(now)} OR idle_expires_at<${BigInt(now)}`,
+    Prisma.sql`DELETE FROM ultra_sessions s WHERE s.expires_at<${BigInt(now)} OR s.idle_expires_at<${BigInt(now)} OR (s.revoked=true AND ${sessionActivity}<${BigInt(now - REVOKED_SESSION_RETENTION)})`,
   );
-  const count = await one<{ count: bigint }>(
-    db,
-    Prisma.sql`SELECT count(*) AS count FROM ultra_sessions WHERE account_id=${accountId} AND revoked=false`,
-  );
-  if (Number(count?.count ?? 0) >= 20)
-    throw new AccountError(409, 'Revoke an old device session before signing in again');
+  await makeSessionRoom(db, accountId, now);
+  const { expiresAt, idleExpiresAt } = sessionLimits(config, now);
   await db.$executeRaw(
-    Prisma.sql`INSERT INTO ultra_sessions(id,account_id,device_name,created_at,auth_at,expires_at,idle_expires_at) VALUES (${id},${accountId},${deviceName},${BigInt(now)},${BigInt(now)},${BigInt(now + 90 * DAY)},${BigInt(now + 30 * DAY)})`,
+    Prisma.sql`INSERT INTO ultra_sessions(id,account_id,device_name,created_at,auth_at,expires_at,idle_expires_at,device_id,refresh_generation,refreshed_at) VALUES (${id},${accountId},${deviceName},${BigInt(now)},${BigInt(now)},${BigInt(expiresAt)},${BigInt(idleExpiresAt)},${options.deviceId ?? null},0,${BigInt(now)})`,
   );
-  return issueTokens(db, config, { id, account_id: accountId });
+  return issueTokens(db, config, { id, account_id: accountId }, 0);
 };
+/**
+ * The access token and the refresh token for `generation`. Refresh tokens carry their own
+ * generation and a MAC (see refresh-token.ts), so issuing one writes nothing.
+ */
 export const issueTokens = async (
   db: UltraDb,
   config: UltraConfig,
   session: Pick<SessionRow, 'id' | 'account_id'>,
+  generation: number,
 ) => {
-  const refreshToken = token();
-  await db.$executeRaw(
-    Prisma.sql`INSERT INTO ultra_refresh_tokens(digest,session_id) VALUES (${digest(refreshToken)},${session.id})`,
-  );
+  const refreshToken = encodeRefresh(config, session.id, generation);
   const accessToken =
     config.authEngine === 'better-auth'
       ? await issueBetterAuthAccess(db, config, session)
@@ -134,6 +252,101 @@ export const issueTokens = async (
           algorithm: 'HS256',
         });
   return { accessToken, refreshToken, expiresIn: 600 };
+};
+
+const lockSession = (tx: UltraDb, id: string) =>
+  one<SessionRow>(tx, Prisma.sql`SELECT * FROM ultra_sessions WHERE id=${id} FOR UPDATE`);
+const isLive = (session: SessionRow, now: number): boolean =>
+  !session.revoked &&
+  Number(session.expires_at) > now &&
+  Number(session.idle_expires_at) > now;
+/** Reuse: the whole session ends. The caller commits the revocation and answers a plain 401. */
+const revokeForReuse = (tx: UltraDb, sessionId: string) =>
+  tx.$executeRaw(
+    Prisma.sql`UPDATE ultra_sessions SET revoked=true WHERE id=${sessionId}`,
+  );
+/** Moves the session to `generation`, slides its idle window and issues that generation's token. */
+const advance = async (
+  tx: UltraDb,
+  config: UltraConfig,
+  session: SessionRow,
+  generation: number,
+  now: number,
+) => {
+  await tx.$executeRaw(
+    Prisma.sql`UPDATE ultra_sessions SET refresh_generation=${generation},refreshed_at=${BigInt(now)},idle_expires_at=${BigInt(renewedIdleExpiry(config, session, now))} WHERE id=${session.id}`,
+  );
+  return issueTokens(tx, config, session, generation);
+};
+
+/**
+ * Single-use refresh rotation; returns null for every refusal so callers answer one generic 401.
+ *
+ * Presenting a token that was already used revokes its whole session, with no leeway window and
+ * no matter how many rotations have happened since: if a rotation response is lost, the retry
+ * ends the session and the client must sign in again (docs/account-devices-and-sessions.md,
+ * "lost-response case"). The caller must run this inside a transaction and commit the null that
+ * follows a revocation.
+ */
+export const rotateRefresh = (tx: UltraDb, config: UltraConfig, refreshToken: string) =>
+  isGenerationToken(refreshToken)
+    ? rotateGeneration(tx, config, refreshToken)
+    : rotateLegacy(tx, config, refreshToken);
+
+/** Version 2: the token names its session and generation, and the session row holds the latest. */
+const rotateGeneration = async (
+  tx: UltraDb,
+  config: UltraConfig,
+  refreshToken: string,
+) => {
+  // A forged or garbled token stops here, before any read or write.
+  const claimed = parseRefresh(config, refreshToken);
+  if (!claimed) return null;
+  const session = await lockSession(tx, claimed.sessionId);
+  const now = Date.now();
+  if (!session || !isLive(session, now) || session.refresh_generation === null)
+    return null;
+  const current = Number(session.refresh_generation);
+  if (claimed.generation > current) return null;
+  if (claimed.generation < current) {
+    await revokeForReuse(tx, session.id);
+    return null;
+  }
+  if (current >= MAX_REFRESH_GENERATION) return null;
+  return advance(tx, config, session, current + 1, now);
+};
+
+/**
+ * A random 43-character token issued before generations existed. Its single receipt row decides:
+ * used means reuse. The first rotation moves the session to generation 0 and from then on it
+ * holds version 2 tokens only. The session row is locked before the receipt, so two rotations of
+ * one session queue instead of deadlocking.
+ */
+const rotateLegacy = async (tx: UltraDb, config: UltraConfig, refreshToken: string) => {
+  const hash = digest(refreshToken);
+  const found = await one<{ session_id: string }>(
+    tx,
+    Prisma.sql`SELECT session_id FROM ultra_refresh_tokens WHERE digest=${hash}`,
+  );
+  if (!found) return null;
+  const session = await lockSession(tx, found.session_id);
+  const receipt = await one<{ used: boolean }>(
+    tx,
+    Prisma.sql`SELECT used FROM ultra_refresh_tokens WHERE digest=${hash} AND session_id=${found.session_id} FOR UPDATE`,
+  );
+  const now = Date.now();
+  if (!session || !receipt || !isLive(session, now)) return null;
+  if (receipt.used) {
+    await revokeForReuse(tx, session.id);
+    return null;
+  }
+  // A live legacy token cannot belong to a session that already holds generations. Never let one
+  // reset a counter: that would make older version 2 tokens valid again.
+  if (session.refresh_generation !== null) return null;
+  await tx.$executeRaw(
+    Prisma.sql`UPDATE ultra_refresh_tokens SET used=true WHERE digest=${hash}`,
+  );
+  return advance(tx, config, session, 0, now);
 };
 export const authenticateAccount = async (
   db: UltraDb,

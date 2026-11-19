@@ -466,17 +466,22 @@ describe('Ultra accounts: real routes, real PostgreSQL SQL and real client crypt
     await expect(h.transport('/sessions/refresh', { refreshToken })).rejects.toThrow();
     await expect(h.transport('/me', undefined, rotated.accessToken)).rejects.toThrow();
     expect(await second.request('/me')).toBeDefined();
+    // A generation token is verified by its MAC and the session's counter: no token, digest or
+    // receipt row is stored per refresh, so nothing about the rotated token can leak from storage.
     expect(
-      JSON.stringify((await h.database.query('SELECT * FROM ultra_refresh_tokens')).rows),
-    ).not.toContain(rotated.refreshToken);
-    expect(
-      (
-        await h.database.query(
-          'SELECT digest FROM ultra_refresh_tokens WHERE digest=$1',
-          [digest(rotated.refreshToken)],
-        )
-      ).rows,
-    ).toHaveLength(1);
+      Number(
+        (
+          await h.database.query<{ n: number }>(
+            'SELECT count(*) AS n FROM ultra_refresh_tokens',
+          )
+        ).rows[0].n,
+      ),
+    ).toBe(0);
+    const stored = JSON.stringify(
+      (await h.database.query('SELECT * FROM ultra_sessions')).rows,
+    );
+    expect(stored).not.toContain(rotated.refreshToken);
+    expect(stored).not.toContain(digest(rotated.refreshToken));
   });
   it('keeps account IDs and decryption stable through profile changes and isolates device revocation', async () => {
     const alice = (await h.register()).client;
@@ -539,5 +544,81 @@ describe('Ultra accounts: real routes, real PostgreSQL SQL and real client crypt
       h.transport('/recovery/request', { identifier: 'missing@example.test' }),
     ).rejects.toThrow();
     expect(totpStep('JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP', 'not-a-code')).toBeUndefined();
+  });
+
+  it('registers with only an email address and password and exposes the immutable Account ID for support', async () => {
+    const email = 'newstyle@example.test';
+    const client = h.client();
+    const prepared = await client.prepareRegistration({ email }, password);
+    // The SDK sent no username and no display name at all.
+    expect(Object.keys(JSON.parse(h.requests[0])).sort()).toEqual([
+      'email',
+      'registrationRequest',
+    ]);
+    await client.register(prepared);
+    await h.transport('/verify-email', { identifier: email, code: h.mail.at(-1)!.token });
+    await client.login(email, password);
+    expect(client.account).toMatchObject({ email, username: null, displayName: '' });
+    // The Account ID is the existing immutable row id: it is what /me reports and what the
+    // vault, signatures and OPAQUE identity are bound to. It is not a way to sign in.
+    const id = client.account!.id;
+    expect(id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect((await client.request<{ account: { id: string } }>('/me')).account.id).toBe(
+      id,
+    );
+    expect(
+      (await h.database.query<{ id: string }>('SELECT id FROM ultra_accounts')).rows[0]
+        .id,
+    ).toBe(id);
+    await expect(h.client().login(id, password)).rejects.toThrow();
+    // A profile update carries the email address alone and keeps the ID, vault and sessions.
+    await client.request('/profile', { email: 'newstyle-moved@example.test' }, 'PUT');
+    await h.transport('/verify-email', {
+      token: h.mail.findLast(
+        (message) => message.email === 'newstyle-moved@example.test',
+      )!.token,
+    });
+    const moved = h.client();
+    await moved.login('newstyle-moved@example.test', password);
+    expect(moved.account!.id).toBe(id);
+    expect(moved.unlocked!.masterKey).toBe(client.unlocked!.masterKey);
+  });
+
+  it('keeps old-style registrations and username sign-in working while ignoring legacy profile keys', async () => {
+    const { client } = await h.register('legacy-style@example.test', 'legacy_style');
+    expect(client.account).toMatchObject({ username: 'legacy_style' });
+    // An older app still sends the legacy keys with its profile update: accepted, not applied.
+    await expect(
+      client.request(
+        '/profile',
+        {
+          username: 'renamed_style',
+          displayName: 'Renamed',
+          email: 'legacy-style@example.test',
+        },
+        'PUT',
+      ),
+    ).resolves.toEqual({ updated: true });
+    await expect(
+      client.request('/profile', { username: null, displayName: '' }, 'PUT'),
+    ).resolves.toEqual({
+      updated: true,
+    });
+    const stored = (
+      await h.database.query<{ username: string | null; display_name: string }>(
+        'SELECT username,display_name FROM ultra_accounts',
+      )
+    ).rows[0];
+    expect(stored).toEqual({ username: 'legacy_style', display_name: 'legacy_style' });
+    const again = h.client();
+    await again.login('LEGACY_STYLE', password);
+    expect(again.account!.id).toBe(client.account!.id);
+    await expect(h.client().login('renamed_style', password)).rejects.toThrow();
+    // Other unknown profile keys are still refused.
+    await expect(
+      client.request('/profile', { role: 'admin' }, 'PUT'),
+    ).rejects.toMatchObject({ status: 400 });
   });
 });

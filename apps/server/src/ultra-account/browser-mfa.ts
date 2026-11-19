@@ -13,10 +13,11 @@ import {
   decodePrivate,
   digest,
   encodePrivate,
-  issueSession,
   readChallenge,
   type UltraConfig,
 } from './security';
+import { mfaTrust, type MfaLoginData } from './device-login';
+import { issueTrustedSession } from './device-store';
 import {
   accountById,
   factors,
@@ -39,13 +40,15 @@ export const registerBrowserMfa = (options: {
   db: UltraDb;
   transaction: UltraTransaction;
   config: UltraConfig;
+  /** The new-device email check is in force: a completed sign-in records its device (default off). */
+  deviceEmail?: boolean;
   post: (
     url: string,
     run: (req: FastifyRequest) => Promise<unknown>,
     max?: number,
   ) => void;
 }): void => {
-  const { db, transaction, config, post } = options;
+  const { db, transaction, config, post, deviceEmail = false } = options;
   const read = async (tx: UltraDb, ticket: string) => {
     const identity = await one<{ account_id: string }>(
       tx,
@@ -200,7 +203,7 @@ export const registerBrowserMfa = (options: {
           )
         )
           throw new AccountError(401);
-        const login = await readChallenge<{ deviceName: string }>(
+        const login = await readChallenge<MfaLoginData>(
           tx,
           config,
           pending.data.mfaToken,
@@ -211,7 +214,14 @@ export const registerBrowserMfa = (options: {
         await tx.$executeRaw(
           Prisma.sql`DELETE FROM ultra_challenges WHERE digest=${digest(input.ticket)}`,
         );
-        return issueSession(tx, config, pending.accountId, login.data.deviceName);
+        const { tokens, deviceToken } = await issueTrustedSession(
+          tx,
+          config,
+          pending.accountId,
+          login.data.deviceName,
+          mfaTrust(login.data, deviceEmail),
+        );
+        return { ...tokens, ...(deviceToken ? { deviceToken } : {}) };
       });
       if ('invalid' in result) throw new AccountError(401);
       return result;

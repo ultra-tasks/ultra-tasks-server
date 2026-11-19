@@ -33,7 +33,11 @@ import {
 } from './sync/services/websocket-connection.service';
 import { testRoutes } from './test-routes';
 import { captureMcpRoutes, captureRoutes } from './capture';
-import { loadUltraConfig, ultraAccountRoutes } from './ultra-account';
+import {
+  loadDeviceEmailSetting,
+  loadUltraConfig,
+  ultraAccountRoutes,
+} from './ultra-account';
 import { registerPublicCalendarFeeds } from './ultra-account/calendar-feeds';
 import { sendUltraAccountEmail, sendUltraInviteEmail } from './email';
 
@@ -510,6 +514,7 @@ export const createServer = (
           config: ultraConfig,
           requireTermsConsent: isConsentRequired(fullConfig),
           hasOperatorTerms,
+          deviceEmailVerification: loadDeviceEmailSetting() && !!fullConfig.smtp,
           sendMail: sendUltraAccountEmail,
           sendInviteMail: sendUltraInviteEmail,
         });

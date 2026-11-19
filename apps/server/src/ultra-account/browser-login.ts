@@ -17,10 +17,15 @@ import {
   decodePrivate,
   digest,
   encodePrivate,
-  issueSession,
   requireRecent,
   type UltraConfig,
 } from './security';
+import { deviceLoginFields } from './better-auth';
+import {
+  deviceTrustFrom,
+  issueTrustedSession,
+  requireTrustedApprover,
+} from './device-store';
 import {
   one,
   factors,
@@ -34,9 +39,15 @@ const token = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 const publicKey = z
   .object({ kty: z.literal('EC'), crv: z.literal('P-256'), x: token, y: token })
   .strict();
-const proof = z
-  .object({ ticket: token, state: token, verifier: token, serverId: z.string().uuid() })
-  .strict();
+const proofFields = {
+  ticket: token,
+  state: token,
+  verifier: token,
+  serverId: z.string().uuid(),
+};
+const proof = z.object(proofFields).strict();
+// Only redemption can start a session, so only it accepts the new-device keys.
+const redemption = z.object({ ...proofFields, ...deviceLoginFields }).strict();
 interface StoredRequest {
   request: BrowserLoginRequest;
   approval?: BrowserLoginApproval;
@@ -52,10 +63,13 @@ export const registerBrowserLogin = ({
   transaction,
   config,
   post,
+  deviceEmail = false,
 }: {
   db: UltraDb;
   transaction: UltraTransaction;
   config: UltraConfig;
+  /** The new-device email check is in force on this server (default off). */
+  deviceEmail?: boolean;
   post: (
     url: string,
     run: (req: FastifyRequest) => Promise<unknown>,
@@ -180,7 +194,9 @@ export const registerBrowserLogin = ({
       .parse(req.body);
     return transaction(async (tx) => {
       const account = await lockAccount(tx, session.account_id);
-      await liveSession(tx, account.id, session.id);
+      const live = await liveSession(tx, account.id, session.id);
+      // The approving session must itself have satisfied the new-device policy.
+      await requireTrustedApprover(tx, account, live, deviceEmail);
       const { data } = await read(tx, input.ticket, true);
       if (data.approval) throw new AccountError(409);
       if (
@@ -217,7 +233,7 @@ export const registerBrowserLogin = ({
   post(
     '/browser-login/poll',
     async (req) => {
-      const input = proof.parse(req.body);
+      const input = redemption.parse(req.body);
       return transaction(async (tx) => {
         // Account before challenge before session: the same order as account security changes.
         const identity = await one<{ account_id: string | null }>(
@@ -241,13 +257,19 @@ export const registerBrowserLogin = ({
         )
           throw new AccountError(401);
         await remove(tx, input.ticket);
-        const tokens = await issueSession(
+        const { tokens, deviceToken } = await issueTrustedSession(
           tx,
           config,
           account.id,
           data.request.deviceName,
+          deviceTrustFrom(input, deviceEmail),
         );
-        return { request: data.request, approval: data.approval, tokens };
+        return {
+          request: data.request,
+          approval: data.approval,
+          tokens,
+          ...(deviceToken ? { deviceToken } : {}),
+        };
       });
     },
     600,

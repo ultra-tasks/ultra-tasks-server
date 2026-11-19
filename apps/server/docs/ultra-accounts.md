@@ -23,13 +23,16 @@ notifications with HTTP fallback.
 Build the workspace packages, apply Prisma migrations, and configure these values
 before setting `ULTRA_ACCOUNTS_ENABLED=true`:
 
-| Variable                | Purpose                                                                                                                               |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `ULTRA_SERVER_ID`       | Stable random UUID identifying this installation                                                                                      |
-| `ULTRA_OPAQUE_SETUP`    | Persistent OPAQUE server setup generated once with the pinned package                                                                 |
-| `ULTRA_AUTH_SECRET`     | Independent cryptographically random secret of at least 32 characters for sessions and encrypted authentication challenges/TOTP seeds |
-| `PUBLIC_URL`            | Correct HTTPS origin; localhost HTTP is for development only                                                                          |
-| Existing SMTP variables | Verification and recovery emails; no content or recovery keys are emailed                                                             |
+| Variable                          | Purpose                                                                                                                                                  |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ULTRA_SERVER_ID`                 | Stable random UUID identifying this installation                                                                                                         |
+| `ULTRA_OPAQUE_SETUP`              | Persistent OPAQUE server setup generated once with the pinned package                                                                                    |
+| `ULTRA_AUTH_SECRET`               | Independent cryptographically random secret of at least 32 characters for sessions and encrypted authentication challenges/TOTP seeds                    |
+| `PUBLIC_URL`                      | Correct HTTPS origin; localhost HTTP is for development only                                                                                             |
+| Existing SMTP variables           | Verification, recovery and new-device code emails; no content or recovery keys are emailed                                                               |
+| `ULTRA_DEVICE_EMAIL_VERIFICATION` | Optional. `true` (default) asks for an emailed code when the password is used on an unrecognised device; `false` is the operator kill switch. Needs SMTP |
+| `ULTRA_SESSION_IDLE_DAYS`         | Optional, default 180: a session signs out after this many days without a refresh; every refresh renews it                                               |
+| `ULTRA_SESSION_MAX_DAYS`          | Optional, default 1095, `0` for none: absolute limit fixed at issue; must not be below the idle days                                                     |
 
 Generate setup material on the operator's trusted machine with
 `npx @serenity-kit/opaque@1.1.0 create-server-setup`. Generate the other secrets
@@ -63,14 +66,28 @@ access alone cannot replace the encrypted vault or decrypt its contents.
 TOTP and WebAuthn are second factors after password proof. MFA enrollment supplies
 ten single-use recovery codes; enabling another factor replaces the old set.
 MFA codes recover authentication only, and do not decrypt the vault. TOTP seeds
-are operator-encrypted; recovery codes, mail tokens, refresh tokens, and challenge
-identifiers are stored as digests. OPAQUE state and enrollment challenges are
+are operator-encrypted; recovery codes, mail tokens, legacy refresh tokens, and challenge
+identifiers are stored as digests, and current refresh tokens are not stored at all (see
+below). OPAQUE state and enrollment challenges are
 encrypted and expire. Attempt limits and per-route IP rate limits apply.
 
-Access tokens last ten minutes. Refresh tokens rotate, have a 30-day inactivity
-window and a 90-day absolute session limit, and revoke their session on reuse.
-Sessions can be listed and revoked individually. Security changes require a
-recent login. Legacy magic links/passkeys and legacy JWTs cannot authorize v2
+Access tokens last ten minutes. Refresh tokens rotate and revoke their session on
+reuse. A session slides: each successful refresh renews an idle window (180 days by
+default) up to an absolute limit fixed at sign-in (1095 days by default), so a device
+in regular use stays signed in. At most 30 sessions per account are live. A refresh token
+names its own session and generation and carries a MAC, so nothing is stored per refresh
+and a replay of any earlier generation revokes the session. A lost refresh
+response ends the session (the replayed token is treated as reuse); clients must show a
+reconnect state. Sessions and trusted devices can be listed and revoked individually (the
+list holds at most 100 sessions, and removing a device other than the one in use needs a
+recent login and, with a second factor enrolled, an MFA code).
+Security changes require a recent login, which refresh never renews.
+
+New-device email verification asks for an emailed eight-digit code when the password
+is used on a device with no valid device token. It does not replace TOTP or security
+keys, is not multi-factor authentication and is not phishing-resistant. Capability
+discovery reports `newDeviceEmailVerification`, `trustedDevices` and
+`sessionLifetime`. See [account devices and sessions](../../../docs/account-devices-and-sessions.md). Legacy magic links/passkeys and legacy JWTs cannot authorize v2
 account operations because the identities, routes, token audience, and sessions
 are separate. Password-recovery and password-change publication atomically
 replace credentials and wrappers, advance the vault version, and revoke sessions.

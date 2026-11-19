@@ -273,7 +273,9 @@ model UltraAccount {
   termsAcceptedAt BigInt? @map("terms_accepted_at")
   vaultVersion Int @default(1) @map("vault_version")
   createdAt BigInt @map("created_at")
+  newDeviceEmail Boolean @default(true) @map("new_device_email")
   sessions UltraSession[]
+  devices UltraDevice[]
   calendarFeeds UltraCalendarFeed[]
   factors UltraFactor[]
   recoveryCodes UltraRecoveryCode[]
@@ -289,11 +291,33 @@ model UltraSession {
   expiresAt BigInt @map("expires_at")
   idleExpiresAt BigInt @map("idle_expires_at")
   revoked Boolean @default(false)
+  deviceId String? @map("device_id")
+  // Generation of the session's current refresh token. NULL: issued before generations existed.
+  refreshGeneration Int? @map("refresh_generation")
+  // When the session was last signed in or refreshed (0 until a pre-existing session refreshes).
+  refreshedAt BigInt @default(0) @map("refreshed_at")
   account UltraAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  device UltraDevice? @relation(fields: [deviceId], references: [id], onDelete: SetNull)
   tokens UltraRefreshToken[]
   socketTickets UltraSocketTicket[]
   @@index([accountId])
+  @@index([deviceId])
   @@map("ultra_sessions")
+}
+// A trusted device: an opaque server-issued token (only its digest is stored) that waives
+// the new-device email check after a correct password proof. Never evidence by itself.
+model UltraDevice {
+  id String @id
+  accountId String @map("account_id")
+  tokenDigest String @unique @map("token_digest")
+  label String
+  createdAt BigInt @map("created_at")
+  lastSeenAt BigInt @map("last_seen_at")
+  revoked Boolean @default(false)
+  account UltraAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  sessions UltraSession[]
+  @@index([accountId])
+  @@map("ultra_devices")
 }
 model UltraRefreshToken {
   digest String @id

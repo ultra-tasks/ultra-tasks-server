@@ -8,6 +8,7 @@ import websocket from '@fastify/websocket';
 import {
   AccountClient,
   Transport,
+  opaqueClient,
   opaqueReady,
   opaqueServer,
   AccountApiError,
@@ -35,6 +36,11 @@ export const createHarness = async (
     registrationOpen?: boolean;
     privateOnly?: boolean;
     authEngine?: 'native' | 'better-auth';
+    /**
+     * New-device email verification. Off by default here so every suite written before the feature
+     * keeps its behavior; a test that exercises it opts in with `deviceEmailVerification: true`.
+     */
+    deviceEmailVerification?: boolean;
     disableRateLimit?: boolean;
     turnstile?: { siteKey: string; secret: string; hostname: string };
   } = {},
@@ -119,6 +125,17 @@ export const createHarness = async (
       'utf8',
     ),
   );
+  await database.exec(
+    readFileSync(
+      fileURLToPath(
+        new URL(
+          '../prisma/migrations/20261118000000_account_devices_sessions/migration.sql',
+          import.meta.url,
+        ),
+      ),
+      'utf8',
+    ),
+  );
   const rawDb = {
     $queryRaw: async (sql: Prisma.Sql) =>
       (await database.query(sql.text, sql.values)).rows,
@@ -162,7 +179,11 @@ export const createHarness = async (
       settings.authEngine ??
       (process.env.ULTRA_TEST_AUTH_ENGINE === 'better-auth' ? 'better-auth' : undefined),
   };
-  const mail: { email: string; kind: 'verify' | 'recover'; token: string }[] = [];
+  type MailKind = 'verify' | 'recover' | 'device';
+  /** Delivered mail; for kind `device` the token is the eight-digit sign-in code. */
+  const mail: { email: string; kind: MailKind; token: string }[] = [];
+  /** A kind in this set is refused by the mail provider (nothing is recorded or delivered). */
+  const failingMail = new Set<MailKind>();
   const app = Fastify();
   const realtime = new UltraRealtimeHub(db, !!settings.privateOnly);
   await app.register(websocket, { options: { maxPayload: 1024 } });
@@ -179,8 +200,10 @@ export const createHarness = async (
     db,
     transaction,
     config,
+    deviceEmailVerification: false,
     ...accountSettings,
     sendMail: async (email, kind, token) => {
+      if (failingMail.has(kind)) return false;
       mail.push({ email, kind, token });
       return true;
     },
@@ -199,14 +222,46 @@ export const createHarness = async (
       payload: body,
       headers: accessToken ? { authorization: 'Bearer ' + accessToken } : {},
     });
-    if (result.statusCode >= 400)
+    if (result.statusCode >= 400) {
+      const failure = result.json() as { error?: string; code?: string };
       throw new AccountApiError(
         result.statusCode,
-        result.json().error ?? String(result.statusCode),
+        failure.error ?? String(result.statusCode),
+        failure.code,
       );
+    }
     return result.json();
   };
   const client = () => new AccountClient(transport);
+  /**
+   * The exact sign-in requests of SDK 0.1.4 and earlier: `/login/start` with a device name and a
+   * `/login/finish` that carries neither `clientFeatures` nor a device token. `extra` is merged
+   * into the finish body for tests that probe strictness. Returns the raw response body.
+   */
+  const legacyLogin = async (
+    identifier: string,
+    pw = password,
+    extra: Record<string, unknown> = {},
+  ) => {
+    const started = opaqueClient.startLogin({ password: pw });
+    const response = (await transport('/login/start', {
+      identifier,
+      startLoginRequest: started.startLoginRequest,
+      deviceName: 'Old client',
+    })) as { loginToken: string; loginResponse: string };
+    const proof = opaqueClient.finishLogin({
+      ...started,
+      password: pw,
+      loginResponse: response.loginResponse,
+      keyStretching: 'memory-constrained',
+    });
+    if (!proof) throw new Error('Wrong password for the legacy sign-in helper');
+    return transport('/login/finish', {
+      loginToken: response.loginToken,
+      finishLoginRequest: proof.finishLoginRequest,
+      ...extra,
+    }) as Promise<Record<string, unknown>>;
+  };
   const register = async (email = 'alice@example.test', username = 'alice') => {
     const account = client();
     const prepared = await account.prepareRegistration(
@@ -218,7 +273,13 @@ export const createHarness = async (
       (message) => message.email === email && message.kind === 'verify',
     )!.token;
     await transport('/verify-email', { identifier: email, code: verifyToken });
-    await account.login(email, password);
+    const signedIn = await account.login(email, password);
+    // With new-device verification on, a new account's first sign-in is an unrecognised device.
+    if (signedIn.verification)
+      await account.completeDeviceVerification(
+        mail.findLast((message) => message.email === email && message.kind === 'device')!
+          .token,
+      );
     return { client: account, prepared, verifyToken };
   };
   return {
@@ -228,9 +289,11 @@ export const createHarness = async (
     database,
     config,
     mail,
+    failingMail,
     transport,
     requests,
     client,
+    legacyLogin,
     register,
     close: async () => {
       await app.close();

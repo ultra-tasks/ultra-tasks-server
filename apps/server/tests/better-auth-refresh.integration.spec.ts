@@ -28,7 +28,7 @@ import {
   AccountError,
   digest,
   issueSession,
-  issueTokens,
+  rotateRefresh,
   type UltraConfig,
 } from '../src/ultra-account/security';
 import type { SessionRow } from '../src/ultra-account/store';
@@ -79,6 +79,8 @@ describe('Better Auth refresh locking (PostgreSQL)', () => {
     for (const migration of [
       '20261105000000_ultra_accounts',
       '20261107000000_better_auth_prototype',
+      // The session and receipt writers below also fill the device and receipt-time columns.
+      '20261118000000_account_devices_sessions',
     ]) {
       const sql = readFileSync(
         new URL(`../prisma/migrations/${migration}/migration.sql`, import.meta.url),
@@ -122,9 +124,9 @@ describe('Better Auth refresh locking (PostgreSQL)', () => {
       return issueSession(tx, config, accountId, 'PostgreSQL race fixture');
     });
     refreshToken = tokens.refreshToken;
-    [session] = await refreshDb.$queryRaw<SessionRow[]>(Prisma.sql`SELECT s.*
-      FROM ultra_sessions s JOIN ultra_refresh_tokens t ON t.session_id=s.id
-      WHERE t.digest=${digest(refreshToken)}`);
+    // The token names its own session (the first 16 bytes), so the fixture needs no token table.
+    [session] = await refreshDb.$queryRaw<SessionRow[]>(Prisma.sql`SELECT *
+      FROM ultra_sessions WHERE account_id=${accountId}`);
   });
 
   afterEach(async () => {
@@ -155,18 +157,15 @@ describe('Better Auth refresh locking (PostgreSQL)', () => {
     const refresh = refreshDb
       .$transaction(
         async (tx) => {
-          const [row] = await tx.$queryRaw<(SessionRow & { used: boolean })[]>(
-            Prisma.sql`SELECT s.*,t.used FROM ultra_refresh_tokens t
-          JOIN ultra_sessions s ON t.session_id=s.id
-          WHERE t.digest=${digest(refreshToken)} FOR UPDATE OF s,t`,
+          // Hold the session row first, as rotateRefresh does, and wait for the account lock.
+          await tx.$queryRaw<SessionRow[]>(
+            Prisma.sql`SELECT * FROM ultra_sessions WHERE id=${session.id} FOR UPDATE`,
           );
-          expect(row.used).toBe(false);
           sessionLocked.release();
           await accountLocked.reached;
-          await tx.$executeRaw(Prisma.sql`UPDATE ultra_refresh_tokens SET used=true
-        WHERE digest=${digest(refreshToken)}`);
-          // Runs the real issueBetterAuthAccess and SQL adapter inside this transaction.
-          return issueTokens(tx, config, row);
+          // The real rotation: advances the generation and runs the real issueBetterAuthAccess
+          // and SQL adapter inside this transaction.
+          return rotateRefresh(tx, config, refreshToken);
         },
         { maxWait: 10000, timeout: 20000 },
       )
@@ -328,10 +327,10 @@ describe('Better Auth refresh locking (PostgreSQL)', () => {
         token_hash: digest(refreshed.value!.accessToken.slice('utba1_'.length)),
       },
     ]);
-    const [receipt] = await refreshDb.$queryRaw<{ used: boolean }[]>(
-      Prisma.sql`SELECT used FROM ultra_refresh_tokens WHERE digest=${digest(refreshToken)}`,
+    const [rotated] = await refreshDb.$queryRaw<{ refresh_generation: number }[]>(
+      Prisma.sql`SELECT refresh_generation FROM ultra_sessions WHERE id=${session.id}`,
     );
-    expect(receipt.used).toBe(true);
+    expect(Number(rotated.refresh_generation)).toBe(1);
     const [native] = await refreshDb.$queryRaw<{ revoked: boolean }[]>(
       Prisma.sql`SELECT revoked FROM ultra_sessions WHERE id=${session.id}`,
     );

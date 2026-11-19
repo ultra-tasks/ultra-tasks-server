@@ -20,10 +20,26 @@ export const opaqueLoginStartSchema = z
     deviceName: z.string().trim().min(1).max(100).default('This device'),
   })
   .strict();
+/**
+ * Optional new-device keys, shared by every sign-in that can start a session. Clients send them
+ * only after `/capabilities` advertised `newDeviceEmailVerification`: the bodies are strict, so
+ * an older server rejects them. Unknown feature names are ignored, not rejected.
+ */
+export const deviceLoginFields = {
+  deviceToken: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{43}$/)
+    .optional(),
+  clientFeatures: z
+    .array(z.string().regex(/^[A-Za-z][A-Za-z0-9]{0,31}$/))
+    .max(8)
+    .optional(),
+};
 export const opaqueLoginFinishSchema = z
   .object({
     loginToken: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
     finishLoginRequest: message,
+    ...deviceLoginFields,
   })
   .strict();
 type LoginHandlers = {
@@ -94,8 +110,11 @@ export const issueBetterAuthAccess = async (
 ): Promise<string> => {
   const auth = createUltraBetterAuth(db, config);
   const context = await auth.$context;
-  // Called only inside the account-locked transaction after OPAQUE + enrolled MFA,
-  // or an existing single-use refresh receipt. Never issued from a password proof alone.
+  // Called only by issueTokens, inside a transaction, after a sign-in policy was satisfied: the
+  // OPAQUE password proof plus the extra step the account needs (a second factor, an emailed
+  // device code, a recognised device, an approved browser sign-in, or none when the account
+  // opted out), or a valid single-use refresh token. Never from a password proof that the
+  // policy still wants something more for.
   const result = await context.internalAdapter.createSession(session.account_id, false, {
     nativeSessionId: session.id,
   });

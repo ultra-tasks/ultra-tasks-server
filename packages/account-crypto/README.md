@@ -8,6 +8,32 @@ compatible with existing account vaults and the direct password/MFA APIs.
 This package contains no Angular imports or database access. Its server-side
 OPAQUE export must not be exposed as an unauthenticated application API.
 
+SDK 0.1.5 adds the client side of [new-device email verification, trusted devices and
+the sliding session policy](../../docs/account-devices-and-sessions.md):
+
+- `login(identifier, password, deviceName?, { deviceToken? })` resolves to a session, an
+  MFA challenge (`mfaToken`) or an email challenge (`verification`). Finish the latter with
+  `completeDeviceVerification(code)`; `resendDeviceVerification()` asks for a new code
+  (the server limits resends, cooldown and attempts). The device token returned after a
+  successful sign-in is exposed as `client.deviceToken`; store it in protected storage and
+  pass it to the next sign-in. It is a secret, never a credential by itself.
+- `getSecuritySettings()`, `setNewDeviceEmailVerification(enabled, code?)`, `devices()` and
+  `revokeDevice(id, code?)` manage the setting and the trusted-device list. Removing a
+  device other than the one the client is signed in on needs a recent sign-in and, when a
+  second factor is enrolled, its TOTP or recovery code in `code` (`401` otherwise).
+- `AccountApiError.code` carries the server's stable machine-readable reason (for example
+  `client_update_required`, `resend_too_soon`, `resend_limit`, `session_limit`,
+  `device_verification_required`). Do not parse message text.
+- Compatibility: the new request keys are sent only when `/capabilities` advertises
+  `features.newDeviceEmailVerification`, so the same SDK works with older servers (which
+  reject unknown keys) and `getSecuritySettings().available` is `false` there. Servers
+  also still accept the SDK 0.1.4 request shapes. `prepareRegistration` needs only an email
+  address and password.
+- A refresh token is single use and a replay of any earlier one revokes its session. Treat
+  the token as an opaque string (servers from this release issue 48 characters, earlier ones
+  43). If a refresh response is lost, the retry ends the session; treat a refresh `401` as
+  "sign in again" and show a persistent reconnect state instead of retrying in a loop.
+
 Applications can import `@ultra-tasks/account-crypto/client` for the account,
 vault, and sync APIs without eagerly loading OPAQUE WASM. OPAQUE loads when
 account initialization or password authentication runs. The original entry remains
