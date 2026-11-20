@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, it } from 'vitest';
 import {
   chromium,
   expect as browserExpect,
@@ -9,7 +9,11 @@ import {
 import fastifyStatic from '@fastify/static';
 import { resolve } from 'node:path';
 import { createHarness, password } from './ultra-account.helper';
-import { selectAppAccountServer } from './app-account-ui.helper';
+import {
+  appAccount,
+  submitAppAccountSignIn,
+  waitForAppAccountSync,
+} from './app-account-ui.helper';
 
 describe('private v1 sync through two real Angular clients', () => {
   let harness: Awaited<ReturnType<typeof createHarness>>;
@@ -59,42 +63,17 @@ describe('private v1 sync through two real Angular clients', () => {
     await page.goto(origin + '/#/native-sync');
     return page;
   };
-  const unlock = async (page: Page): Promise<void> => {
-    await selectAppAccountServer(page, origin);
-    await page.getByLabel('Email or username').fill('alice');
-    await page.getByLabel('Password', { exact: true }).fill(password);
-    await page.getByRole('button', { name: 'Sign in and unlock' }).click();
-  };
-  const login = async (
-    page: Page,
-    importLocal: boolean,
-    alreadyLinked = false,
-  ): Promise<void> => {
+  const unlock = (page: Page): Promise<void> =>
+    submitAppAccountSignIn(page, origin, 'alice', password);
+  const dataPending = (page: Page) =>
+    page
+      .locator('native-sync .data-card:visible, dialog-account-data-choice:visible')
+      .first();
+  const login = async (page: Page): Promise<void> => {
     await unlock(page);
-    if (!alreadyLinked && !importLocal) {
-      await page
-        .getByText('Connect personal data', { exact: true })
-        .waitFor({ timeout: 30000 });
-      await page
-        .getByRole('button', {
-          name: importLocal
-            ? 'Import this device’s data'
-            : 'Use the account’s existing data',
-        })
-        .click();
-    }
-    await browserExpect(
-      page.getByRole('button', { name: 'Sync now', exact: true }),
-    ).toBeEnabled({ timeout: 30000 });
-    await expect
-      .poll(
-        async () => ({
-          connect: await page.getByText('Connect personal data', { exact: true }).count(),
-          error: await page.locator('native-sync [role=alert]').allTextContents(),
-        }),
-        { timeout: 30000 },
-      )
-      .toEqual({ connect: 0, error: [] });
+    await waitForAppAccountSync(page);
+    await browserExpect(dataPending(page)).toHaveCount(0);
+    await browserExpect(appAccount(page).getByRole('alert')).toHaveCount(0);
     await browserExpect(
       page.getByRole('heading', { name: 'Shared projects' }),
     ).toHaveCount(0);
@@ -105,8 +84,8 @@ describe('private v1 sync through two real Angular clients', () => {
     try {
       const first = await pageFor(firstContext);
       const second = await pageFor(secondContext);
-      await login(first, true);
-      await login(second, false);
+      await login(first);
+      await login(second);
       const add = async (page: Page, title: string): Promise<void> => {
         if (!page.url().endsWith('/#/tag/TODAY/tasks'))
           await page.goto(origin + '/#/tag/TODAY/tasks');
@@ -136,7 +115,7 @@ describe('private v1 sync through two real Angular clients', () => {
       ).toHaveCount(1, { timeout: 20000 });
       await second.reload();
       await second.goto(origin + '/#/native-sync');
-      await login(second, false, true);
+      await login(second);
       await second.goto(origin + '/#/tag/TODAY/tasks');
       for (const title of [
         'Private first-device task',
@@ -150,33 +129,18 @@ describe('private v1 sync through two real Angular clients', () => {
         });
       // Locking and a full restart still reserve the saved UltraTasks account connection.
       await second.goto(origin + '/#/native-sync');
-      const nativePage = second.locator('native-sync:visible');
+      const nativePage = appAccount(second);
       await browserExpect(nativePage).toHaveCount(1);
       await nativePage.locator('.account-options > summary').click();
-      await nativePage.getByRole('button', { name: 'Lock account', exact: true }).click();
+      await nativePage.getByRole('button', { name: /^Lock(?: account)?$/ }).click();
       await second.reload();
-      await second.goto(origin + '/#/account');
-      await second
-        .getByRole('dialog', { name: 'Account', exact: true })
-        .getByRole('button', { name: 'Set up sync', exact: true })
-        .click();
-      const picker = second.locator('dialog-sync-cfg');
-      await picker.getByRole('combobox').click();
-      await browserExpect(
-        second.getByRole('option', { name: 'WebDAV — personal sync only', exact: true }),
-      ).toBeEnabled();
-      await second
-        .getByRole('option', { name: 'UltraTasks Account', exact: true })
-        .click();
-      await picker
-        .getByRole('button', { name: 'Continue with UltraTasks Account', exact: true })
-        .click();
-      await second
-        .getByRole('button', {
-          name: 'Disconnect UltraTasks Account on this device',
-          exact: true,
-        })
-        .click();
+      await second.goto(origin + '/#/native-sync');
+      const signOut = nativePage.getByRole('button', {
+        name: /^Sign out of this device$/,
+      });
+      await browserExpect(signOut).toBeVisible();
+      await signOut.click();
+      await browserExpect(signOut).toHaveCount(0);
       await second.goto(origin + '/#/tag/TODAY/tasks');
       for (const title of [
         'Private first-device task',
@@ -195,14 +159,10 @@ describe('private v1 sync through two real Angular clients', () => {
       await secondContext.setOffline(false);
       await second.goto(origin + '/#/native-sync');
       await unlock(second);
-      await browserExpect(
-        second.getByText('Connect personal data', { exact: true }),
-      ).toBeVisible();
+      await browserExpect(dataPending(second)).toBeVisible({ timeout: 30000 });
       await second.reload();
       await unlock(second);
-      await browserExpect(
-        second.getByText('Connect personal data', { exact: true }),
-      ).toBeVisible();
+      await browserExpect(dataPending(second)).toBeVisible({ timeout: 30000 });
       await second.goto(origin + '/#/tag/TODAY/tasks');
       await browserExpect(
         second.locator('task').filter({ hasText: disconnectedTask }),

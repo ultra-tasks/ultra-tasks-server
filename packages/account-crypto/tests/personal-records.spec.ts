@@ -3,6 +3,8 @@ import {
   baselineFromHeads,
   personalChanges,
   personalRecords,
+  preparePersonalTimeRebase,
+  rebasePersonalTimeChange,
   restorePersonal,
 } from '../src/personal-records';
 import {
@@ -11,7 +13,7 @@ import {
   validateSharedHierarchy,
 } from '../src/shared-project';
 import { mergeRecord } from '../src/sync-merge';
-import type { PlainHead } from '../src/sync-types';
+import type { Intent, PlainHead } from '../src/sync-types';
 
 const heads = (
   records: Awaited<ReturnType<typeof personalRecords>>['records'],
@@ -60,6 +62,29 @@ const FIXTURE = {
   reminders: [{ id: 'reminder', remindAt: 9000 }],
 };
 const source = (): typeof FIXTURE => structuredClone(FIXTURE);
+const DAY = '2026-11-05';
+const archived = (value = source()): Record<string, unknown> => ({
+  ...value,
+  task: { ...value.task, ids: [], entities: {} },
+  archiveYoung: { ...value.archiveYoung, task: value.task },
+});
+const archivedTime = (records: Record<string, PlainHead>): number =>
+  (restorePersonal(records).archiveYoung as { task: typeof FIXTURE.task }).task.entities
+    .one.timeSpent;
+const intentFrom = (
+  before: Awaited<ReturnType<typeof personalRecords>>,
+  after: Awaited<ReturnType<typeof personalRecords>>,
+): Intent => {
+  const base = heads(before.records);
+  return {
+    id: 'pending-archive',
+    changes: personalChanges(before, after).map((change) => ({
+      ...change,
+      base: base[change.entityId] ?? null,
+      deleted: change.deleted ?? false,
+    })),
+  };
+};
 describe('personal record inventory and shared boundary', () => {
   it('merges independent ID additions while preserving an overlapping reorder as a conflict', () => {
     expect(mergeRecord(['a'], ['a', 'b'], ['a', 'c'])).toEqual({
@@ -121,6 +146,146 @@ describe('personal record inventory and shared boundary', () => {
     expect(
       (restorePersonal(all) as ReturnType<typeof source>).task.entities.one,
     ).toBeUndefined();
+  });
+  it('moves each counter with its task and recaptures that same ID after an edit', async () => {
+    const baseline = await personalRecords(source(), 'initial');
+    const next = await personalRecords(archived(), 'archive', baseline);
+    const old = Object.values(baseline.records).find((record) =>
+      (record.value as { path: string[] }).path.includes(DAY),
+    )!;
+    expect(next.records[old.entityId].value).toEqual({
+      path: ['archiveYoung', 'task', 'entities', 'one', 'timeSpentOnDay', DAY],
+      deviceId: 'legacy-baseline',
+      positive: 1000,
+      negative: 0,
+    });
+    expect(archivedTime(heads(next.records))).toBe(1000);
+
+    const edit = source();
+    edit.task.entities.one.timeSpentOnDay[DAY] += 500;
+    const adjusted = await personalRecords(edit, 'timer', baseline);
+    const newBucket = intentFrom(baseline, adjusted).changes[0];
+    const committed = heads({ ...next.records, [newBucket.entityId]: newBucket });
+    expect(archivedTime(committed)).toBe(1500);
+    const received = restorePersonal(committed);
+    const recaptured = await personalRecords(
+      received,
+      'timer',
+      baselineFromHeads(committed, received),
+    );
+    expect(recaptured.records[newBucket.entityId].value).toEqual({
+      path: ['archiveYoung', 'task', 'entities', 'one', 'timeSpentOnDay', DAY],
+      deviceId: 'timer',
+      positive: 500,
+      negative: 0,
+    });
+    expect(archivedTime(heads(recaptured.records))).toBe(1500);
+  });
+  it('carries a remotely introduced bucket into the pending archive transaction', async () => {
+    const baseline = await personalRecords(source(), 'initial');
+    const archivedLocally = await personalRecords(archived(), 'archive', baseline);
+    const intent = intentFrom(baseline, archivedLocally);
+    const edit = source();
+    edit.task.entities.one.timeSpentOnDay[DAY] += 500;
+    const adjusted = await personalRecords(edit, 'timer', baseline);
+    const [newBucket] = intentFrom(baseline, adjusted).changes;
+    const remote = heads(adjusted.records);
+
+    preparePersonalTimeRebase(remote, [intent]);
+
+    expect(intent.changes).toContainEqual({
+      entityId: newBucket.entityId,
+      entityType: 'personal.time',
+      deleted: false,
+      base: remote[newBucket.entityId],
+      value: {
+        path: ['archiveYoung', 'task', 'entities', 'one', 'timeSpentOnDay', DAY],
+        deviceId: 'timer',
+        positive: 500,
+        negative: 0,
+      },
+    });
+  });
+  it('preserves the carried counter if an archive publishes the destination before removing the source', async () => {
+    const initial = await personalRecords(source(), 'initial');
+    const edit = source();
+    edit.task.entities.one.timeSpentOnDay[DAY] += 500;
+    const tracked = await personalRecords(edit, 'timer', initial);
+    const [bucket] = intentFrom(initial, tracked).changes;
+    const moved = await personalRecords(archived(edit), 'archive', tracked);
+    const active = Object.values(heads(tracked.records)).find(
+      (head) => (head.value as { path: string[] }).path.join('/') === 'task/entities/one',
+    )!;
+    const intermediate = { ...heads(moved.records), [active.entityId]: active };
+    const before = restorePersonal(intermediate) as {
+      task: typeof FIXTURE.task;
+      archiveYoung: { task: typeof FIXTURE.task };
+    };
+    const next = structuredClone(before);
+    next.task.entities.one.timeSpentOnDay[DAY] = 250;
+    next.archiveYoung.task.entities.one.timeSpentOnDay[DAY] += 100;
+    const captured = await personalRecords(
+      next,
+      'timer',
+      baselineFromHeads(intermediate, before),
+    );
+
+    expect(captured.records[bucket.entityId].value).toEqual({
+      path: ['archiveYoung', 'task', 'entities', 'one', 'timeSpentOnDay', DAY],
+      deviceId: 'timer',
+      positive: 850,
+      negative: 0,
+    });
+    expect(archivedTime(heads(captured.records))).toBe(1850);
+  });
+  it('carries only the pending correction when a released client archives and folds old time', async () => {
+    const initial = await personalRecords(source(), 'initial');
+    const prior = source();
+    prior.task.entities.one.timeSpentOnDay[DAY] += 500;
+    const baseline = await personalRecords(prior, 'timer', initial);
+    const corrected = source();
+    corrected.task.entities.one.timeSpentOnDay[DAY] = 1250;
+    const edit = await personalRecords(corrected, 'timer', baseline);
+    const pending = intentFrom(baseline, edit);
+    const [change] = pending.changes;
+    const legacyArchive = await personalRecords(archived(prior), 'initial');
+    const remote = heads(legacyArchive.records);
+    const deleted = { ...change.base!, revision: 2, value: null, deleted: true };
+    remote[change.entityId] = deleted;
+
+    const locations = preparePersonalTimeRebase(remote, [pending]);
+    rebasePersonalTimeChange(change, deleted, deleted, locations);
+
+    expect(change.base).toBe(deleted);
+    expect(change.restore).toBe(true);
+    expect(change.value).toEqual({
+      path: ['archiveYoung', 'task', 'entities', 'one', 'timeSpentOnDay', DAY],
+      deviceId: 'timer',
+      positive: 0,
+      negative: 250,
+      foldedTime: {
+        path: ['task', 'entities', 'one', 'timeSpentOnDay', DAY],
+        elapsed: 500,
+      },
+    });
+    const committed = { ...remote, [change.entityId]: { ...change, revision: 3 } };
+    expect(archivedTime(committed)).toBe(1250);
+    const applied = restorePersonal(committed) as {
+      archiveYoung: { task: typeof FIXTURE.task };
+    };
+    const old = baselineFromHeads(committed, applied);
+    const edited = structuredClone(applied);
+    edited.archiveYoung.task.entities.one.timeSpentOnDay[DAY] += 250;
+    const captured = await personalRecords(edited, 'timer', old);
+    expect(captured.records[change.entityId].value).toMatchObject({
+      positive: 250,
+      negative: 250,
+      foldedTime: {
+        path: ['task', 'entities', 'one', 'timeSpentOnDay', DAY],
+        elapsed: 500,
+      },
+    });
+    expect(archivedTime(heads(captured.records))).toBe(1500);
   });
   it('uses an explicit sharing allowlist and excludes descriptions unless selected', () => {
     const task = {

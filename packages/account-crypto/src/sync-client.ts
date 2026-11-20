@@ -1,8 +1,19 @@
-import { AccountClient } from './account-client';
-import { canonical, fingerprint, randomKey } from './encoding';
+import { AccountApiError, AccountClient } from './account-client';
+import { canonical, fingerprint, randomKey, utf8 } from './encoding';
 import { decryptRecord, encryptRecord, grantKey, receiveKey } from './sharing';
 import { sign, verify, type VaultSecrets } from './vault';
 import { mergeRecord } from './sync-merge';
+import {
+  canHoldUpload,
+  holdRejectedWrites,
+  UploadBodySizeError,
+  withUploadDraft,
+} from './personal-upload-drafts';
+import {
+  hasDifferentTaskTimeLocation,
+  preparePersonalTimeRebase,
+  rebasePersonalTimeChange,
+} from './personal-records';
 import { verifyOwnershipChain, ownershipAcceptanceData } from './ownership';
 import {
   validateSharedRecord,
@@ -22,6 +33,7 @@ import type {
   ScopeSnapshot,
   StateStorage,
   SyncState,
+  SyncWrite,
   OwnershipOffer,
   OwnershipAcceptance,
 } from './sync-types';
@@ -33,6 +45,20 @@ const unsigned = <T extends { signature: string }>(value: T): Omit<T, 'signature
 };
 const same = (a: unknown, b: unknown): boolean =>
   canonical(a ?? null) === canonical(b ?? null);
+const SYNC_HISTORY_CHANGED =
+  'Sync history changed. Verified data and pending edits were retained on this device.';
+const assertHeadFollows = (held: PlainHead | undefined, next: PlainHead): void => {
+  if (!held) return;
+  if (next.revision < held.revision)
+    throw new Error('Sync server returned an older record version');
+  if (next.revision === held.revision && !same(held, next))
+    throw new Error(SYNC_HISTORY_CHANGED);
+};
+const UPLOAD_BODY_LIMIT = 8 * 1024 * 1024;
+// WebCrypto signs with a raw 64-byte P-256 signature, encoded without base64url padding.
+const EMPTY_MUTATION_SIGNATURE = 'A'.repeat(86);
+// Match the UTF-8 JSON sent by httpTransport, including the signature and wrapper.
+const uploadBodyBytes = (value: object): number => utf8(JSON.stringify(value)).length;
 export interface RecordChange {
   entityId: string;
   entityType: string;
@@ -189,7 +215,7 @@ export class SyncClient {
         (info.generation === previous.info.generation &&
           info.sequence < previous.info.sequence))
     )
-      throw new Error('Sync server returned an older project version');
+      throw new Error(SYNC_HISTORY_CHANGED);
     const previousOwn = previous?.info.members.find(
       (m) => m.authorization.accountId === this.accountId,
     );
@@ -388,7 +414,8 @@ export class SyncClient {
                   scope.sequence < current.info.sequence)
               )
                 return current.info;
-              await this.adopt(scope);
+              const local = await this.adopt(scope);
+              this.preserveInterruptedSetup(local, scope);
               return scope;
             } catch (error) {
               this.scopeErrors[scope.id] =
@@ -401,81 +428,113 @@ export class SyncClient {
       await Promise.all(
         Object.values(this.state.scopes)
           .filter((scope) => !known.has(scope.info.id))
-          .map((scope) => this.markRevoked(scope.info.id)),
+          .map((scope) => {
+            if (scope.info.kind === 'personal' && scope.info.state === 'active') {
+              this.scopeErrors[scope.info.id] = SYNC_HISTORY_CHANGED;
+              return;
+            }
+            return this.markRevoked(scope.info.id);
+          }),
       );
       await this.save();
       return valid.filter((scope): scope is ScopeInfo => scope !== null);
     });
   }
   async createScope(kind: 'personal' | 'project', migrating = false): Promise<string> {
-    return this.exclusive(async () => {
-      const id = crypto.randomUUID();
-      const key = kind === 'personal' ? this.secrets.personalKey : randomKey();
-      const info = await this.request<ScopeInfo>('/scopes', {
-        kind,
-        deviceId: this.state.device.id,
-        migrating,
-        membership: await this.membership(id, this.self(), 'owner', key, 1),
-      });
-      const local = await this.adopt(info);
-      local.info = info;
-      await this.save();
-      return info.id;
+    return this.exclusive(() =>
+      this.createScopeWithId(crypto.randomUUID(), kind, migrating),
+    );
+  }
+  private async createScopeWithId(
+    id: string,
+    kind: 'personal' | 'project',
+    migrating: boolean,
+    replacesEmptyScopeId?: string,
+  ): Promise<string> {
+    const key = kind === 'personal' ? this.secrets.personalKey : randomKey();
+    const info = await this.request<ScopeInfo>('/scopes', {
+      kind,
+      deviceId: this.state.device.id,
+      migrating,
+      ...(replacesEmptyScopeId ? { replacesEmptyScopeId } : {}),
+      membership: await this.membership(id, this.self(), 'owner', key, 1),
     });
+    const local = await this.adopt(info);
+    local.info = info;
+    await this.save();
+    return info.id;
   }
   async edit(scopeId: string, changes: RecordChange[]): Promise<void> {
-    return this.exclusive(async () => {
-      const scope = this.state.scopes[scopeId];
-      if (!scope) throw new Error('Download the project first');
-      this.assertScopeBoundary(scope.info, scope.key);
-      if (scope.revoked)
-        throw new Error(
-          'Project access was revoked; export private drafts before discarding them',
-        );
-      const role = scope.info.members.find(
-        (m) => m.authorization.accountId === this.accountId,
-      )?.authorization.role;
-      if (role === 'viewer') throw new Error('Viewers cannot change shared content');
-      if (scope.info.kind === 'project')
-        for (const change of changes)
-          if (!change.deleted) validateSharedRecord(change.entityType, change.value);
-      if (
-        !changes.length ||
-        changes.length > 100 ||
-        new Set(changes.map((c) => c.entityId)).size !== changes.length
-      )
-        throw new Error('An intent must contain 1–100 distinct records');
-      const projected = this.records(scopeId, true);
-      if (scope.info.kind === 'project') {
-        const next = {
-          ...projected,
-          ...Object.fromEntries(changes.map((c) => [c.entityId, c])),
-        };
-        validateSharedHierarchy(
-          Object.fromEntries(
-            Object.entries(next)
-              .filter(([, h]) => !h.deleted && h.entityType === 'shared.task')
-              .map(([id, h]) => [id, h.value as SharedTask]),
-          ),
-        );
-      }
-      scope.intents.push({
-        id: crypto.randomUUID(),
-        changes: changes.map((c) => ({
-          ...c,
-          deleted: c.deleted ?? false,
-          ...(c.restore ? { restore: true } : {}),
-          base: projected[c.entityId] ?? null,
-        })),
-      });
-      await this.save();
-      for (const listener of this.localListeners) listener(scopeId);
-    }, 'local');
+    return this.exclusive(() => this.queueEdit(scopeId, changes), 'local');
+  }
+  private async queueEdit(scopeId: string, changes: RecordChange[]): Promise<void> {
+    const scope = this.state.scopes[scopeId];
+    if (!scope) throw new Error('Download the project first');
+    this.assertScopeBoundary(scope.info, scope.key);
+    if (scope.revoked)
+      throw new Error(
+        'Project access was revoked; export private drafts before discarding them',
+      );
+    const role = scope.info.members.find(
+      (m) => m.authorization.accountId === this.accountId,
+    )?.authorization.role;
+    if (role === 'viewer') throw new Error('Viewers cannot change shared content');
+    if (scope.info.kind === 'project')
+      for (const change of changes)
+        if (!change.deleted) validateSharedRecord(change.entityType, change.value);
+    if (
+      !changes.length ||
+      changes.length > 100 ||
+      new Set(changes.map((c) => c.entityId)).size !== changes.length
+    )
+      throw new Error('An intent must contain 1–100 distinct records');
+    const projected = this.projectedRecords(scope, false);
+    if (scope.info.kind === 'project') {
+      const next = {
+        ...projected,
+        ...Object.fromEntries(changes.map((c) => [c.entityId, c])),
+      };
+      validateSharedHierarchy(
+        Object.fromEntries(
+          Object.entries(next)
+            .filter(([, h]) => !h.deleted && h.entityType === 'shared.task')
+            .map(([id, h]) => [id, h.value as SharedTask]),
+        ),
+      );
+    }
+    scope.intents.push({
+      id: crypto.randomUUID(),
+      changes: changes.map((c) => ({
+        ...c,
+        deleted: c.deleted ?? false,
+        ...(c.restore ? { restore: true } : {}),
+        base: projected[c.entityId] ?? null,
+      })),
+    });
+    await this.save();
+    for (const listener of this.localListeners) listener(scopeId);
   }
   records(scopeId: string, includeDeleted = false): Record<string, PlainHead> {
     const scope = this.state.scopes[scopeId];
-    const heads = structuredClone(scope?.heads ?? {});
-    for (const intent of scope?.intents ?? [])
+    if (!scope) return {};
+    const heads = this.projectedRecords(scope, true);
+    return includeDeleted
+      ? heads
+      : Object.fromEntries(Object.entries(heads).filter(([, h]) => !h.deleted));
+  }
+  private projectedRecords(
+    scope: LocalScope,
+    showUploadDrafts: boolean,
+  ): Record<string, PlainHead> {
+    const heads = structuredClone(scope.heads);
+    if (showUploadDrafts) {
+      for (const draft of scope.conflicts) {
+        if (draft.reason !== 'upload') continue;
+        const projected = withUploadDraft(heads[draft.entityId], draft);
+        if (projected) heads[draft.entityId] = projected;
+      }
+    }
+    for (const intent of scope.intents)
       for (const c of intent.changes)
         heads[c.entityId] = {
           entityId: c.entityId,
@@ -484,13 +543,60 @@ export class SyncClient {
           deleted: c.deleted,
           value: c.value,
         };
-    return includeDeleted
-      ? heads
-      : Object.fromEntries(Object.entries(heads).filter(([, h]) => !h.deleted));
+    return heads;
+  }
+  /** Forget only a personal cache after the caller has preserved its verified and pending data. */
+  async detachPersonalForRecovery(
+    scopeId: string,
+    preserve: (archive: unknown) => Promise<boolean>,
+  ): Promise<boolean> {
+    return this.exclusive(
+      () =>
+        this.exclusive(async () => {
+          const scope = this.state.scopes[scopeId];
+          if (scope?.info.kind !== 'personal')
+            throw new Error('Personal data is unavailable');
+          this.assertScopeBoundary(scope.info, scope.key);
+          const migration = this.state.migrations[scopeId];
+          if (migration && !migration.complete && !migration.interruptedOutbox)
+            throw new Error('Finish the personal migration before reconnecting');
+          const archive = structuredClone({
+            format: 'ultra-tasks-personal-sync-recovery-v1',
+            scopeId,
+            sequence: scope.info.sequence,
+            generation: scope.info.generation,
+            acknowledged: scope.heads,
+            pending: scope.intents,
+            conflictDrafts: scope.conflicts,
+            ...(migration?.interruptedOutbox
+              ? {
+                  interruptedSetup: {
+                    records: migration.records,
+                    outbox: { intents: migration.interruptedOutbox.intents },
+                  },
+                }
+              : {}),
+          });
+          if (!(await preserve(archive))) return false;
+          delete this.state.scopes[scopeId];
+          delete this.state.migrations[scopeId];
+          try {
+            await this.save();
+          } catch (error) {
+            this.state.scopes[scopeId] = scope;
+            if (migration) this.state.migrations[scopeId] = migration;
+            throw error;
+          }
+          return true;
+        }, scopeId),
+      'local',
+    );
   }
   async dismissDrafts(scopeId: string): Promise<void> {
     return this.exclusive(async () => {
-      this.state.scopes[scopeId].conflicts = [];
+      const scope = this.state.scopes[scopeId];
+      // A held upload is an editable local value, even when conflict drafts are dismissed.
+      scope.conflicts = scope.conflicts.filter((draft) => draft.reason === 'upload');
       if (this.state.scopes[scopeId].revoked) {
         this.state.scopes[scopeId].intents = [];
         delete this.state.scopes[scopeId].uncertain;
@@ -507,7 +613,11 @@ export class SyncClient {
   }
   record(scopeId: string, entityId: string): PlainHead | undefined {
     const scope = this.state.scopes[scopeId];
-    let head = scope?.heads[entityId];
+    let head: PlainHead | undefined = scope?.heads[entityId];
+    const draft = scope?.conflicts.find(
+      (entry) => entry.reason === 'upload' && entry.entityId === entityId,
+    );
+    if (draft?.reason === 'upload') head = withUploadDraft(head, draft);
     for (const intent of scope?.intents ?? [])
       for (const change of intent.changes)
         if (change.entityId === entityId)
@@ -541,39 +651,8 @@ export class SyncClient {
     }
     const mutationId = crypto.randomUUID();
     const counter = scope.counter + 1;
-    const writes = await Promise.all(
-      changes.map(async (c) => {
-        const baseRevision = scope.heads[c.entityId]?.revision ?? 0;
-        const header = {
-          v: 2 as const,
-          serverId: this.serverId,
-          scopeId: info.id,
-          entityId: c.entityId,
-          entityType: c.entityType,
-          actorId: this.accountId,
-          deviceId: this.state.device.id,
-          mutationId,
-          epoch: info.epoch,
-          generation: info.generation,
-          controlVersion: info.controlVersion,
-          counter,
-          baseRevision,
-          revision: baseRevision + 1,
-        };
-        return {
-          record: await encryptRecord(
-            header,
-            { value: c.value, deleted: c.deleted ?? false },
-            key,
-            this.state.device.privateKey,
-          ),
-          deleted: c.deleted ?? false,
-          ...(c.restore ? { restore: true } : {}),
-        };
-      }),
-    );
-    const data = {
-      v: 2 as const,
+    const data: Omit<Mutation, 'signature'> = {
+      v: 2,
       serverId: this.serverId,
       scopeId: info.id,
       epoch: info.epoch,
@@ -584,15 +663,85 @@ export class SyncClient {
       mutationId,
       certificate: this.state.device.certificate,
       membership: info.members.find((m) => m.authorization.accountId === this.accountId)!,
-      writes,
+      writes: [],
     };
-    return { ...data, signature: await sign(this.state.device.privateKey, data) };
+    const encryptWrite = async (change: RecordChange): Promise<SyncWrite> => {
+      const baseRevision = scope.heads[change.entityId]?.revision ?? 0;
+      return {
+        record: await encryptRecord(
+          {
+            v: 2,
+            serverId: data.serverId,
+            scopeId: data.scopeId,
+            entityId: change.entityId,
+            entityType: change.entityType,
+            actorId: this.accountId,
+            deviceId: data.deviceId,
+            mutationId: data.mutationId,
+            epoch: data.epoch,
+            generation: data.generation,
+            controlVersion: data.controlVersion,
+            counter: data.counter,
+            baseRevision,
+            revision: baseRevision + 1,
+          },
+          { value: change.value, deleted: change.deleted ?? false },
+          key,
+          this.state.device.privateKey,
+        ),
+        deleted: change.deleted ?? false,
+        ...(change.restore ? { restore: true } : {}),
+      };
+    };
+    if (info.kind === 'personal') {
+      // Encrypt only enough writes for this transaction. Later writes use the next counter.
+      let bytes = uploadBodyBytes({ ...data, signature: EMPTY_MUTATION_SIGNATURE });
+      for (const change of changes) {
+        const write = await encryptWrite(change);
+        bytes += uploadBodyBytes(write) + (data.writes.length ? 1 : 0);
+        if (bytes > UPLOAD_BODY_LIMIT) break;
+        data.writes.push(write);
+      }
+      if (!data.writes.length) throw new UploadBodySizeError();
+    } else {
+      data.writes = await Promise.all(changes.map(encryptWrite));
+    }
+    const signature = await sign(this.state.device.privateKey, data);
+    if (signature.length !== EMPTY_MUTATION_SIGNATURE.length)
+      throw new Error('Unexpected transaction signature length');
+    return { ...data, signature };
   }
-  private rebase(scope: LocalScope, remote: Record<string, PlainHead>): void {
+  private rebase(
+    scope: LocalScope,
+    remote: Record<string, PlainHead>,
+    sameGeneration = true,
+  ): void {
     const projected = structuredClone(remote);
+    const taskLocations =
+      scope.info.kind === 'personal' && scope.intents.length
+        ? preparePersonalTimeRebase(remote, sameGeneration ? scope.intents : [])
+        : undefined;
+    if (taskLocations && !sameGeneration) {
+      // A replacement may omit a timer bucket that never reached the server.
+      // Keep the old-location edit as a draft instead of merging it into the replacement.
+      for (const intent of scope.intents)
+        intent.changes = intent.changes.filter((change) => {
+          if (
+            change.base ||
+            remote[change.entityId] ||
+            !hasDifferentTaskTimeLocation(change, taskLocations)
+          )
+            return true;
+          this.draft(scope, change.entityId, change.value, 'deleted');
+          return false;
+        });
+      scope.intents = scope.intents.filter((intent) => intent.changes.length);
+    }
     for (const intent of scope.intents) {
       for (const c of intent.changes) {
         const target = projected[c.entityId];
+        if (taskLocations && sameGeneration)
+          rebasePersonalTimeChange(c, target, remote[c.entityId], taskLocations);
         if (
           target?.deleted &&
           !c.deleted &&
@@ -659,6 +808,12 @@ export class SyncClient {
       };
     }
     scope.counter = mutation.counter;
+    const uploaded = new Set(
+      mutation.writes.map((write) => write.record.header.entityId),
+    );
+    scope.conflicts = scope.conflicts.filter(
+      (draft) => draft.reason !== 'upload' || !uploaded.has(draft.entityId),
+    );
     // Do not advance the download cursor: other devices may have committed first.
     void receipt;
     scope.intents.shift();
@@ -669,18 +824,84 @@ export class SyncClient {
   async syncScope(scopeId: string): Promise<void> {
     return this.exclusive(() => this.sync(scopeId), scopeId);
   }
-  private async resolveRejectedAttempt(scope: LocalScope, error: unknown): Promise<void> {
-    if (![403, 409].includes((error as { status?: number }).status ?? 0)) throw error;
-    const receipt = await this.request<{ counter: number; mutationId: string | null }>(
-      `/scopes/${scope.info.id}/receipt?deviceId=${this.state.device.id}`,
-    );
+  private async resolveRejectedAttempt(
+    scope: LocalScope,
+    error: unknown,
+  ): Promise<boolean> {
     if (
-      receipt.mutationId === scope.uncertain!.mutationId &&
-      receipt.counter === scope.uncertain!.counter
+      canHoldUpload(scope) &&
+      error instanceof AccountApiError &&
+      error.status === 422 &&
+      error.code === 'SYNC_RECORD_TOO_LARGE'
+    ) {
+      const mutation = scope.uncertain!;
+      const writes = mutation.writes;
+      const intent = scope.intents[0];
+      const indices = new Set(error.writeIndices);
+      if (
+        !indices.size ||
+        [...indices].some(
+          (index) => !Number.isInteger(index) || index < 0 || index >= writes.length,
+        ) ||
+        intent?.changes.length !== writes.length ||
+        writes.some(
+          (write, index) =>
+            write.record.header.entityId !== intent.changes[index].entityId,
+        )
+      )
+        throw error;
+      // An old attempt can be committed even when a newer retry is rejected.
+      const receipt = await this.receipt(scope);
+      if (
+        receipt.mutationId === mutation.mutationId &&
+        receipt.counter === mutation.counter
+      ) {
+        await this.acknowledge(scope, true);
+        return true;
+      }
+      if (receipt.counter !== mutation.counter - 1) throw error;
+      holdRejectedWrites(scope, indices);
+      await this.save();
+      return true;
+    }
+    if (![403, 409].includes((error as { status?: number }).status ?? 0)) throw error;
+    await this.reconcileReceipt(scope);
+    return false;
+  }
+  private async receipt(
+    scope: LocalScope,
+  ): Promise<{ counter: number; mutationId: string | null }> {
+    const observedHistory =
+      scope.info.kind === 'personal' && scope.downloaded
+        ? `&after=${scope.info.sequence}` +
+          (scope.cursorMutationId
+            ? '&afterMutation=' + encodeURIComponent(scope.cursorMutationId)
+            : '')
+        : '';
+    const receipt = await this.request<{ counter: number; mutationId: string | null }>(
+      `/scopes/${scope.info.id}/receipt?deviceId=${this.state.device.id}` +
+        observedHistory,
+    );
+    if (receipt.counter < scope.counter) throw new Error(SYNC_HISTORY_CHANGED);
+    return receipt;
+  }
+  private async reconcileReceipt(
+    scope: LocalScope,
+    requirePredecessor = false,
+  ): Promise<void> {
+    const mutation = scope.uncertain!;
+    const receipt = await this.receipt(scope);
+    if (
+      receipt.mutationId === mutation.mutationId &&
+      receipt.counter === mutation.counter
     ) {
       await this.acknowledge(scope, true);
       return;
     }
+    if (requirePredecessor && receipt.counter !== mutation.counter - 1)
+      throw new Error(
+        'Could not confirm the oversized transaction; local changes remain queued',
+      );
     scope.counter = receipt.counter;
     delete scope.uncertain;
     delete scope.uncertainKey;
@@ -692,10 +913,23 @@ export class SyncClient {
     this.assertScopeBoundary(scope.info, scope.key);
     for (let attempt = 0; attempt < 3; attempt++) {
       if (scope.uncertain) {
-        try {
-          await this.acknowledge(scope);
-        } catch (error) {
-          await this.resolveRejectedAttempt(scope, error);
+        if (
+          scope.info.kind === 'personal' &&
+          uploadBodyBytes(scope.uncertain) > UPLOAD_BODY_LIMIT
+        ) {
+          // An older client may already have saved a signed body the server cannot parse.
+          await this.reconcileReceipt(scope, true);
+        } else {
+          // A persisted personal write must not replay onto a confirmed restored fork.
+          if (scope.info.kind === 'personal' && scope.downloaded)
+            await this.receipt(scope);
+          // The last attempt may have failed to save before sending. Persist again before retrying.
+          await this.save();
+          try {
+            await this.acknowledge(scope);
+          } catch (error) {
+            await this.resolveRejectedAttempt(scope, error);
+          }
         }
       }
       const response = await this.request<
@@ -711,6 +945,9 @@ export class SyncClient {
           ? `/scopes/${scopeId}/changes?after=${scope.info.sequence}&generation=${scope.info.generation}&controlVersion=${scope.info.controlVersion}&delta=1` +
               (scope.cursorMutationId
                 ? '&afterMutation=' + encodeURIComponent(scope.cursorMutationId)
+                : '') +
+              (scope.counter
+                ? `&deviceId=${this.state.device.id}&afterCounter=${scope.counter}`
                 : '')
           : `/scopes/${scopeId}/snapshot`,
       );
@@ -729,6 +966,7 @@ export class SyncClient {
         response.scope.members = previous.members;
       }
       scope = await this.adopt(response.scope);
+      this.preserveInterruptedSetup(scope, response.scope);
       if ('heads' in response && response.delta) {
         // Servers without incremental changes ignore the request and send a full snapshot.
         if (
@@ -738,8 +976,7 @@ export class SyncClient {
           throw new Error('Incremental changes cannot cross a key update');
         const changed = await this.openSnapshot(response, scope.key, scope.heads);
         for (const head of Object.values(changed))
-          if ((scope.heads[head.entityId]?.revision ?? 0) > head.revision)
-            throw new Error('Sync server returned an older record version');
+          assertHeadFollows(scope.heads[head.entityId], head);
         this.rebase(scope, { ...scope.heads, ...changed });
       } else if ('heads' in response) {
         const remote = await this.openSnapshot(response, scope.key);
@@ -750,10 +987,9 @@ export class SyncClient {
             const current = remote[held.entityId];
             if (!current)
               throw new Error('Sync server omitted a record this device already has');
-            if (current.revision < held.revision)
-              throw new Error('Sync server returned an older record version');
+            assertHeadFollows(held, current);
           }
-        this.rebase(scope, remote);
+        this.rebase(scope, remote, response.scope.generation === previous.generation);
         scope.downloaded = true;
       } else if (previous.epoch !== response.scope.epoch)
         throw new Error('Key update requires a complete snapshot');
@@ -783,14 +1019,29 @@ export class SyncClient {
       if (!scope.intents.length) return;
       while (scope.intents.length) {
         const intent = scope.intents[0];
-        scope.uncertain = await this.mutation(scope, intent.changes);
+        let mutation: Mutation;
+        try {
+          mutation = await this.mutation(scope, intent.changes);
+        } catch (error) {
+          if (!(error instanceof UploadBodySizeError) || !canHoldUpload(scope))
+            throw error;
+          // The first write alone overflowed the HTTP budget. It was never sent.
+          holdRejectedWrites(scope, new Set([0]));
+          await this.save();
+          continue;
+        }
+        if (mutation.writes.length < intent.changes.length) {
+          const remaining = intent.changes.splice(mutation.writes.length);
+          scope.intents.splice(1, 0, { id: crypto.randomUUID(), changes: remaining });
+        }
+        // Save the exact signed prefix and both intent parts together before sending.
+        scope.uncertain = mutation;
         scope.uncertainKey = scope.key;
         await this.save();
         try {
           await this.acknowledge(scope);
         } catch (error) {
-          await this.resolveRejectedAttempt(scope, error);
-          break;
+          if (!(await this.resolveRejectedAttempt(scope, error))) break;
         }
       }
       if (!scope.intents.length) return;
@@ -812,53 +1063,202 @@ export class SyncClient {
     return errors;
   }
 
+  private preserveInterruptedSetup(scope: LocalScope, info: ScopeInfo): void {
+    if (info.interruptedMigrationSource !== this.state.device.id) return;
+    const journal = (this.state.migrations[info.id] ??= {
+      scopeId: info.id,
+      records: [],
+      offset: 0,
+      complete: false,
+    });
+    if (journal.interruptedOutbox) return;
+    // Keep the original seed inventory and exact unsigned/uncertain queues in the
+    // encrypted store. They must not become automatic edits of the recovered workspace.
+    journal.interruptedOutbox = {
+      intents: scope.intents,
+      ...(scope.uncertain ? { uncertain: scope.uncertain } : {}),
+      ...(scope.uncertainKey ? { uncertainKey: scope.uncertainKey } : {}),
+    };
+    scope.intents = [];
+    delete scope.uncertain;
+    delete scope.uncertainKey;
+  }
+
+  async recoverUploadedPersonalSetup(scopeId: string): Promise<void> {
+    await this.syncScope(scopeId);
+    const scope = this.state.scopes[scopeId];
+    if (scope.info.kind !== 'personal') throw new Error('Personal setup required');
+    if (scope.info.state === 'active') return;
+    if (
+      scope.info.state !== 'migrating' ||
+      !scope.info.sequence ||
+      !scope.cursorMutationId
+    )
+      throw new Error('There is no verified setup data to recover');
+    const observed = {
+      deviceId: this.state.device.id,
+      controlVersion: scope.info.controlVersion,
+      sequence: scope.info.sequence,
+      cursorMutationId: scope.cursorMutationId,
+    };
+    await this.request('/scopes/' + scopeId + '/migration/recover', {
+      ...observed,
+      signature: await sign(this.secrets.signingPrivateKey, {
+        action: 'recover-personal-migration',
+        serverId: this.serverId,
+        scopeId,
+        ...observed,
+      }),
+    });
+    await this.syncScope(scopeId);
+  }
+
+  /** Called after the original device persists its own data choice. */
+  async rejoinRecoveredPersonalSetup(scopeId: string): Promise<void> {
+    const scope = this.state.scopes[scopeId];
+    if (scope?.info.interruptedMigrationSource !== this.state.device.id) return;
+    const info = (await this.refreshScopes()).find((entry) => entry.id === scopeId);
+    if (!info) throw new Error('Could not verify the recovered workspace');
+    if (info.interruptedMigrationSource !== this.state.device.id) return;
+    await this.exclusive(async () => {
+      const current = this.state.scopes[scopeId];
+      // The abandoned outbox may contain the lost reply for a committed write.
+      current.counter = (await this.receipt(current)).counter;
+      await this.save();
+      const observed = {
+        deviceId: this.state.device.id,
+        controlVersion: info.controlVersion,
+      };
+      await this.request('/scopes/' + scopeId + '/migration/rejoin', {
+        ...observed,
+        signature: await sign(this.secrets.signingPrivateKey, {
+          action: 'rejoin-personal-migration',
+          serverId: this.serverId,
+          scopeId,
+          ...observed,
+        }),
+      });
+    }, scopeId);
+  }
+
   async migrate(records: RecordChange[]): Promise<string> {
-    const existing = Object.values(this.state.migrations).find((j) => !j.complete);
-    if (!existing) {
-      const scopeId = await this.createScope('personal', true);
+    return this.runMigration(records);
+  }
+  async restartPersonalMigration(
+    scopeId: string,
+    records: RecordChange[],
+  ): Promise<string> {
+    return this.runMigration(records, scopeId);
+  }
+  private async runMigration(
+    records: RecordChange[],
+    replacesEmptyScopeId?: string,
+  ): Promise<string> {
+    return this.exclusive(async () => {
+      let journal = Object.values(this.state.migrations).find((entry) => {
+        const scope = this.state.scopes[entry.scopeId];
+        if (entry.complete || entry.interruptedOutbox || scope?.revoked) return false;
+        return replacesEmptyScopeId !== undefined
+          ? entry.replacesEmptyScopeId === replacesEmptyScopeId
+          : !entry.replacesEmptyScopeId || !!scope;
+      });
+      if (!journal) {
+        const scopeId = crypto.randomUUID();
+        journal = {
+          scopeId,
+          records: structuredClone(records),
+          offset: 0,
+          complete: false,
+          ...(replacesEmptyScopeId ? { replacesEmptyScopeId } : {}),
+        };
+        this.state.migrations[scopeId] = journal;
+      }
+      const { scopeId, replacesEmptyScopeId: abandonedScopeId } = journal;
+      // Store the intended scope ID and inventory before the server can create the scope.
+      await this.save();
+      if (!this.state.scopes[scopeId]) {
+        const created = await this.exclusive(() =>
+          this.createScopeWithId(scopeId, 'personal', true, abandonedScopeId),
+        );
+        if (created !== scopeId) {
+          delete this.state.migrations[scopeId];
+          await this.save();
+          throw new Error(
+            'This account already has personal data; connect without importing',
+          );
+        }
+      }
+      if (abandonedScopeId && this.state.scopes[abandonedScopeId])
+        await this.markRevoked(abandonedScopeId);
       const scope = this.state.scopes[scopeId];
-      if (scope.info.sequence !== 0 || scope.info.state !== 'migrating')
+      if (
+        scope.revoked ||
+        scope.info.kind !== 'personal' ||
+        (scope.info.state !== 'migrating' && journal.offset < journal.records.length)
+      )
         throw new Error(
           'This account already has personal data; connect without importing',
         );
-      this.state.migrations[scopeId] = {
-        scopeId,
-        records: structuredClone(records),
-        offset: 0,
-        complete: false,
-      };
-      await this.save();
-    }
-    const journal = Object.values(this.state.migrations).find((j) => !j.complete)!;
-    while (journal.offset < journal.records.length) {
-      const scope = this.state.scopes[journal.scopeId];
-      if (!scope.intents.length)
-        await this.edit(
-          journal.scopeId,
-          journal.records.slice(journal.offset, journal.offset + 100),
+
+      while (journal.offset < journal.records.length) {
+        const batch = journal.records.slice(journal.offset, journal.offset + 100);
+        await this.exclusive(
+          () =>
+            this.exclusive(async () => {
+              if (journal.interruptedOutbox)
+                throw new Error(
+                  'Setup was recovered on another device. Choose which data to use.',
+                );
+              if (scope.intents.length) return;
+              // A crash can happen after the upload is acknowledged but before its offset is saved.
+              const pending = batch.filter((record) => {
+                const head = scope.heads[record.entityId];
+                return (
+                  !head ||
+                  head.deleted ||
+                  head.entityType !== record.entityType ||
+                  !same(head.value, record.value)
+                );
+              });
+              if (pending.length) await this.queueEdit(scopeId, pending);
+            }, scopeId),
+          'local',
         );
-      await this.syncScope(journal.scopeId);
-      journal.offset += Math.min(100, journal.records.length - journal.offset);
-      await this.save();
-    }
-    const data = {
-      action: 'finish-migration',
-      serverId: this.serverId,
-      scopeId: journal.scopeId,
-      deviceId: this.state.device.id,
-      count: journal.records.length,
-    };
-    await this.request(`/scopes/${journal.scopeId}/migration/finish`, {
-      deviceId: data.deviceId,
-      count: data.count,
-      signature: await sign(this.secrets.signingPrivateKey, data),
-    });
-    journal.complete = true;
-    journal.records = [];
-    await this.save();
-    await this.syncScope(journal.scopeId);
-    await this.request(`/scopes/${journal.scopeId}/checkpoint`, {});
-    return journal.scopeId;
+        await this.syncScope(scopeId);
+        if (journal.interruptedOutbox)
+          throw new Error(
+            'Setup was recovered on another device. Choose which data to use.',
+          );
+        journal.offset += batch.length;
+        await this.save();
+      }
+      const data = {
+        action: 'finish-migration',
+        serverId: this.serverId,
+        scopeId,
+        deviceId: this.state.device.id,
+        count: journal.records.length,
+      };
+      await this.request('/scopes/' + scopeId + '/migration/finish', {
+        deviceId: data.deviceId,
+        count: data.count,
+        signature: await sign(this.secrets.signingPrivateKey, data),
+      });
+      await this.syncScope(scopeId);
+      if (journal.interruptedOutbox)
+        throw new Error(
+          'Setup was recovered on another device. Choose which data to use.',
+        );
+      await this.request('/scopes/' + scopeId + '/checkpoint', {});
+      this.state.migrations[scopeId] = { ...journal, complete: true, records: [] };
+      try {
+        await this.save();
+      } catch (error) {
+        this.state.migrations[scopeId] = journal;
+        throw error;
+      }
+      return scopeId;
+    }, 'migration');
   }
   async invite(
     scopeId: string,

@@ -7,7 +7,14 @@ export * from './sync-types';
 export * from './sync-storage';
 export * from './sync-merge';
 export * from './sync-client';
-export * from './personal-records';
+export {
+  PERSONAL_MODELS,
+  personalRecords,
+  restorePersonal,
+  baselineFromHeads,
+  personalChanges,
+  type PersonalBaseline,
+} from './personal-records';
 export * from './shared-project';
 export * from './realtime';
 export * from './ownership';

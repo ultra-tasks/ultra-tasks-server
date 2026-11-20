@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { Prisma } from '@prisma/client';
 import { z, ZodError } from 'zod';
-import { createHmac } from 'node:crypto';
+import type { SyncRequestBudget } from './sync-request-budget';
 import type { UltraRealtimeHub } from './realtime';
 import {
   canonical,
@@ -11,8 +11,9 @@ import {
 } from '@ultra-tasks/account-crypto';
 import { registerScopeRecovery } from './scope-recovery-routes';
 import { registerPersonalReplacement } from './personal-replacement-routes';
+import { registerPersonalMigrationRecovery } from './personal-migration-recovery-routes';
 import { UltraMembershipSchema, UltraMutationSchema } from '@ultra-tasks/sync-contract';
-import { AccountError, authenticateAccount, type UltraConfig } from './security';
+import { AccountError, accountErrorBody, type UltraConfig } from './security';
 import {
   accountById,
   accountByIdentifier,
@@ -41,6 +42,7 @@ interface Options {
   config: UltraConfig;
   sendInviteMail?: (email: string) => Promise<boolean>;
   realtime: UltraRealtimeHub;
+  requestBudget: SyncRequestBudget;
 }
 interface InviteRow {
   id: string;
@@ -58,13 +60,55 @@ const params = (req: FastifyRequest) => z.object({ scopeId: id }).parse(req.para
 const inviteId = (req: FastifyRequest) =>
   z.object({ inviteId: id }).parse(req.params).inviteId;
 const proof = z.string().regex(/^[A-Za-z0-9_-]{86}$/);
+const historyChanged = (): AccountError =>
+  new AccountError(
+    409,
+    'Sync history changed. Verified data and pending edits were retained on this device.',
+    'SYNC_HISTORY_CHANGED',
+  );
+
+const matchesObservedHistory = async (
+  db: UltraDb,
+  scope: ScopeRow,
+  after: number,
+  afterMutation?: string,
+): Promise<boolean> => {
+  if (after > scope.sequence) throw historyChanged();
+  if (afterMutation === undefined) return true;
+  // A missing mutation may have aged out. A different mutation at that sequence
+  // proves that this database continued from a different history.
+  const observed = await one<{ id: string }>(
+    db,
+    Prisma.sql`SELECT id FROM ultra_scope_mutations WHERE scope_id=${scope.id} AND sequence=${after}`,
+  );
+  if (observed && observed.id !== afterMutation) throw historyChanged();
+  return !!observed;
+};
+
+const oversizedWriteIndices = (error: ZodError): number[] | undefined => {
+  const indices = new Set<number>();
+  for (const issue of error.issues) {
+    const [writes, index, record, payload, data] = issue.path;
+    if (
+      issue.path.length !== 5 ||
+      writes !== 'writes' ||
+      typeof index !== 'number' ||
+      record !== 'record' ||
+      payload !== 'payload' ||
+      data !== 'data' ||
+      (issue.code !== 'too_big' && issue.code !== 'custom')
+    )
+      return undefined;
+    indices.add(index);
+  }
+  return indices.size ? [...indices] : undefined;
+};
 
 export const ultraScopeRoutes = async (
   app: FastifyInstance,
-  { db, transaction, config, sendInviteMail, realtime }: Options,
+  { db, transaction, config, sendInviteMail, realtime, requestBudget }: Options,
 ): Promise<void> => {
-  const auth = (req: FastifyRequest) =>
-    authenticateAccount(db, config, req.headers.authorization);
+  const auth = requestBudget.session;
   const route = (
     method: 'GET' | 'POST',
     url: string,
@@ -74,22 +118,9 @@ export const ultraScopeRoutes = async (
       method,
       url,
       bodyLimit: 8 * 1024 * 1024,
-      config: {
-        rateLimit: {
-          max: 2000,
-          timeWindow: '1 minute',
-          keyGenerator: (req) =>
-            req.ip +
-            ':' +
-            createHmac('sha256', config.authSecret)
-              .update(req.headers.authorization ?? '')
-              .digest('hex'),
-        },
-      },
+      config: { rateLimit: false },
+      onRequest: requestBudget.admitBearer,
       handler: async (req, reply) => {
-        reply
-          .header('Cache-Control', 'no-store')
-          .header('Referrer-Policy', 'no-referrer');
         try {
           const result = await run(req);
           if (method !== 'GET') await realtime.refresh();
@@ -98,7 +129,7 @@ export const ultraScopeRoutes = async (
           if (error instanceof ZodError)
             return reply.code(400).send({ error: 'Invalid encrypted sync request' });
           if (error instanceof AccountError)
-            return reply.code(error.statusCode).send({ error: error.message });
+            return reply.code(error.statusCode).send(accountErrorBody(error));
           throw error;
         }
       },
@@ -150,16 +181,20 @@ export const ultraScopeRoutes = async (
         membership: UltraMembershipSchema,
         deviceId: id,
         migrating: z.boolean().default(false),
+        replacesEmptyScopeId: id.optional(),
       })
       .strict()
       .parse(req.body);
     const session = await auth(req);
+    if (body.replacesEmptyScopeId && (body.kind !== 'personal' || !body.migrating))
+      throw new AccountError(400);
     if (config.privateOnly && body.kind !== 'personal')
       throw new AccountError(403, 'This server supports private account sync only');
     return transaction(async (tx) => {
       await liveSession(tx, session);
       const account = await accountById(tx, session.account_id);
       if (!account?.verified) throw new AccountError(403);
+      let abandonedScopeId: string | undefined;
       if (body.kind === 'personal') {
         // Serialize first-device creation on the immutable account row.
         await tx.$queryRaw(
@@ -167,15 +202,33 @@ export const ultraScopeRoutes = async (
         );
         const previous = await one<ScopeRow>(
           tx,
-          Prisma.sql`SELECT * FROM ultra_scopes WHERE owner_id=${session.account_id} AND kind='personal'`,
+          Prisma.sql`SELECT * FROM ultra_scopes WHERE owner_id=${session.account_id} AND kind='personal' FOR UPDATE`,
         );
-        if (previous) return scopeInfo(tx, previous);
+        // A repeated request after a lost response returns the same new scope.
+        if (
+          previous &&
+          (!body.replacesEmptyScopeId ||
+            previous.id === body.membership.authorization.scopeId)
+        )
+          return scopeInfo(tx, previous);
+        if (body.replacesEmptyScopeId) {
+          if (
+            previous?.id !== body.replacesEmptyScopeId ||
+            previous.state !== 'migrating' ||
+            previous.sequence !== 0
+          )
+            throw new AccountError(
+              409,
+              'The previous setup has already uploaded data or changed',
+            );
+          abandonedScopeId = previous.id;
+        }
       }
       const count = await one<{ count: bigint }>(
         tx,
         Prisma.sql`SELECT count(*) AS count FROM ultra_scope_members WHERE account_id=${session.account_id}`,
       );
-      if (Number(count?.count) >= 101)
+      if (Number(count?.count) >= (abandonedScopeId ? 102 : 101))
         throw new AccountError(413, 'Project limit reached');
       const a = body.membership.authorization;
       const scope: ScopeRow = {
@@ -198,6 +251,12 @@ export const ultraScopeRoutes = async (
       )
         throw new AccountError(400);
       await validateMembership(tx, config, scope, body.membership);
+      // A zero cursor means no transaction or record committed. Retire the old ID so an
+      // older device cannot resume into the replacement when it eventually returns.
+      if (abandonedScopeId)
+        await tx.$executeRaw(
+          Prisma.sql`DELETE FROM ultra_scopes WHERE id=${abandonedScopeId}`,
+        );
       await tx.$executeRaw(
         Prisma.sql`INSERT INTO ultra_scopes (id,kind,owner_id,owner_key,state,migration_device) VALUES (${scope.id},${scope.kind},${scope.owner_id},${JSON.stringify(scope.owner_key)}::jsonb,${scope.state},${scope.migration_device})`,
       );
@@ -213,7 +272,15 @@ export const ultraScopeRoutes = async (
   );
   route('GET', '/scopes/:scopeId/receipt', (req) =>
     withScope(req, false, async (tx, scope, member) => {
-      const { deviceId } = z.object({ deviceId: id }).parse(req.query);
+      const { deviceId, after, afterMutation } = z
+        .object({
+          deviceId: id,
+          after: z.coerce.number().int().nonnegative().optional(),
+          afterMutation: z.string().min(1).max(200).optional(),
+        })
+        .parse(req.query);
+      if (after !== undefined)
+        await matchesObservedHistory(tx, scope, after, afterMutation);
       const row = await one<{ counter: number; mutation_id: string; sequence: number }>(
         tx,
         Prisma.sql`SELECT counter,mutation_id,sequence FROM ultra_scope_receipts WHERE scope_id=${scope.id} AND account_id=${member.account_id} AND device_id=${deviceId}`,
@@ -226,29 +293,39 @@ export const ultraScopeRoutes = async (
     }),
   );
   route('GET', '/scopes/:scopeId/changes', (req) =>
-    withScope(req, false, async (tx, scope) => {
-      const { after, afterMutation, generation, controlVersion, delta } = z
+    withScope(req, false, async (tx, scope, member) => {
+      const {
+        after,
+        afterMutation,
+        generation,
+        controlVersion,
+        delta,
+        deviceId,
+        afterCounter,
+      } = z
         .object({
           after: z.coerce.number().int().nonnegative(),
           afterMutation: z.string().min(1).max(200).optional(),
           generation: z.coerce.number().int().positive(),
           controlVersion: z.coerce.number().int().positive().optional(),
           delta: z.literal('1').optional(),
+          deviceId: id.optional(),
+          afterCounter: z.coerce.number().int().positive().optional(),
         })
         .parse(req.query);
       const compact =
         controlVersion === scope.control_version && generation === scope.generation;
-      const cursor = await cursorMutationId(tx, scope);
-      // The client's cursor names the mutation it last saw. If this database no
-      // longer has that mutation at that sequence (for example after restoring an
-      // older backup and committing again), the sequence numbers no longer mean the
-      // same history: neither "unchanged" nor a delta is safe, so send everything.
-      const cursorMatches =
-        afterMutation === undefined ||
-        !!(await one(
+      const cursorMatches = await matchesObservedHistory(tx, scope, after, afterMutation);
+      // The last write receipt can be ahead of the download cursor. A restore may
+      // retain that cursor but lose an acknowledged write, even if sequences catch up.
+      if (deviceId && afterCounter !== undefined) {
+        const receipt = await one<{ counter: number }>(
           tx,
-          Prisma.sql`SELECT 1 FROM ultra_scope_mutations WHERE scope_id=${scope.id} AND id=${afterMutation} AND sequence=${after}`,
-        ));
+          Prisma.sql`SELECT counter FROM ultra_scope_receipts WHERE scope_id=${scope.id} AND account_id=${member.account_id} AND device_id=${deviceId}`,
+        );
+        if ((receipt?.counter ?? 0) < afterCounter) throw historyChanged();
+      }
+      const cursor = await cursorMutationId(tx, scope);
       if (cursorMatches && after === scope.sequence && generation === scope.generation)
         return {
           scope: await scopeInfo(tx, scope, compact),
@@ -271,12 +348,26 @@ export const ultraScopeRoutes = async (
       return { ...(await snapshot(tx, scope, compact)), cursorMutationId: cursor };
     }),
   );
-  route('POST', '/scopes/:scopeId/transactions', async (req) => {
-    const mutation = UltraMutationSchema.parse(req.body) as Mutation;
-    return withScope(req, true, (tx, scope, member) =>
-      commitMutation(tx, config, scope, member, mutation),
-    );
-  });
+  route('POST', '/scopes/:scopeId/transactions', (req) =>
+    withScope(req, true, (tx, scope, member) => {
+      const parsed = UltraMutationSchema.safeParse(req.body);
+      if (!parsed.success) {
+        const indices =
+          scope.kind === 'personal' && scope.state === 'active'
+            ? oversizedWriteIndices(parsed.error)
+            : undefined;
+        if (indices)
+          throw new AccountError(
+            422,
+            'Encrypted record exceeds its size limit',
+            'SYNC_RECORD_TOO_LARGE',
+            indices,
+          );
+        throw parsed.error;
+      }
+      return commitMutation(tx, config, scope, member, parsed.data as Mutation);
+    }),
+  );
   route('POST', '/scopes/:scopeId/checkpoint', (req) =>
     withScope(req, true, async (tx, scope) => {
       if (scope.state !== 'active') throw new AccountError(409);
@@ -297,7 +388,15 @@ export const ultraScopeRoutes = async (
       .parse(req.body);
     return withScope(req, true, async (tx, scope, member) => {
       owner(member);
-      if (scope.state === 'active') return { complete: true };
+      if (scope.state === 'active') {
+        if (scope.recovered_from_migration)
+          throw new AccountError(
+            423,
+            'Setup was recovered on another device. Reconnect from Account settings in the latest Ultra Tasks app.',
+            'MIGRATION_REJOIN_REQUIRED',
+          );
+        return { complete: true };
+      }
       const account = await accountById(tx, member.account_id);
       if (
         scope.state !== 'migrating' ||
@@ -327,6 +426,7 @@ export const ultraScopeRoutes = async (
       return { complete: true };
     });
   });
+  registerPersonalMigrationRecovery({ route, withScope, owner, config });
   registerPersonalReplacement({ route, withScope, owner, config });
   registerScopeRecovery({ route, withScope, owner, db, config, auth, transaction });
   if (config.privateOnly) return;

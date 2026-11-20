@@ -17,7 +17,12 @@ import {
   browserLoginUrl,
 } from '@ultra-tasks/account-crypto';
 import { createHarness, password } from './ultra-account.helper';
-import { selectAppAccountServer } from './app-account-ui.helper';
+import {
+  appAccount,
+  appAccountIdentifier,
+  selectAppAccountServer,
+  waitForAppAccountSync,
+} from './app-account-ui.helper';
 import { totp } from '../src/ultra-account/security';
 
 describe('website-to-app encrypted login on independent server origins', () => {
@@ -226,12 +231,12 @@ describe('website-to-app encrypted login on independent server origins', () => {
           await page.reload({ waitUntil: 'domcontentloaded' });
           await page.goto(origin + '/#/native-sync');
           await selectAppAccountServer(page, origin);
-          await page.getByLabel('Email or username').fill('handoff');
-          await page
-            .getByRole('button', { name: 'Continue in browser', exact: true })
+          await appAccountIdentifier(page).fill('handoff');
+          await appAccount(page)
+            .getByRole('button', { name: 'Sign in with browser', exact: true })
             .click();
-          await page
-            .getByText('Finish sign-in in your browser', { exact: true })
+          await appAccount(page)
+            .getByRole('heading', { name: 'Finish signing in with your browser' })
             .waitFor();
           const url = await desktop.evaluate(
             () => (globalThis as unknown as { loginUrl: string }).loginUrl,
@@ -247,13 +252,14 @@ describe('website-to-app encrypted login on independent server origins', () => {
           if (cold) {
             desktop = await launch(callback);
             page = await desktop.firstWindow();
+            appPage = page;
+            page.on('pageerror', (error) => pageErrors.push(error.message));
           } else
             await desktop!.evaluate(({ app }, url) => {
               app.emit('second-instance', {}, ['UltraTasks.exe', url], process.cwd(), {});
             }, callback);
-          await ui(page.getByText('Connect personal data', { exact: true })).toBeVisible({
-            timeout: 30000,
-          });
+          // The next profile uses the same account. Let first-device setup finish before exit.
+          await waitForAppAccountSync(page);
           const notice = page
             .locator('snack-custom')
             .filter({ hasText: 'Global Shortcut registration failed:' });
@@ -268,12 +274,19 @@ describe('website-to-app encrypted login on independent server origins', () => {
           });
           await ui(page.locator('native-sync [role=alert]')).toHaveCount(0);
         } catch (error) {
-          if (appPage) {
-            await appPage.screenshot({ path: resolve(output, 'desktop-failure.png') });
+          if (appPage && !appPage.isClosed()) {
+            await appPage
+              .screenshot({ path: resolve(output, 'desktop-failure.png') })
+              .catch(() => undefined);
             console.error('Synthetic desktop handoff failure', {
               errors: pageErrors,
               url: appPage.url(),
-              text: (await appPage.locator('body').innerText()).slice(0, 2000),
+              text: (
+                await appPage
+                  .locator('body')
+                  .innerText()
+                  .catch(() => '')
+              ).slice(0, 2000),
             });
           }
           throw error;

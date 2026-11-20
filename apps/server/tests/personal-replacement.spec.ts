@@ -8,6 +8,7 @@ import {
   restorePersonal,
   sign,
   type Mutation,
+  type RecordChange,
   type StateStorage,
   type SyncState,
 } from '@ultra-tasks/account-crypto';
@@ -32,7 +33,7 @@ const device = async (account: AccountClient): Promise<SyncClient> => {
 const replacement = async (
   client: SyncClient,
   scopeId: string,
-  count: number,
+  countOrRecords: number | RecordChange[],
   duplicate = false,
   omitPriorHeads = false,
 ) => {
@@ -40,12 +41,15 @@ const replacement = async (
   const scope = client.state.scopes[scopeId];
   const { serverId, accountId } = account.identity();
   const { device } = client.state;
-  const next = Array.from({ length: count }, (_, index) => ({
-    entityId: `new-${duplicate && index === 100 ? 0 : index}`,
-    entityType: 'personal.task',
-    value: { title: `new private ${index}` },
-    deleted: false,
-  }));
+  const next =
+    typeof countOrRecords === 'number'
+      ? Array.from({ length: countOrRecords }, (_, index) => ({
+          entityId: `new-${duplicate && index === 100 ? 0 : index}`,
+          entityType: 'personal.task',
+          value: { title: `new private ${index}` },
+          deleted: false,
+        }))
+      : countOrRecords.map((record) => ({ ...record, deleted: false }));
   const nextIds = new Set(next.map((record) => record.entityId));
   const inventory = [
     ...next,
@@ -292,6 +296,71 @@ describe('atomic personal provider replacement', () => {
     await expect(job.finish()).rejects.toThrow('missing prior record tombstones');
     await first.syncScope(scopeId);
     expect(first.records(scopeId).old.value).toEqual({ title: 'original' });
+  }, 60000);
+
+  it('keeps new offline timer edits in a draft when replacement moves the same task', async () => {
+    harness = await createHarness({ privateOnly: true });
+    const account = (await harness.register()).client;
+    const first = await device(account);
+    const day = '2026-11-05';
+    const task = { id: 'one', title: 'task', timeSpentOnDay: {}, timeSpent: 0 };
+    const scopeId = await first.migrate([
+      {
+        entityId: 'active-task',
+        entityType: 'personal.document',
+        value: { path: ['task', 'entities', 'one'], data: task },
+      },
+    ]);
+    const offline = await device(account);
+    await offline.refreshScopes();
+    await offline.syncScope(scopeId);
+    const queuedTime = {
+      path: ['task', 'entities', 'one', 'timeSpentOnDay', day],
+      deviceId: offline.state.device.id,
+      positive: 500,
+      negative: 0,
+    };
+    await offline.edit(scopeId, [
+      { entityId: 'offline-time', entityType: 'personal.time', value: queuedTime },
+    ]);
+    const archiveTask = ['archiveYoung', 'task', 'entities', 'one'];
+    const job = await replacement(first, scopeId, [
+      {
+        entityId: 'archive-index',
+        entityType: 'personal.document',
+        value: { path: ['archiveYoung', 'task'], data: { ids: ['one'], entities: {} } },
+      },
+      {
+        entityId: 'archive-task',
+        entityType: 'personal.document',
+        value: { path: archiveTask, data: task },
+      },
+      {
+        entityId: 'archive-time',
+        entityType: 'personal.time',
+        value: {
+          path: [...archiveTask, 'timeSpentOnDay', day],
+          deviceId: 'legacy-baseline',
+          positive: 1000,
+          negative: 0,
+        },
+      },
+    ]);
+    await job.begin();
+    for (const batch of job.mutations) await job.stage(batch);
+    await job.finish();
+
+    await offline.syncScope(scopeId);
+    await first.syncScope(scopeId);
+    for (const client of [offline, first]) {
+      expect(restorePersonal(client.records(scopeId))).toMatchObject({
+        archiveYoung: { task: { entities: { one: { timeSpent: 1000 } } } },
+      });
+      expect(client.records(scopeId)['offline-time']).toBeUndefined();
+    }
+    expect(offline.state.scopes[scopeId].conflicts).toEqual([
+      expect.objectContaining({ entityId: 'offline-time', value: queuedTime }),
+    ]);
   }, 60000);
 
   it('rejects reusing a previous record id with a different entity type', async () => {

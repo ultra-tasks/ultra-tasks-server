@@ -3,7 +3,7 @@ import { chromium, expect as ui, type Browser } from '@playwright/test';
 import fastifyStatic from '@fastify/static';
 import { resolve } from 'node:path';
 import { createHarness, password } from './ultra-account.helper';
-import { selectAppAccountServer } from './app-account-ui.helper';
+import { submitAppAccountSignIn, waitForAppAccountSync } from './app-account-ui.helper';
 
 describe('Public calendar through the real Angular app and account server', () => {
   let h: Awaited<ReturnType<typeof createHarness>>;
@@ -41,13 +41,8 @@ describe('Public calendar through the real Angular app and account server', () =
       });
       const page = await context.newPage();
       await page.goto(origin + '/#/native-sync');
-      await selectAppAccountServer(page, origin);
-      await page.getByLabel('Email or username').fill('alice');
-      await page.getByLabel('Password', { exact: true }).fill(password);
-      await page.getByRole('button', { name: 'Sign in and unlock' }).click();
-      await ui(page.getByRole('button', { name: 'Sync now', exact: true })).toBeEnabled({
-        timeout: 30000,
-      });
+      await submitAppAccountSignIn(page, origin, 'alice', password);
+      await waitForAppAccountSync(page);
       await page.goto(origin + '/#/tag/TODAY/tasks');
       await page.locator('task-list').first().waitFor();
       await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
@@ -60,8 +55,11 @@ describe('Public calendar through the real Angular app and account server', () =
       ).toBeVisible();
       await page.goto(origin + '/#/native-sync');
       const form = page.locator('calendar-publications');
+      await form.locator('summary').click();
       await form.getByLabel('Calendar label', { exact: true }).fill('Availability');
-      await ui(form.getByLabel('What to show')).toHaveValue('busy');
+      await ui(form.getByRole('combobox', { name: 'What to show' })).toHaveText(
+        'Busy only',
+      );
       await ui(
         form.getByRole('button', { name: 'Publish calendar', exact: true }),
       ).toBeDisabled();
@@ -103,6 +101,7 @@ describe('Public calendar through the real Angular app and account server', () =
       expect(await (await fetch(url)).text()).not.toContain('Confidential');
       await page.goto(origin + '/#/native-sync');
       await ui(page.locator('calendar-publications')).toHaveCount(1);
+      await form.locator('summary').click();
       await form.getByRole('button', { name: 'Rotate URL' }).click();
       await ui(urlInput).toHaveValue(/\/cal\//);
       const rotated = await urlInput.inputValue();

@@ -2,7 +2,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { Prisma } from '@prisma/client';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import Fastify from 'fastify';
+import Fastify, { type FastifyInstance } from 'fastify';
 import rateLimit from '@fastify/rate-limit';
 import websocket from '@fastify/websocket';
 import {
@@ -18,6 +18,7 @@ import { ultraAccountRoutes } from '../src/ultra-account/routes';
 import { UltraConfig } from '../src/ultra-account/security';
 import { UltraDb, UltraTransaction } from '../src/ultra-account/store';
 import { UltraRealtimeHub } from '../src/ultra-account/realtime';
+import type { SyncRequestLimits } from '../src/ultra-account/sync-request-budget';
 
 export const migration = readFileSync(
   fileURLToPath(
@@ -42,105 +43,134 @@ export const createHarness = async (
      */
     deviceEmailVerification?: boolean;
     disableRateLimit?: boolean;
+    syncRequestLimits?: SyncRequestLimits;
+    beforeRoutes?: (app: FastifyInstance) => void;
+    trustProxy?: string[];
     turnstile?: { siteKey: string; secret: string; hostname: string };
   } = {},
+  backup?: { data: Blob; config: UltraConfig },
 ) => {
-  const { disableRateLimit, ...accountSettings } = settings;
+  const { disableRateLimit, beforeRoutes, trustProxy, ...accountSettings } = settings;
   await opaqueReady;
-  const database = new PGlite();
+  const database = new PGlite(backup ? { loadDataDir: backup.data } : {});
   await database.waitReady;
-  await database.exec(migration);
-  await database.exec(
-    readFileSync(
-      new URL(
-        '../prisma/migrations/20261115000000_calendar_feeds/migration.sql',
-        import.meta.url,
-      ),
-      'utf8',
-    ),
-  );
-  await database.exec(
-    readFileSync(
-      fileURLToPath(
+  if (!backup) {
+    await database.exec(migration);
+    await database.exec(
+      readFileSync(
         new URL(
-          '../prisma/migrations/20261109000000_ultra_registration_expiry/migration.sql',
+          '../prisma/migrations/20261115000000_calendar_feeds/migration.sql',
           import.meta.url,
         ),
+        'utf8',
       ),
-      'utf8',
-    ),
-  );
-  await database.exec(
-    readFileSync(
-      fileURLToPath(
-        new URL(
-          '../prisma/migrations/20261105010000_ultra_scopes/migration.sql',
-          import.meta.url,
+    );
+    await database.exec(
+      readFileSync(
+        fileURLToPath(
+          new URL(
+            '../prisma/migrations/20261109000000_ultra_registration_expiry/migration.sql',
+            import.meta.url,
+          ),
         ),
+        'utf8',
       ),
-      'utf8',
-    ),
-  );
-  await database.exec(
-    readFileSync(
-      fileURLToPath(
-        new URL(
-          '../prisma/migrations/20261105020000_ultra_recovery_realtime/migration.sql',
-          import.meta.url,
+    );
+    await database.exec(
+      readFileSync(
+        fileURLToPath(
+          new URL(
+            '../prisma/migrations/20261105010000_ultra_scopes/migration.sql',
+            import.meta.url,
+          ),
         ),
+        'utf8',
       ),
-      'utf8',
-    ),
-  );
-  await database.exec(
-    readFileSync(
-      fileURLToPath(
-        new URL(
-          '../prisma/migrations/20261107000000_better_auth_prototype/migration.sql',
-          import.meta.url,
+    );
+    await database.exec(
+      readFileSync(
+        fileURLToPath(
+          new URL(
+            '../prisma/migrations/20261105020000_ultra_recovery_realtime/migration.sql',
+            import.meta.url,
+          ),
         ),
+        'utf8',
       ),
-      'utf8',
-    ),
-  );
-  await database.exec(
-    readFileSync(
-      fileURLToPath(
-        new URL(
-          '../prisma/migrations/20261108000000_personal_replacements/migration.sql',
-          import.meta.url,
+    );
+    await database.exec(
+      readFileSync(
+        fileURLToPath(
+          new URL(
+            '../prisma/migrations/20261107000000_better_auth_prototype/migration.sql',
+            import.meta.url,
+          ),
         ),
+        'utf8',
       ),
-      'utf8',
-    ),
-  );
-  await database.exec(
-    readFileSync(
-      fileURLToPath(
-        new URL(
-          '../prisma/migrations/20261111000000_ultra_record_heads_mutation_index/migration.sql',
-          import.meta.url,
+    );
+    await database.exec(
+      readFileSync(
+        fileURLToPath(
+          new URL(
+            '../prisma/migrations/20261108000000_personal_replacements/migration.sql',
+            import.meta.url,
+          ),
         ),
+        'utf8',
       ),
-      'utf8',
-    ),
-  );
-  await database.exec(
-    readFileSync(
-      fileURLToPath(
-        new URL(
-          '../prisma/migrations/20261118000000_account_devices_sessions/migration.sql',
-          import.meta.url,
+    );
+    await database.exec(
+      readFileSync(
+        fileURLToPath(
+          new URL(
+            '../prisma/migrations/20261111000000_ultra_record_heads_mutation_index/migration.sql',
+            import.meta.url,
+          ),
         ),
+        'utf8',
       ),
-      'utf8',
-    ),
-  );
+    );
+    await database.exec(
+      readFileSync(
+        fileURLToPath(
+          new URL(
+            '../prisma/migrations/20261118000000_account_devices_sessions/migration.sql',
+            import.meta.url,
+          ),
+        ),
+        'utf8',
+      ),
+    );
+    await database.exec(
+      readFileSync(
+        fileURLToPath(
+          new URL(
+            '../prisma/migrations/20261119120000_recovered_personal_setup/migration.sql',
+            import.meta.url,
+          ),
+        ),
+        'utf8',
+      ),
+    );
+  }
+  let databaseAvailable = true;
+  const setDatabaseAvailable = (available: boolean): void => {
+    databaseAvailable = available;
+  };
+  const queryDatabase = async (sql: Prisma.Sql) => {
+    if (!databaseAvailable) {
+      // Emit PostgreSQL's cannot_connect_now error at the database boundary. All actual
+      // routes/authentication still run, including Better Auth's error wrapping.
+      await database.exec(
+        "DO $outage$ BEGIN RAISE SQLSTATE '57P03' USING MESSAGE = 'Database unavailable for test'; END $outage$",
+      );
+    }
+    return database.query(sql.text, sql.values);
+  };
   const rawDb = {
-    $queryRaw: async (sql: Prisma.Sql) =>
-      (await database.query(sql.text, sql.values)).rows,
-    $executeRaw: async (sql: Prisma.Sql) =>
-      (await database.query(sql.text, sql.values)).affectedRows ?? 0,
+    $queryRaw: async (sql: Prisma.Sql) => (await queryDatabase(sql)).rows,
+    $executeRaw: async (sql: Prisma.Sql) => (await queryDatabase(sql)).affectedRows ?? 0,
   } as UltraDb;
   let queue: Promise<unknown> = Promise.resolve();
   const enqueue = <T>(run: () => Promise<T>): Promise<T> => {
@@ -168,7 +198,7 @@ export const createHarness = async (
     queue = result.catch(() => undefined);
     return result;
   };
-  const config: UltraConfig = {
+  const config: UltraConfig = backup?.config ?? {
     serverId: crypto.randomUUID(),
     opaqueSetup: opaqueServer.createSetup(),
     authSecret: 'an isolated test operator secret at least 32 bytes',
@@ -184,7 +214,7 @@ export const createHarness = async (
   const mail: { email: string; kind: MailKind; token: string }[] = [];
   /** A kind in this set is refused by the mail provider (nothing is recorded or delivered). */
   const failingMail = new Set<MailKind>();
-  const app = Fastify();
+  const app = Fastify({ trustProxy });
   const realtime = new UltraRealtimeHub(db, !!settings.privateOnly);
   await app.register(websocket, { options: { maxPayload: 1024 } });
   // Only the synthetic multi-browser migration harness opts out: its many
@@ -193,6 +223,7 @@ export const createHarness = async (
     global: false,
     ...(disableRateLimit ? { allowList: () => true } : {}),
   });
+  beforeRoutes?.(app);
   await registerPublicCalendarFeeds(app, db);
   await app.register(ultraAccountRoutes, {
     prefix: '/api/v2/accounts',
@@ -223,11 +254,16 @@ export const createHarness = async (
       headers: accessToken ? { authorization: 'Bearer ' + accessToken } : {},
     });
     if (result.statusCode >= 400) {
-      const failure = result.json() as { error?: string; code?: string };
+      const failure = result.json() as {
+        error?: string;
+        code?: string;
+        writeIndices?: number[];
+      };
       throw new AccountApiError(
         result.statusCode,
         failure.error ?? String(result.statusCode),
         failure.code,
+        failure.writeIndices,
       );
     }
     return result.json();
@@ -287,6 +323,7 @@ export const createHarness = async (
     realtime,
     db,
     database,
+    setDatabaseAvailable,
     config,
     mail,
     failingMail,

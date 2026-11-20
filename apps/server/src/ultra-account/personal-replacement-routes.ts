@@ -88,6 +88,7 @@ export const registerPersonalReplacement = ({
         controlVersion: z.number().int().positive(),
         count: z.number().int().min(1).max(50000),
         batches: z.array(hash).min(1).max(500),
+        acceptsRecoveredSetup: z.literal(true).optional(),
         signature,
       })
       .strict()
@@ -108,6 +109,12 @@ export const registerPersonalReplacement = ({
         throw new AccountError(
           409,
           'Account data changed or replacement authorization is invalid',
+        );
+      if (scope.recovered_from_migration && !body.acceptsRecoveredSetup)
+        throw new AccountError(
+          409,
+          'This workspace was recovered from an interrupted setup. Confirm which data to use in the latest app.',
+          'RECOVERED_SETUP_CHOICE_REQUIRED',
         );
       const existing = await one<Replacement>(
         tx,

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { Prisma } from '@prisma/client';
+import { readFileSync } from 'node:fs';
 import {
   AccountClient,
   SyncClient,
@@ -8,7 +9,7 @@ import {
   type Transport,
   type ScopeSnapshot,
 } from '@ultra-tasks/account-crypto';
-import { createHarness } from './ultra-account.helper';
+import { createHarness, password } from './ultra-account.helper';
 
 const memory = () => ({
   value: null as SyncState | null,
@@ -34,6 +35,78 @@ const task = (title: string, entityId = 'task') => ({
 describe('native ownership, restore, account deletion and offline recovery', () => {
   let h: Awaited<ReturnType<typeof createHarness>>;
   afterEach(async () => h?.close());
+
+  it('invalidates restored grants while preserving the authoritative credential and encrypted data', async () => {
+    const settings = { privateOnly: true, deviceEmailVerification: true };
+    h = await createHarness(settings);
+    const email = 'kept-after-restore@example.test';
+    const deletedEmail = 'deleted-before-restore@example.test';
+    const currentPassword = 'current password after a credential change';
+    const { client: original } = await h.register(email, 'kept_after_restore');
+    const { client: deleted } = await h.register(deletedEmail, 'deleted_before_restore');
+    const { client: writer } = await device(original);
+    const record = {
+      entityId: 'restore-task',
+      entityType: 'personal.document',
+      value: { title: 'Encrypted task retained after restore' },
+    };
+    const scope = await writer.migrate([record]);
+
+    await original.changePassword(currentPassword);
+    await deleted.deleteAccount();
+    const existing = h.client();
+    const result = await existing.login(email, currentPassword);
+    if (result.verification)
+      await existing.completeDeviceVerification(
+        h.mail.findLast((mail) => mail.email === email && mail.kind === 'device')!.token,
+      );
+    const savedTokens = existing.tokens!;
+    const savedDeviceToken = existing.deviceToken!;
+    expect(savedDeviceToken).toBeTruthy();
+    await existing.request('/sync/socket-ticket', { scopes: [scope] });
+    const pending = await h.client().login(email, currentPassword);
+    expect(pending.verification).toBeDefined();
+
+    // Reopen the consistent snapshot taken after the password change and account deletion.
+    const restored = await createHarness(settings, {
+      data: await h.database.dumpDataDir('gzip'),
+      config: h.config,
+    });
+    await h.close();
+    h = restored;
+    const sanitize = readFileSync(
+      new URL('../../../scripts/invalidate-restored-security.sql', import.meta.url),
+      'utf8',
+    );
+    await h.database.exec(sanitize);
+
+    await expect(
+      h.transport('/me', undefined, savedTokens.accessToken),
+    ).rejects.toMatchObject({ status: 401 });
+    await expect(
+      h.transport('/sessions/refresh', { refreshToken: savedTokens.refreshToken }),
+    ).rejects.toMatchObject({ status: 401 });
+    const { rows } = await h.database.query(`
+      SELECT (SELECT count(*)::int FROM ultra_devices) AS devices,
+        (SELECT count(*)::int FROM ultra_challenges) AS challenges,
+        (SELECT count(*)::int FROM ultra_socket_tickets) AS tickets,
+        (SELECT count(*)::int FROM ultra_accounts WHERE email = 'deleted-before-restore@example.test') AS deleted
+    `);
+    expect(rows).toEqual([{ devices: 0, challenges: 0, tickets: 0, deleted: 0 }]);
+    await expect(h.client().login(email, password)).rejects.toThrow();
+
+    const rejoining = h.client();
+    const rejoin = await rejoining.login(email, currentPassword, 'Rejoining device', {
+      deviceToken: savedDeviceToken,
+    });
+    expect(rejoin.verification).toBeDefined();
+    await rejoining.completeDeviceVerification(
+      h.mail.findLast((mail) => mail.email === email && mail.kind === 'device')!.token,
+    );
+    const { client: rejoined } = await device(rejoining);
+    await rejoined.syncScope(scope);
+    expect(rejoined.records(scope)[record.entityId].value).toEqual(record.value);
+  }, 60000);
   const shared = async (role: 'editor' | 'viewer' = 'editor') => {
     h = await createHarness();
     const alice = (await device((await h.register()).client)).client;

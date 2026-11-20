@@ -101,6 +101,7 @@ export class AccountApiError extends Error {
     message: string,
     /** Stable machine-readable reason, for example `client_update_required`. */
     readonly code?: string,
+    readonly writeIndices?: readonly number[],
   ) {
     super(message);
   }
@@ -137,12 +138,17 @@ export const httpTransport =
           ...(body ? { body: JSON.stringify(body) } : {}),
         },
       );
-      const result = (await response.json()) as { error?: string; code?: string };
+      const result = (await response.json()) as {
+        error?: string;
+        code?: string;
+        writeIndices?: unknown;
+      };
       if (!response.ok)
         throw new AccountApiError(
           response.status,
           result.error ?? 'Account request failed',
           typeof result.code === 'string' ? result.code : undefined,
+          Array.isArray(result.writeIndices) ? result.writeIndices : undefined,
         );
       return result;
     } catch (error) {

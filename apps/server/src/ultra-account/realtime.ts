@@ -4,13 +4,14 @@ import type WebSocket from 'ws';
 import { z, ZodError } from 'zod';
 import {
   AccountError,
-  authenticateAccount,
+  accountErrorBody,
   digest,
   token,
   type UltraConfig,
 } from './security';
 import { one, type UltraDb, type UltraTransaction } from './store';
 import { liveSession, lockScope } from './scope-store';
+import type { SyncRequestBudget } from './sync-request-budget';
 
 interface Stamp {
   scopeId: string;
@@ -160,25 +161,28 @@ export class UltraRealtimeHub {
 export const registerUltraRealtime = async (
   app: FastifyInstance,
   options: {
-    db: UltraDb;
     transaction: UltraTransaction;
     config: UltraConfig;
     hub: UltraRealtimeHub;
+    requestBudget: SyncRequestBudget;
   },
 ): Promise<void> => {
-  const { db, transaction, config, hub } = options;
+  const { transaction, config, hub, requestBudget } = options;
   const tickets = new WeakMap<FastifyRequest, Ticket>();
   app.post(
     '/sync/socket-ticket',
-    { config: { rateLimit: { max: 600, timeWindow: '1 minute' } } },
+    {
+      bodyLimit: 8 * 1024,
+      config: { rateLimit: false },
+      onRequest: requestBudget.admitBearer,
+    },
     async (req, reply) => {
-      reply.header('Cache-Control', 'no-store').header('Referrer-Policy', 'no-referrer');
       try {
         const { scopes } = z
           .object({ scopes: z.array(z.string().uuid()).min(1).max(100) })
           .strict()
           .parse(req.body);
-        const session = await authenticateAccount(db, config, req.headers.authorization);
+        const session = await requestBudget.session(req);
         const value = token();
         await transaction(async (tx) => {
           await liveSession(tx, session);
@@ -211,7 +215,8 @@ export const registerUltraRealtime = async (
     '/sync/events',
     {
       websocket: true,
-      config: { rateLimit: { max: 600, timeWindow: '1 minute' } },
+      config: { rateLimit: false },
+      onRequest: requestBudget.admitIp,
       preValidation: async (req, reply) => {
         try {
           const { ticket } = z
@@ -230,6 +235,7 @@ export const registerUltraRealtime = async (
             );
             if (!session || session.account_id !== row.account_id)
               throw new AccountError(401);
+            await requestBudget.chargeAccount(req, reply, row.account_id);
             const consumed = await tx.$executeRaw(
               Prisma.sql`DELETE FROM ultra_socket_tickets WHERE digest=${digest(ticket)} AND expires_at>${BigInt(Date.now())}`,
             );
@@ -243,6 +249,8 @@ export const registerUltraRealtime = async (
           });
           tickets.set(req, record);
         } catch (error) {
+          if (error instanceof AccountError && error.statusCode === 429)
+            return reply.code(429).send(accountErrorBody(error));
           reply
             .code(error instanceof AccountError ? error.statusCode : 401)
             .send({ error: 'Invalid or expired subscription ticket' });

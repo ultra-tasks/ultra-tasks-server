@@ -98,7 +98,16 @@ sh scripts/restore.sh /secure/backup-directory
 
 A backup bundle contains the full PostgreSQL custom-format dump, matching `config.env`, and operator privacy/terms pages. It includes authentication material and metadata as well as encrypted content. Protect the complete directory and copy it outside the machine. Preserve an independent encryption key if encrypting the off-machine backup.
 
-Restore requires an empty database and refuses differing existing configuration/documents. It restores public documents with container-readable permissions, restores all database tables atomically, then starts the migration/server readiness chain. Verify login, recovery, and decrypted data with a trusted client before directing traffic to the restored service. The image named by the saved configuration must remain obtainable; preserve that image/digest alongside your retention policy.
+Restore requires an empty database and matching configuration and legal documents. It imports all tables atomically with PostgreSQL listening on its local socket only. This isolation survives a restart. Restoring a dump discards its saved sessions, refresh tokens, remembered-device tokens, realtime tickets, and pending authentication challenges. Encrypted data and sync device keys are preserved. The image named by the saved configuration must remain obtainable.
+
+Before releasing the restored database, use authoritative point-in-time recovery through the last security change, or reconcile all credential, email, MFA, recovery, account and device deletion, and other access changes made since the recovery point. Review calendar publication revocations too if calendar sharing is enabled. An older dump cannot establish what changed after it was taken. If the current security or deletion history is unavailable, keep the database isolated.
+
+After reconciliation, release PostgreSQL and start the application in the isolated environment to verify fresh login, MFA, and decrypted data on a trusted device. Reopen ingress only after these checks. The release command removes restored sign-in grants a second time and leaves the application stopped. Clients sign in again after a disaster restore.
+
+```sh
+sh scripts/restore.sh --release --security-reconciled
+sh scripts/compose.sh up -d --wait server
+```
 
 Update accepts a full revision tag or digest. It pulls the candidate, stops public/app traffic, takes a paired backup, updates the configured image, then runs migrations and health checks. A failed update remains offline. Do not simply run an older binary against a changed schema: restore the pre-upgrade bundle into a fresh installation when rollback requires it, accounting for writes since the backup. `--local` is for already-built development images.
 
@@ -115,7 +124,7 @@ sh scripts/smoke.sh
 
 The development overlay uses loopback ports and Mailpit. Its generated persistent config must never be used for production. Stop this manual development stack before running lifecycle acceptance, since the tests also use loopback ports1900/8025.
 
-`ULTRA_LOAD_QUOTA=true sh scripts/test-installation.sh` creates disposable projects/configuration/mail, verifies signup and encrypted sync, drives concurrent devices against real PostgreSQL, tests quota preservation, restores the paired bundle into a fresh volume, refuses a second restore into the nonempty database, and verifies restart/decryption. It also restores the privacy document with consent enabled. Only its own test volumes are removed. Aggregate measurements go to `.tmp/private-load.json`; credentials are never logged.
+`ULTRA_LOAD_QUOTA=true sh scripts/test-installation.sh` creates disposable projects/configuration/mail, verifies signup and encrypted sync, drives concurrent devices against real PostgreSQL, tests quota preservation, restores the paired bundle into a fresh volume, checks network isolation, session invalidation, explicit release, and nonempty-database refusal, then verifies restart and decryption. It also restores the privacy document with consent enabled. Only its own test volumes are removed. Aggregate measurements go to `.tmp/private-load.json`; credentials are never logged.
 
 `sh scripts/test-update.sh BASELINE_IMAGE CANDIDATE_SHA_IMAGE` verifies that an existing account and encrypted data survive a real image upgrade. CI builds the initial private-server baseline from public source and runs both drills on native AMD64 and ARM64 before publishing a revision image. These checks do not substitute for a physical-device trial, independent crypto review, or an off-machine production recovery exercise.
 

@@ -31,6 +31,8 @@ test "$(sh scripts/compose.sh exec -T server wget -qO- http://localhost:1900/pri
 sh scripts/compose.sh exec -T server node scripts/smoke-dev.cjs --save-fixture
 sh scripts/compose.sh exec -T server cat /tmp/ultra-restore-fixture.json > "$fixture"
 node scripts/private-load.mjs < "$fixture"
+sql() { sh scripts/compose.sh exec -T postgres psql -X -v ON_ERROR_STOP=1 -U ultra -d ultra -Atc "$1"; }
+test "$(sql 'SELECT count(*) FROM ultra_sessions')" -gt 0
 printf '%s\n' 'Starting protected PostgreSQL backup'
 backup=$(sh scripts/backup.sh | sed -n 's/^Backup bundle: //p')
 test -n "$backup"
@@ -40,6 +42,22 @@ rm "$legal/privacy.html"
 export COMPOSE_PROJECT_NAME="$restored"
 sh scripts/restore.sh "$backup"
 cmp "$legal/privacy.html" "$backup/legal/privacy.html"
+test -z "$(sql 'SHOW listen_addresses')"
+test "$(sql 'SELECT count(*) FROM ultra_sessions')" = 0
+if sh scripts/restore.sh --release >/dev/null 2>&1; then
+  printf '%s\n' 'Restore released without security reconciliation' >&2
+  exit 1
+fi
+sh scripts/compose.sh restart postgres
+sh scripts/compose.sh up -d --wait postgres
+test -z "$(sql 'SHOW listen_addresses')"
+if sh scripts/compose.sh exec -T postgres pg_isready -h 127.0.0.1 >/dev/null 2>&1; then
+  printf '%s\n' 'Restored database accepted a network connection before release' >&2
+  exit 1
+fi
+# All data in this fixture stops at the recovery point, so no reconciliation is needed.
+sh scripts/restore.sh --release --security-reconciled
+sh scripts/compose.sh up -d --wait
 sh scripts/compose.sh exec -T server node scripts/smoke-dev.cjs --verify-fixture < "$fixture"
 if sh scripts/restore.sh "$backup" > .tmp/restore-refusal.log 2>&1; then
   printf '%s\n' 'Restore incorrectly accepted a nonempty database' >&2

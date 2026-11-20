@@ -67,6 +67,38 @@ describe.each(['native', 'better-auth'] as const)(
         refreshToken: string;
       }>;
 
+    it('preserves usable credentials across a database outage and still rejects revocation', async () => {
+      const { client } = await h.register();
+      const issued = await session();
+      const { accessToken, refreshToken } = client.tokens!;
+      const scopes = (token?: string) => h.transport('/sync/scopes', undefined, token);
+
+      h.setDatabaseAvailable(false);
+      try {
+        await expect(scopes()).rejects.toMatchObject({ status: 401 });
+        const temporarilyUnavailable = {
+          status: 503,
+          message: 'Account service temporarily unavailable',
+        };
+        await expect(scopes(accessToken)).rejects.toMatchObject(temporarilyUnavailable);
+        await expect(rotate(refreshToken)).rejects.toMatchObject(temporarilyUnavailable);
+      } finally {
+        h.setDatabaseAvailable(true);
+      }
+
+      expect(await session()).toEqual(issued);
+      await expect(scopes(accessToken)).resolves.toEqual({ scopes: [] });
+      const renewed = await rotate(refreshToken);
+      await expect(scopes(renewed.accessToken)).resolves.toEqual({ scopes: [] });
+      await h.transport(
+        '/sessions/revoke',
+        { sessionId: issued.id },
+        renewed.accessToken,
+      );
+      await expect(scopes(renewed.accessToken)).rejects.toMatchObject({ status: 401 });
+      await expect(rotate(renewed.refreshToken)).rejects.toMatchObject({ status: 401 });
+    });
+
     it('issues 180-day idle and 1095-day absolute sessions and advertises sliding lifetimes', async () => {
       await h.register();
       const issued = await session();

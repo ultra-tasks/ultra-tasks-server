@@ -82,6 +82,9 @@ export interface ScopeInfo {
   controlVersion: number;
   sequence: number;
   state: 'active' | 'migrating' | 'rotating';
+  /** Device whose unfinished upload was recovered by a different owner device. */
+  interruptedMigrationSource?: string;
+  recoveredFromMigration?: boolean;
   members: Membership[];
   rotation?: ScopeRotation;
   ownershipChain?: OwnershipAcceptance[];
@@ -129,13 +132,15 @@ export interface Intent {
     restore?: boolean;
   }[];
 }
-export interface ConflictDraft {
+export type ConflictDraft = {
   id: string;
   entityId: string;
   value: unknown;
   createdAt: number;
-  reason: 'overlap' | 'deleted' | 'permission';
-}
+} & (
+  | { reason: 'overlap' | 'deleted' | 'permission' }
+  | { reason: 'upload'; entityType: string; base: PlainHead | null; deleted: boolean }
+);
 export interface LocalScope {
   revoked?: boolean;
   downloaded?: boolean;
@@ -162,6 +167,12 @@ export interface SyncState {
       records: { entityId: string; entityType: string; value: unknown }[];
       offset: number;
       complete: boolean;
+      replacesEmptyScopeId?: string;
+      interruptedOutbox?: {
+        intents: Intent[];
+        uncertain?: Mutation;
+        uncertainKey?: string;
+      };
     }
   >;
 }

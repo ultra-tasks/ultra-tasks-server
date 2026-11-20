@@ -1,11 +1,13 @@
 import { z } from 'zod';
 
 const encoded = z.string().regex(/^[A-Za-z0-9_-]+$/);
+export const ULTRA_ENVELOPE_DATA_LIMIT = 100_000;
+const PERSONAL_DOCUMENT_ENVELOPE_DATA_LIMIT = 1024 * 1024;
 export const UltraEnvelopeSchema = z
   .object({
     v: z.literal(1),
     nonce: encoded.length(16),
-    data: encoded.min(22).max(100000),
+    data: encoded.min(22).max(ULTRA_ENVELOPE_DATA_LIMIT),
   })
   .strict();
 export const UltraPublicKeySchema = z
@@ -83,10 +85,19 @@ export const UltraRecordHeaderSchema = z
 export const UltraSignedRecordSchema = z
   .object({
     header: UltraRecordHeaderSchema,
-    payload: UltraEnvelopeSchema,
+    // A task note can contain 100,000 characters before JSON escaping and base64url encoding.
+    payload: UltraEnvelopeSchema.extend({
+      data: encoded.min(22).max(PERSONAL_DOCUMENT_ENVELOPE_DATA_LIMIT),
+    }),
     signature: encoded.length(86),
   })
-  .strict();
+  .strict()
+  .refine(
+    ({ header, payload }) =>
+      header.entityType === 'personal.document' ||
+      payload.data.length <= ULTRA_ENVELOPE_DATA_LIMIT,
+    { path: ['payload', 'data'], message: 'Encrypted record exceeds its size limit' },
+  );
 export const UltraScopeRoleSchema = z.enum(['owner', 'editor', 'viewer']);
 export const ULTRA_PROTOCOL_VERSION = 2 as const;
 export const ULTRA_OPAQUE_KSF = 'memory-constrained' as const;

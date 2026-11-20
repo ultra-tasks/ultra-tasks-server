@@ -10,6 +10,7 @@ import {
   type OwnershipAcceptance,
   type ScopeRotation,
 } from '@ultra-tasks/account-crypto';
+import { ULTRA_ENVELOPE_DATA_LIMIT } from '@ultra-tasks/sync-contract';
 import { AccountError, digest, type UltraConfig } from './security';
 import { accountById, one, type UltraDb, type SessionRow } from './store';
 
@@ -24,6 +25,7 @@ export interface ScopeRow {
   sequence: number;
   state: 'active' | 'migrating' | 'rotating';
   migration_device: string | null;
+  recovered_from_migration?: boolean | null;
   rotation: ScopeRotation | null;
   ownership_chain?: OwnershipAcceptance[];
 }
@@ -90,6 +92,10 @@ export const scopeInfo = async (
   controlVersion: scope.control_version,
   sequence: scope.sequence,
   state: scope.state,
+  ...(scope.recovered_from_migration ? { recoveredFromMigration: true } : {}),
+  ...(scope.state === 'active' && scope.migration_device
+    ? { interruptedMigrationSource: scope.migration_device }
+    : {}),
   members: compact
     ? []
     : (
@@ -239,6 +245,8 @@ export const validateMutation = async (
       h.controlVersion !== scope.control_version ||
       h.mutationId !== mutation.mutationId ||
       h.counter !== mutation.counter ||
+      (scope.kind === 'project' &&
+        record.payload.data.length > ULTRA_ENVELOPE_DATA_LIMIT) ||
       !(await verify(
         c.publicKey,
         { header: h, payload: record.payload },
@@ -276,6 +284,12 @@ export const commitMutation = async (
       return { sequence: receipt.sequence, replay: true };
     throw new AccountError(409, 'Outbox counter already committed');
   }
+  if (scope.state === 'active' && scope.migration_device === mutation.deviceId)
+    throw new AccountError(
+      423,
+      'Setup was recovered on another device. Reconnect from Account settings in the latest Ultra Tasks app.',
+      'MIGRATION_REJOIN_REQUIRED',
+    );
   await validateMutation(config, scope, member, mutation);
   if (!receipt) {
     const devices = await one<{ count: bigint }>(

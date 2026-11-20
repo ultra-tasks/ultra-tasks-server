@@ -370,6 +370,7 @@ model UltraScope {
   sequence Int @default(0)
   state String @default("active")
   migrationDevice String? @map("migration_device")
+  recoveredFromMigration Boolean? @map("recovered_from_migration")
   rotation Json?
   ownershipChain Json @default("[]") @map("ownership_chain")
   members UltraScopeMember[]

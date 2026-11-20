@@ -39,6 +39,7 @@ export class AccountError extends Error {
     message = 'Invalid or expired credentials',
     /** Stable machine-readable reason sent next to the message; clients must not parse text. */
     public code?: string,
+    public readonly writeIndices?: readonly number[],
   ) {
     super(message);
   }
@@ -46,10 +47,49 @@ export class AccountError extends Error {
 /** The JSON body for a refused request: `{ error }`, plus `code` when the failure has one. */
 export const accountErrorBody = (
   error: AccountError,
-): { error: string; code?: string } => ({
+): { error: string; code?: string; writeIndices?: readonly number[] } => ({
   error: error.message,
   ...(error.code ? { code: error.code } : {}),
+  ...(error.writeIndices ? { writeIndices: error.writeIndices } : {}),
 });
+
+const DB_TEMPORARY_ERRORS: ReadonlySet<string> = new Set([
+  'P1001',
+  'P1002',
+  'P1008',
+  'P1017',
+  'P2024',
+  '53300',
+  '57P01',
+  '57P02',
+  '57P03',
+]);
+
+const storeErrorCode = (error: unknown): unknown => {
+  if (error instanceof Prisma.PrismaClientInitializationError) return error.errorCode;
+  if (error instanceof Prisma.PrismaClientKnownRequestError)
+    return error.code === 'P2010' ? error.meta?.['code'] : error.code;
+  return error instanceof Error && 'code' in error ? error.code : undefined;
+};
+
+/** Keep transient database failures separate from an authoritative session refusal. */
+export const withAccountStore = async <T>(operation: Promise<T>): Promise<T> => {
+  try {
+    return await operation;
+  } catch (error) {
+    // Better Auth's session endpoint wraps a failed adapter lookup with Error.cause.
+    const cause = error instanceof Error && 'cause' in error ? error.cause : undefined;
+    if (
+      [storeErrorCode(error), storeErrorCode(cause)].some(
+        (code) =>
+          typeof code === 'string' &&
+          (DB_TEMPORARY_ERRORS.has(code) || /^08[A-Z0-9]{3}$/.test(code)),
+      )
+    )
+      throw new AccountError(503, 'Account service temporarily unavailable');
+    throw error;
+  }
+};
 export const DAY = 86400000;
 
 export const SESSION_IDLE_DAYS = 180;
@@ -353,34 +393,42 @@ export const authenticateAccount = async (
   config: UltraConfig,
   authorization?: string,
 ): Promise<SessionRow> => {
+  if (!authorization?.startsWith('Bearer ')) throw new AccountError(401);
+  const accessToken = authorization.slice(7);
+  if (accessToken.startsWith(BETTER_AUTH_TOKEN_PREFIX)) {
+    if (config.authEngine !== 'better-auth') throw new AccountError(401);
+    const session = await withAccountStore(
+      authenticateBetterAuth(db, config, accessToken),
+    );
+    if (!session) throw new AccountError(401);
+    return session;
+  }
+
+  let decoded: jwt.JwtPayload | string;
   try {
-    if (!authorization?.startsWith('Bearer ')) throw new Error();
-    if (authorization.slice(7).startsWith(BETTER_AUTH_TOKEN_PREFIX)) {
-      if (config.authEngine !== 'better-auth') throw new Error();
-      const session = await authenticateBetterAuth(db, config, authorization.slice(7));
-      if (!session) throw new Error();
-      return session;
-    }
-    const decoded = jwt.verify(authorization.slice(7), config.authSecret, {
+    decoded = jwt.verify(accessToken, config.authSecret, {
       algorithms: ['HS256'],
       audience: 'ultra-account-v2',
       issuer: config.serverId,
     });
-    if (
-      typeof decoded === 'string' ||
-      typeof decoded.sid !== 'string' ||
-      typeof decoded.sub !== 'string'
-    )
-      throw new Error();
-    const row = await one<SessionRow>(
+  } catch (error) {
+    if (error instanceof jwt.JsonWebTokenError) throw new AccountError(401);
+    throw error;
+  }
+  if (
+    typeof decoded === 'string' ||
+    typeof decoded.sid !== 'string' ||
+    typeof decoded.sub !== 'string'
+  )
+    throw new AccountError(401);
+  const row = await withAccountStore(
+    one<SessionRow>(
       db,
       Prisma.sql`SELECT * FROM ultra_sessions WHERE id=${decoded.sid} AND account_id=${decoded.sub} AND revoked=false AND expires_at>${BigInt(Date.now())} AND idle_expires_at>${BigInt(Date.now())}`,
-    );
-    if (!row) throw new Error();
-    return row;
-  } catch {
-    throw new AccountError(401);
-  }
+    ),
+  );
+  if (!row) throw new AccountError(401);
+  return row;
 };
 export const requireRecent = (session: SessionRow): void => {
   if (Date.now() - Number(session.auth_at) > 600000)

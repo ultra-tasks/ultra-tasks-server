@@ -56,9 +56,11 @@ import {
   totpStep,
   mfaCodes,
   verifyMfaCode,
+  withAccountStore,
 } from './security';
 import { ultraScopeRoutes } from './scope-routes';
 import { UltraRealtimeHub, registerUltraRealtime } from './realtime';
+import { createSyncRequestBudget, type SyncRequestLimits } from './sync-request-budget';
 import { deleteUltraAccount } from './account-deletion';
 import { registerBrowserMfa } from './browser-mfa';
 import { registerBrowserLogin } from './browser-login';
@@ -100,6 +102,7 @@ export interface UltraRoutesOptions {
   deviceEmailVerification?: boolean;
   sendInviteMail?: (email: string) => Promise<boolean>;
   realtime?: UltraRealtimeHub;
+  syncRequestLimits?: SyncRequestLimits;
 }
 const opaqueMessage = z
   .string()
@@ -127,8 +130,19 @@ export const ultraAccountRoutes = async (
 ): Promise<void> => {
   const { db, transaction, config, sendMail } = options;
   const realtime = options.realtime ?? new UltraRealtimeHub(db, !!config.privateOnly);
-  await registerUltraRealtime(app, { db, transaction, config, hub: realtime });
-  await app.register(ultraScopeRoutes, { ...options, realtime, prefix: '/sync' });
+  const requestBudget = await createSyncRequestBudget(
+    app,
+    db,
+    config,
+    options.syncRequestLimits,
+  );
+  await registerUltraRealtime(app, { transaction, config, hub: realtime, requestBudget });
+  await app.register(ultraScopeRoutes, {
+    ...options,
+    realtime,
+    requestBudget,
+    prefix: '/sync',
+  });
   await registerAccountOverview(app, options);
   await registerCalendarFeeds(app, options);
   await opaqueReady;
@@ -307,6 +321,8 @@ export const ultraAccountRoutes = async (
         sharedRealtime: !config.privateOnly,
         personalRealtime: !!config.privateOnly,
         personalReplacement: true,
+        personalMigrationRestart: true,
+        personalMigrationRecovery: true,
         registrationOpen: options.registrationOpen !== false,
         scopeRecovery: true,
         browserMfa: true,
@@ -713,7 +729,9 @@ export const ultraAccountRoutes = async (
         req,
         z.object({ refreshToken: z.string().refine(isRefreshTokenShape) }).strict(),
       );
-      const result = await transaction((tx) => rotateRefresh(tx, config, refreshToken));
+      const result = await withAccountStore(
+        transaction((tx) => rotateRefresh(tx, config, refreshToken)),
+      );
       if (!result) throw new AccountError(401);
       return result;
     },

@@ -1,16 +1,66 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import {
   AccountClient,
   AccountApiError,
   SyncClient,
+  sign,
   type SyncState,
   type StateStorage,
   type Transport,
   type Mutation,
   type ScopeSnapshot,
 } from '@ultra-tasks/account-crypto';
+import { UltraEnvelopeSchema, UltraSignedRecordSchema } from '@ultra-tasks/sync-contract';
 import { Prisma } from '@prisma/client';
 import { createHarness, password } from './ultra-account.helper';
+
+it('only allows larger encrypted envelopes for personal document records', () => {
+  const payload = (length: number) => ({
+    v: 1,
+    nonce: 'a'.repeat(16),
+    data: 'a'.repeat(length),
+  });
+  const record = (entityType: string, length: number) => ({
+    header: {
+      v: 2,
+      serverId: crypto.randomUUID(),
+      scopeId: crypto.randomUUID(),
+      entityId: 'a-record',
+      entityType,
+      actorId: crypto.randomUUID(),
+      deviceId: crypto.randomUUID(),
+      mutationId: crypto.randomUUID(),
+      epoch: 1,
+      generation: 1,
+      controlVersion: 1,
+      counter: 1,
+      baseRevision: 0,
+      revision: 1,
+    },
+    payload: payload(length),
+    signature: 'a'.repeat(86),
+  });
+
+  expect(UltraEnvelopeSchema.safeParse(payload(100_000)).success).toBe(true);
+  expect(UltraEnvelopeSchema.safeParse(payload(100_001)).success).toBe(false);
+  expect(UltraSignedRecordSchema.safeParse(record('shared.task', 100_000)).success).toBe(
+    true,
+  );
+  expect(UltraSignedRecordSchema.safeParse(record('shared.task', 100_001)).success).toBe(
+    false,
+  );
+  expect(
+    UltraSignedRecordSchema.safeParse(record('personal.time', 100_001)).success,
+  ).toBe(false);
+  expect(
+    UltraSignedRecordSchema.safeParse(record('personal.document', 1024 * 1024)).success,
+  ).toBe(true);
+  expect(
+    UltraSignedRecordSchema.safeParse(record('personal.document', 1024 * 1024 + 1))
+      .success,
+  ).toBe(false);
+});
 
 const memory = (): StateStorage & { value: SyncState | null } => ({
   value: null,
@@ -30,6 +80,159 @@ describe('native encrypted personal sync and project sharing', () => {
   let harness: Awaited<ReturnType<typeof createHarness>>;
   afterEach(async () => {
     await harness?.close();
+  });
+  it('keeps the recovered inventory intact and fences the source until it explicitly rejoins', async () => {
+    harness = await createHarness();
+    const { client: account } = await harness.register();
+    let interrupted = false;
+    const sourceAccount = new AccountClient(async (...args) => {
+      if (interrupted && args[0].endsWith('/transactions'))
+        throw new Error('Connection closed before the pending write reached the server');
+      return harness.transport(...args);
+    });
+    await sourceAccount.login('alice', password);
+    const source = await device(sourceAccount);
+    const scopeId = await source.client.createScope('personal', true);
+    const change = (entityId: string) => ({
+      entityId,
+      entityType: 'personal.document',
+      value: { title: entityId },
+    });
+    await source.client.edit(scopeId, [change('uploaded')]);
+    await source.client.syncScope(scopeId);
+    await source.client.edit(scopeId, [change('pending-before-recovery')]);
+    interrupted = true;
+    await expect(source.client.syncScope(scopeId)).rejects.toThrow('Connection closed');
+    interrupted = false;
+    const personalKey = source.storage.value!.scopes[scopeId].uncertainKey;
+    expect(personalKey).toBeDefined();
+
+    const recovering = await device(account);
+    await recovering.client.refreshScopes();
+    await recovering.client.recoverUploadedPersonalSetup(scopeId);
+    expect(recovering.client.state.scopes[scopeId].info).toMatchObject({
+      state: 'active',
+      sequence: 1,
+      controlVersion: 2,
+    });
+    expect(Object.keys(recovering.client.records(scopeId))).toEqual(['uploaded']);
+    const oldFinish = { deviceId: source.client.state.device.id, count: 1 };
+    await expect(
+      account.request('/sync/scopes/' + scopeId + '/migration/finish', {
+        ...oldFinish,
+        signature: await sign(account.unlocked!.secrets.signingPrivateKey, {
+          action: 'finish-migration',
+          serverId: account.identity().serverId,
+          scopeId,
+          ...oldFinish,
+        }),
+      }),
+    ).rejects.toMatchObject({ code: 'MIGRATION_REJOIN_REQUIRED' });
+
+    await source.client.refreshScopes();
+    expect(
+      source.storage.value?.migrations[scopeId].interruptedOutbox?.intents[0].changes[0]
+        .entityId,
+    ).toBe('pending-before-recovery');
+    await source.client.syncScope(scopeId);
+    await source.client.edit(scopeId, [change('new-source-edit')]);
+    await expect(source.client.syncScope(scopeId)).rejects.toMatchObject({
+      status: 423,
+      code: 'MIGRATION_REJOIN_REQUIRED',
+    });
+    await recovering.client.syncScope(scopeId);
+    expect(Object.keys(recovering.client.records(scopeId))).toEqual(['uploaded']);
+
+    await source.client.rejoinRecoveredPersonalSetup(scopeId);
+    await source.client.syncScope(scopeId);
+    await recovering.client.syncScope(scopeId);
+    expect(Object.keys(recovering.client.records(scopeId)).sort()).toEqual([
+      'new-source-edit',
+      'uploaded',
+    ]);
+    const current = recovering.client.state.scopes[scopeId].info;
+    expect(current.recoveredFromMigration).toBe(true);
+    expect(current.interruptedMigrationSource).toBeUndefined();
+    const legacyStart = {
+      action: 'start-personal-replacement',
+      serverId: account.identity().serverId,
+      scopeId,
+      id: crypto.randomUUID(),
+      deviceId: recovering.client.state.device.id,
+      sequence: current.sequence,
+      generation: current.generation,
+      controlVersion: current.controlVersion,
+      count: 1,
+      batches: ['A'.repeat(43)],
+    };
+    const signedStart = async (data: typeof legacyStart) => ({
+      ...data,
+      signature: await sign(account.unlocked!.secrets.signingPrivateKey, data),
+    });
+    const replacementPath = '/sync/scopes/' + scopeId + '/replacement/start';
+    await expect(
+      account.request(replacementPath, await signedStart(legacyStart)),
+    ).rejects.toMatchObject({ code: 'RECOVERED_SETUP_CHOICE_REQUIRED' });
+    const confirmed = { ...legacyStart, acceptsRecoveredSetup: true };
+    await expect(
+      account.request(replacementPath, await signedStart(confirmed)),
+    ).resolves.toMatchObject({ started: true });
+    expect(
+      source.storage.value?.migrations[scopeId].interruptedOutbox?.intents[0].changes[0]
+        .entityId,
+    ).toBe('pending-before-recovery');
+    await expect(
+      source.client.detachPersonalForRecovery(scopeId, async (archive) => {
+        expect(archive).toMatchObject({
+          acknowledged: {
+            'new-source-edit': { value: { title: 'new-source-edit' } },
+            uploaded: { value: { title: 'uploaded' } },
+          },
+          interruptedSetup: {
+            outbox: {
+              intents: [{ changes: [{ entityId: 'pending-before-recovery' }] }],
+            },
+          },
+        });
+        expect(JSON.stringify(archive).includes(personalKey ?? '')).toBe(false);
+        return true;
+      }),
+    ).resolves.toBe(true);
+    expect(source.storage.value?.migrations[scopeId]).toBeUndefined();
+  });
+
+  it('preserves a staged first upload when another verified device tries to restart it', async () => {
+    harness = await createHarness();
+    const { client: account } = await harness.register();
+    const original = await device(account);
+    const scopeId = await original.client.createScope('personal', true);
+    const uploaded = {
+      entityId: 'staged-task',
+      entityType: 'personal.task',
+      value: { title: 'Already uploaded' },
+    };
+    await original.client.edit(scopeId, [uploaded]);
+    await original.client.syncScope(scopeId);
+
+    const other = await device(account);
+    const [before] = await other.client.refreshScopes();
+    expect(before).toMatchObject({ id: scopeId, state: 'migrating', sequence: 1 });
+    await expect(
+      other.client.restartPersonalMigration(scopeId, [
+        {
+          entityId: 'other-task',
+          entityType: 'personal.task',
+          value: { title: 'Other local task' },
+        },
+      ]),
+    ).rejects.toMatchObject({ status: 409 });
+
+    const [after] = await other.client.refreshScopes();
+    expect(after).toMatchObject({ id: scopeId, state: 'migrating', sequence: 1 });
+    await other.client.syncScope(scopeId);
+    expect(Object.values(other.client.records(scopeId))).toEqual([
+      { ...uploaded, revision: 1, deleted: false },
+    ]);
   });
   it('migrates a frozen inventory, preserves archive/plugin/time records, and converges across offline devices', async () => {
     harness = await createHarness();
@@ -120,6 +323,240 @@ describe('native encrypted personal sync and project sharing', () => {
     expect(restarted.client.state.scopes[id].intents).toHaveLength(0);
     void account;
   }, 30000);
+  it('retries only the saved prefix after losing its response and preserves all later edits', async () => {
+    harness = await createHarness();
+    const { client: account } = await harness.register();
+    const bodyLimit = 8 * 1024 * 1024;
+    const posted: {
+      counter: number;
+      digest: string;
+      bytes: number;
+      entities: string[];
+    }[] = [];
+    const wrapped = new AccountClient(async (...args) => {
+      const result = await harness.transport(...args);
+      if (args[0].endsWith('/transactions')) {
+        const mutation = args[1] as Mutation;
+        const body = JSON.stringify(mutation);
+        posted.push({
+          counter: mutation.counter,
+          digest: createHash('sha256').update(body).digest('hex'),
+          bytes: Buffer.byteLength(body),
+          entities: mutation.writes.map(({ record }) => record.header.entityId),
+        });
+        if (posted.length === 1) throw new Error('Connection lost after prefix commit');
+      }
+      return result;
+    });
+    await wrapped.login('alice', password);
+    const { client, storage } = await device(wrapped);
+    const id = await client.createScope('personal');
+    const notes = Array.from({ length: 22 }, (_, index) => ({
+      entityId: `note-${index}`,
+      entityType: 'personal.document',
+      value: {
+        path: ['task', 'entities', `note-${index}`],
+        data: { notes: `Note ${index}\n${'計'.repeat(99_990)}` },
+      },
+    }));
+    const later = {
+      entityId: 'later',
+      entityType: 'personal.document',
+      value: { path: ['task', 'entities', 'later'], data: { title: 'Later edit' } },
+    };
+    await client.edit(id, notes);
+    await client.edit(id, [later]);
+    await expect(client.syncScope(id)).rejects.toThrow(
+      'Connection lost after prefix commit',
+    );
+
+    const persisted = storage.value!.scopes[id];
+    const prefixSize = posted[0].entities.length;
+    expect(prefixSize).toBeGreaterThan(0);
+    expect(prefixSize).toBeLessThan(notes.length);
+    expect(persisted.uncertain?.writes).toHaveLength(prefixSize);
+    expect(persisted.intents.map((intent) => intent.changes.length)).toEqual([
+      prefixSize,
+      notes.length - prefixSize,
+      1,
+    ]);
+
+    const restarted = (await device(wrapped, storage)).client;
+    await restarted.syncScope(id);
+    expect(posted.map((post) => post.counter)).toEqual([1, 1, 2, 3]);
+    expect(posted[1]).toEqual(posted[0]);
+    expect(posted.every(({ bytes }) => bytes <= bodyLimit)).toBe(true);
+    expect(posted.slice(1).flatMap(({ entities }) => entities)).toEqual([
+      ...notes.map(({ entityId }) => entityId),
+      later.entityId,
+    ]);
+    expect(restarted.state.scopes[id]).toMatchObject({ intents: [], counter: 3 });
+
+    const peer = (await device(account)).client;
+    await peer.refreshScopes();
+    await peer.syncScope(id);
+    const records = peer.records(id);
+    expect(Object.keys(records)).toHaveLength(notes.length + 1);
+    for (const { entityId, value } of [...notes, later]) {
+      expect(records[entityId]?.revision, entityId).toBe(1);
+      expect(
+        JSON.stringify(records[entityId]?.value) === JSON.stringify(value),
+        entityId,
+      ).toBe(true);
+    }
+  }, 60000);
+  it('keeps a valid-sized attempt and its edits queued when the scope quota refuses it', async () => {
+    harness = await createHarness();
+    const { client: account } = await harness.register();
+    const { client, storage } = await device(account);
+    const id = await client.createScope('personal');
+    await client.edit(id, [
+      { entityId: 'existing', entityType: 'personal.task', value: { title: 'Existing' } },
+    ]);
+    await client.syncScope(id);
+    // Put this small fixture at its scope quota without building a 32 MiB inventory.
+    await harness.db.$executeRaw(
+      Prisma.sql`UPDATE ultra_record_heads SET bytes=${32 * 1024 * 1024} WHERE scope_id=${id} AND entity_id='existing'`,
+    );
+    const edit = {
+      entityId: 'later',
+      entityType: 'personal.task',
+      value: { title: 'Keep me' },
+    };
+    await client.edit(id, [edit]);
+    await expect(client.syncScope(id)).rejects.toMatchObject({
+      status: 413,
+      message: 'Encrypted scope quota reached; local changes are retained',
+    });
+    const saved = storage.value!.scopes[id];
+    expect(saved.uncertain?.counter).toBe(2);
+    expect(saved.intents[0].changes).toMatchObject([edit]);
+
+    const restarted = (await device(account, storage)).client;
+    await expect(restarted.syncScope(id)).rejects.toMatchObject({ status: 413 });
+    expect(storage.value!.scopes[id].uncertain).toEqual(saved.uncertain);
+    expect(storage.value!.scopes[id].intents).toEqual(saved.intents);
+  }, 30000);
+  it('holds only the rejected record after a lost response and syncs subsequent edits', async () => {
+    harness = await createHarness();
+    const { client: account } = await harness.register();
+    let loseRejection = false;
+    const transport: Transport = async (...args) => {
+      try {
+        return await harness.transport(...args);
+      } catch (error) {
+        if (
+          loseRejection &&
+          args[0].endsWith('/transactions') &&
+          error instanceof AccountApiError
+        ) {
+          expect(error.status).toBe(422);
+          expect(error.code).toBe('SYNC_RECORD_TOO_LARGE');
+          expect(error.writeIndices).toEqual([1]);
+          loseRejection = false;
+          throw new Error('Connection closed after rejection');
+        }
+        throw error;
+      }
+    };
+    const writerAccount = new AccountClient(transport);
+    await writerAccount.login('alice', password);
+    const { client: writer, storage } = await device(writerAccount);
+    const task = (entityId: string, title: string, notes: string) => ({
+      entityId,
+      entityType: 'personal.document',
+      value: { path: ['task', 'entities', entityId], data: { title, notes } },
+    });
+    const limitExceeded = 'Preserve these draft notes. '.repeat(32_000);
+    const initial = task('oversized', 'Original title', 'Original notes');
+    const scopeId = await writer.migrate([initial]);
+    const peer = (await device(account)).client;
+    await peer.refreshScopes();
+    await peer.syncScope(scopeId);
+    await writer.edit(scopeId, [
+      task('independent', 'Independent task', ''),
+      task('oversized', 'Original title', limitExceeded),
+    ]);
+    loseRejection = true;
+    await expect(writer.syncScope(scopeId)).rejects.toThrow(
+      'Connection closed after rejection',
+    );
+    expect(storage.value!.scopes[scopeId].uncertain?.writes).toHaveLength(2);
+
+    const resumed = (await device(account, storage)).client;
+    await resumed.syncScope(scopeId);
+    await peer.syncScope(scopeId);
+    expect(peer.record(scopeId, 'independent')?.value).toEqual(
+      task('independent', 'Independent task', '').value,
+    );
+    expect(peer.record(scopeId, 'oversized')?.value).toEqual(initial.value);
+    expect(
+      (resumed.record(scopeId, 'oversized')?.value as typeof initial.value).data.notes ===
+        limitExceeded,
+    ).toBe(true);
+    expect(storage.value!.scopes[scopeId].intents).toEqual([]);
+    expect(storage.value!.scopes[scopeId].conflicts).toMatchObject([
+      { entityId: 'oversized', reason: 'upload' },
+    ]);
+    expect(storage.value!.scopes[scopeId].uncertain).toBeUndefined();
+
+    // Remote edits outside the held field still appear and survive correction.
+    await peer.edit(scopeId, [
+      task('oversized', 'New title from peer', 'Original notes'),
+    ]);
+    await peer.syncScope(scopeId);
+    await resumed.syncScope(scopeId);
+    const projected = (
+      resumed.record(scopeId, 'oversized')?.value as typeof initial.value
+    ).data;
+    expect(projected.title).toBe('New title from peer');
+    expect(projected.notes === limitExceeded).toBe(true);
+    await resumed.dismissDrafts(scopeId);
+    expect(resumed.state.scopes[scopeId].conflicts).toMatchObject([{ reason: 'upload' }]);
+    const corrected = task('oversized', projected.title, 'Shortened notes');
+    await resumed.edit(scopeId, [corrected]);
+    await resumed.syncScope(scopeId);
+    await peer.syncScope(scopeId);
+    expect(peer.record(scopeId, 'oversized')?.value).toEqual(corrected.value);
+    expect(storage.value!.scopes[scopeId].conflicts).toEqual([]);
+  }, 30000);
+
+  it('retains an unsendable request and commits an already-queued correction', async () => {
+    harness = await createHarness();
+    const { client: account } = await harness.register();
+    const { client, storage } = await device(account);
+    const scopeId = await client.migrate([
+      {
+        entityId: 'task',
+        entityType: 'personal.document',
+        value: { notes: 'Original notes' },
+      },
+    ]);
+    await client.edit(scopeId, [
+      {
+        entityId: 'task',
+        entityType: 'personal.document',
+        value: { notes: 'a'.repeat(6_400_000) },
+      },
+    ]);
+    await client.edit(scopeId, [
+      {
+        entityId: 'task',
+        entityType: 'personal.document',
+        value: { notes: 'Correction already in the queue' },
+      },
+    ]);
+    await client.syncScope(scopeId);
+    const peer = (await device(account)).client;
+    await peer.refreshScopes();
+    await peer.syncScope(scopeId);
+    expect(peer.record(scopeId, 'task')?.value).toEqual({
+      notes: 'Correction already in the queue',
+    });
+    expect(storage.value!.scopes[scopeId].intents).toEqual([]);
+    expect(storage.value!.scopes[scopeId].conflicts).toEqual([]);
+  }, 30000);
+
   it('preserves overlapping text as a private conflict draft and makes deletion beat stale edits', async () => {
     harness = await createHarness();
     const { client: account } = await harness.register();
@@ -459,9 +896,203 @@ describe('native encrypted personal sync and project sharing', () => {
     await third.syncScope(id);
     await third.edit(id, [{ entityId: 'w', entityType: 'personal.task', value: 'w' }]);
     await third.syncScope(id);
-    await expect(second.syncScope(id)).rejects.toThrow(
-      'omitted a record this device already has',
+    await expect(second.syncScope(id)).rejects.toMatchObject({
+      code: 'SYNC_HISTORY_CHANGED',
+    });
+  }, 60000);
+  it.each(['observed cursor', 'acknowledged receipt', 'equal revision'] as const)(
+    'preserves acknowledged data after restoring a database backup (%s)',
+    async (anchor) => {
+      harness = await createHarness();
+      const { client: account } = await harness.register();
+      const original = await device(account);
+      const scope = await original.client.createScope('personal');
+      const task = (title: string) => ({
+        entityId: 'task-document',
+        entityType: 'personal.document',
+        value: { path: ['task', 'entities', 'task-1'], data: { id: 'task-1', title } },
+      });
+      await original.client.edit(scope, [task('Before backup')]);
+      await original.client.syncScope(scope);
+      await original.client.syncScope(scope);
+      const backup = {
+        data: await harness.database.dumpDataDir('gzip'),
+        config: harness.config,
+      };
+
+      await original.client.edit(scope, [task('Acknowledged after backup')]);
+      await original.client.syncScope(scope);
+      if (anchor === 'observed cursor') await original.client.syncScope(scope);
+      const observed = original.client.state.scopes[scope];
+      expect(observed.heads['task-document'].value).toEqual(
+        task('Acknowledged after backup').value,
+      );
+      expect(observed.counter).toBe(2);
+      expect(observed.info.sequence).toBe(anchor === 'observed cursor' ? 2 : 1);
+      await original.client.edit(scope, [
+        { ...task('Still local'), entityId: 'pending-document' },
+      ]);
+
+      await harness.close();
+      harness = await createHarness({}, backup);
+      const restoredAccount = new AccountClient(async (request, ...args) => {
+        // A server from before the receipt check ignores these optional query fields.
+        const path =
+          anchor === 'equal revision' && request.includes('/changes?')
+            ? request.split('&deviceId=')[0]
+            : request;
+        return harness.transport(path, ...args);
+      });
+      await restoredAccount.login('alice', password);
+      const other = (await device(restoredAccount)).client;
+      await other.refreshScopes();
+      await other.syncScope(scope);
+      expect(other.records(scope)['task-document'].value).toEqual(
+        task('Before backup').value,
+      );
+      await other.edit(scope, [task('Edited on restored server')]);
+      await other.syncScope(scope);
+      if (anchor !== 'equal revision') {
+        await other.edit(scope, [task('Newer revision on restored server')]);
+        await other.syncScope(scope);
+      }
+
+      const continuing = (await device(restoredAccount, original.storage)).client;
+      const cached = structuredClone(continuing.state.scopes[scope]);
+      await expect(continuing.syncScope(scope)).rejects.toThrow('Sync history changed');
+      expect(continuing.state.scopes[scope]).toEqual(cached);
+      expect(original.storage.value!.scopes[scope]).toEqual(cached);
+      if (anchor === 'observed cursor') {
+        await expect(
+          continuing.detachPersonalForRecovery(scope, async () => false),
+        ).resolves.toBe(false);
+        expect(original.storage.value!.scopes[scope]).toEqual(cached);
+        let backupCopy: unknown;
+        await expect(
+          continuing.detachPersonalForRecovery(scope, async (archive) => {
+            backupCopy = archive;
+            return true;
+          }),
+        ).resolves.toBe(true);
+        expect(backupCopy).toMatchObject({
+          acknowledged: {
+            'task-document': { value: task('Acknowledged after backup').value },
+          },
+          pending: [
+            {
+              changes: [
+                { entityId: 'pending-document', value: task('Still local').value },
+              ],
+            },
+          ],
+        });
+        const rejoined = (await device(restoredAccount, original.storage)).client;
+        await rejoined.refreshScopes();
+        await rejoined.syncScope(scope);
+        expect(rejoined.records(scope)['task-document'].value).toEqual(
+          task('Newer revision on restored server').value,
+        );
+        await rejoined.edit(scope, [
+          { ...task('After rejoin'), entityId: 'after-rejoin-document' },
+        ]);
+        await rejoined.syncScope(scope);
+        await other.syncScope(scope);
+        expect(other.records(scope)['after-rejoin-document'].value).toEqual(
+          task('After rejoin').value,
+        );
+      }
+      await other.syncScope(scope);
+      expect(other.records(scope)['pending-document']).toBeUndefined();
+      expect(other.records(scope)['task-document'].value).toEqual(
+        task(
+          anchor === 'equal revision'
+            ? 'Edited on restored server'
+            : 'Newer revision on restored server',
+        ).value,
+      );
+    },
+    60000,
+  );
+  it('protects restored server history before retrying an in-flight personal edit', async () => {
+    harness = await createHarness();
+    const { client: account } = await harness.register();
+    const writer = (await device(account)).client;
+    const id = await writer.createScope('personal');
+    const change = (value: string) => ({
+      entityId: 'task',
+      entityType: 'personal.task',
+      value,
+    });
+    const write = async (client: SyncClient, value: string) => {
+      await client.edit(id, [change(value)]);
+      await client.syncScope(id);
+    };
+    await write(writer, 'Before backup');
+    const backup = {
+      data: await harness.database.dumpDataDir('gzip'),
+      config: harness.config,
+    };
+    await write(writer, 'Same revision on the original branch');
+
+    let offline = false;
+    const wrapped = new AccountClient(async (...args) => {
+      if (offline && args[0].endsWith('/transactions'))
+        throw new Error('Lost connection before upload');
+      return harness.transport(...args);
+    });
+    await wrapped.login('alice', password);
+    const observer = await device(wrapped);
+    await observer.client.refreshScopes();
+    await observer.client.syncScope(id);
+    offline = true;
+    await expect(write(observer.client, 'Queued on the original branch')).rejects.toThrow(
+      'Lost connection before upload',
     );
+    const cached = structuredClone(observer.storage.value!.scopes[id]);
+    expect(cached.uncertain).toBeDefined();
+
+    await harness.close();
+    harness = await createHarness({}, backup);
+    const restored = harness.client();
+    await restored.login('alice', password);
+    const peer = (await device(restored)).client;
+    await peer.refreshScopes();
+    await peer.syncScope(id);
+    await write(peer, 'Edited on the restored branch');
+
+    const continuing = (await device(restored, observer.storage)).client;
+    await expect(continuing.syncScope(id)).rejects.toThrow('Sync history changed');
+    expect(
+      JSON.stringify(observer.storage.value!.scopes[id]) === JSON.stringify(cached),
+    ).toBe(true);
+    await peer.syncScope(id);
+    expect(peer.records(id).task.value).toBe('Edited on the restored branch');
+  }, 60000);
+  it('protects restored server history when the backup predates personal sync setup', async () => {
+    harness = await createHarness();
+    const { client: account } = await harness.register();
+    const backup = {
+      data: await harness.database.dumpDataDir('gzip'),
+      config: harness.config,
+    };
+    const original = await device(account);
+    const id = await original.client.createScope('personal');
+    await original.client.edit(id, [
+      { entityId: 'task', entityType: 'personal.task', value: 'Created after backup' },
+    ]);
+    await original.client.syncScope(id);
+    const cached = structuredClone(original.storage.value!.scopes[id]);
+
+    await harness.close();
+    harness = await createHarness({}, backup);
+    const restored = harness.client();
+    await restored.login('alice', password);
+    const continuing = (await device(restored, original.storage)).client;
+    const errors = await continuing.syncAll();
+    expect(errors[id] ?? '').toContain('Sync history changed');
+    expect(
+      JSON.stringify(original.storage.value!.scopes[id]) === JSON.stringify(cached),
+    ).toBe(true);
   }, 60000);
   it('refuses substituted heads, missing transaction members, and scope/recipient access', async () => {
     harness = await createHarness();

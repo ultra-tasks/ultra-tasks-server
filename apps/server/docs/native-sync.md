@@ -67,6 +67,7 @@ Routes live under `/api/v2/accounts/sync`; exact executable contracts are
 | `/scopes/:scopeId/snapshot`, `/changes`                              | Consistent current heads, or only those changed since a cursor, plus their signed manifests |
 | `/scopes/:scopeId/checkpoint`                                        | Retain the latest two explicit consistent checkpoints                                       |
 | `/scopes/:scopeId/migration/finish`                                  | Validate the frozen import's record count and activate the personal scope                   |
+| `/scopes/:scopeId/migration/recover`, `/rejoin`                      | Recover the signed staged inventory and reconnect its original device                       |
 | `/scopes/:scopeId/replacement/start`, `/stage`, `/finish`            | Owner-authorized, atomic replacement of a populated personal scope                          |
 | `/recipients`, `/invites`, `/scopes/:scopeId/invites`                | Verified recipient lookup, inbox, invitation creation/acceptance/revocation                 |
 | `/scopes/:scopeId/provisioning`, `/provision`                        | Owner delivery of grants after an invited email registers                                   |
@@ -110,14 +111,21 @@ reads them in the same locked transaction as the scope, through the
 snapshot. A delta never crosses a generation: after rekeying, ownership transfer,
 restore or personal replacement, and for any request without `delta=1`, the server returns the complete
 snapshot. Each response names the mutation at its sequence (`cursorMutationId`),
-and the client sends it back as `afterMutation`. If the database no longer has that
-mutation at that sequence, for example after restoring an older backup and
-committing again, the server returns the complete snapshot instead of "unchanged"
-or a delta. Clients verify a delta exactly like a snapshot and validate project
-hierarchy on the merged result. Within one generation they also reject any
-response, delta or complete, that returns an older revision of a record they hold
-or omits one. A device that already synced past a restored backup therefore stops
-with an error instead of silently diverging; it needs an explicit reconnect.
+and the client sends it back as `afterMutation`. If that mutation has aged out,
+the server returns a full snapshot. If the server still has a different mutation
+at that sequence, has fallen behind that cursor, or has lost the device's own
+acknowledged write receipt, it reports `SYNC_HISTORY_CHANGED` and leaves both
+copies intact. Personal sync also checks the observed history and receipt before
+retrying a saved write. A previously active personal scope missing from the
+authenticated account list is reported as changed history. Clients reject
+different contents for a record revision they already verified, lower revisions,
+and missing records in a full snapshot from the same generation.
+
+After an operator restores an older backup, the account screen can save a
+personal sync recovery file before reconnecting. The file contains readable
+acknowledged records, queued intents, and conflict drafts. Keep it somewhere
+private. The device's working copy has a separate local recovery point. Rejoining
+goes through the normal data choice and leaves the archived queue in the file.
 Servers advertise `incrementalChanges` for discovery; clients always ask, and a
 server without it ignores the parameter and returns the complete snapshot. Upgrading
 builds the `(scope_id, mutation_id)` index without `CONCURRENTLY`, which briefly
@@ -138,6 +146,21 @@ never acquire that permission during rebase. The personal bridge uses this for
 legacy undo and archive restoration. The app exposes draft export and explicit dismissal;
 20 unresolved drafts per record pause further conflicts instead of discarding
 older drafts. Hierarchy cycles are rejected by the shared client model.
+
+### Sync request admission
+
+Native scope operations, realtime ticket issuance, and socket upgrades share a
+600 requests/minute budget per client IP on each server process. Scope and ticket
+requests check the IP and the verified account before body parsing. Authenticated
+requests share a 240 requests/minute budget per account across sessions and
+addresses. Socket upgrades charge the account once the ticket and live session
+have been verified, before consuming the ticket. Ticket request bodies have an
+8 KiB ceiling. Rejected requests return HTTP 429 with a Retry-After header in
+seconds.
+
+With a reverse proxy, configure TRUST_PROXY for the actual proxy addresses and
+restrict backend ingress accordingly. Multi-instance deployments can enforce a
+fleet-wide budget at the edge alongside these process-local limits.
 
 ## Invitations and automatic removal
 
@@ -196,12 +219,30 @@ private histories are not erased.
 The app saves a local recovery point and stops the previous provider before linking.
 An empty account receives the local dataset automatically; a populated account
 requires an explicit local-or-account choice. Other devices must switch separately.
-A frozen encrypted migration journal uploads a new account's bounded batches and
-resumes on the same installed device. The server activates the scope only after
-the inventory count matches. Source data survives interruption; subsequent local
-changes are captured separately.
+The encrypted migration journal saves the scope ID and the frozen inventory
+before the first scope request. The same device can resume the bounded upload
+after a lost creation or activation response. The server activates the scope
+once the inventory count matches. Source data survives interruption, and
+subsequent local changes are captured separately.
+
+If the original device is unavailable, a verified account owner can explicitly
+restart an empty setup on this device. The server locks the previous scope,
+requires its sequence to be zero, and retires its ID atomically with the new
+scope creation.
+
+For an abandoned setup with committed records, another unlocked owner device
+can activate the uploaded inventory explicitly. The SDK verifies the staged
+records and signs the observed cursor and control version. The server rechecks
+both under the scope lock, activates those same heads, and fences the device
+that started the old migration. The original device keeps its encrypted journal
+and queued changes locally. After it persists a data choice, it can sign a rejoin
+request to release the fence. Edits saved only on the original device can be
+recovered from that device.
 
 Replacing an existing personal scope requires `personalReplacement` capability.
+For an inventory recovered from interrupted setup, the signed replacement request
+also records the owner's explicit confirmation. The protection remains in place
+after the original device rejoins.
 The owner signs the expected scope version and hashes of each encrypted batch.
 The server validates and stages those batches without changing live heads, then
 checks the complete inventory and expected version before committing a new
@@ -301,8 +342,20 @@ copies; storage tuning for large projects remains a release gate. A scope retain
 at most 5,000 device receipts and two explicit checkpoints. Referenced manifests remain while
 their heads exist; other history is retained for 30 days. Tombstones count against
 quota for the life of a scope. A transaction has at most 100 records and an 8 MiB
-HTTP body; each encrypted payload is at most 100,000 base64url characters. Quota
-errors retain local pending changes. Accounts have at most 101 scope memberships;
+HTTP body. The client splits ordinary personal writes, including the initial
+migration, by the UTF-8 size of the signed request. It saves each signed batch
+with the remaining queue before upload. When an older client has already saved
+an oversized request, the updated client checks its device receipt before
+retrying the edits in smaller batches. Personal document ciphertext may contain
+up to 1,048,576 base64url characters to accommodate long notes. Other encrypted
+payloads are capped at 100,000 base64url characters. Existing pending personal
+documents keep the same wire format and can retry after the server update.
+For active personal sync, a transaction that fails only because individual
+records exceed their encrypted size limit returns 422 and identifies those
+records by write index. The SDK checks the device receipt before moving only
+those writes to local editable drafts. Independent writes keep syncing. A valid
+edit of the same record replaces its draft once the server acknowledges it.
+Quota errors retain local pending changes. Accounts have at most 101 scope memberships;
 projects have at most 50 active members and 100 stored invitations (accepted
 invitations also count). The owner can revoke stored invitations via the API.
 

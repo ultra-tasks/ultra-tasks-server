@@ -1,6 +1,6 @@
 import { canonical, fingerprint } from './encoding';
 import type { RecordChange } from './sync-client';
-import type { PlainHead } from './sync-types';
+import type { Intent, PlainHead } from './sync-types';
 
 export const PERSONAL_MODELS = [
   'project',
@@ -32,7 +32,9 @@ interface TimeValue {
   deviceId: string;
   positive: number;
   negative: number;
+  foldedTime?: { path: string[]; elapsed: number };
 }
+type TaskLocations = Map<string, { path: string[]; entityId: string } | null>;
 export interface PersonalBaseline {
   source: Record<string, unknown>;
   records: Record<string, RecordChange>;
@@ -55,6 +57,63 @@ const safePath = (path: unknown): path is string[] =>
       p.length <= 128 &&
       !['__proto__', 'prototype', 'constructor'].includes(p),
   );
+const taskIdAt = (path: string[]): string | undefined => {
+  if (path.length === 3 && path[0] === 'task' && path[1] === 'entities') return path[2];
+  if (
+    path.length === 4 &&
+    (path[0] === 'archiveYoung' || path[0] === 'archiveOld') &&
+    path[1] === 'task' &&
+    path[2] === 'entities'
+  )
+    return path[3];
+  return undefined;
+};
+const taskLocations = (
+  records: Iterable<Pick<RecordChange, 'entityId' | 'entityType' | 'value' | 'deleted'>>,
+): TaskLocations => {
+  const result: TaskLocations = new Map();
+  for (const record of records) {
+    if (record.deleted || record.entityType !== 'personal.document') continue;
+    const path = (record.value as DocumentValue | null)?.path;
+    if (!safePath(path)) continue;
+    const id = taskIdAt(path);
+    if (id) result.set(id, result.has(id) ? null : { path, entityId: record.entityId });
+  }
+  return result;
+};
+const relocatedTimePath = (path: string[], locations: TaskLocations): string[] => {
+  if (path.at(-2) !== 'timeSpentOnDay') return path;
+  const anchor = timeAnchor(path);
+  const id = taskIdAt(anchor);
+  const location = id && locations.get(id);
+  return location && canonical(location.path) !== canonical(anchor)
+    ? [...location.path, ...path.slice(-2)]
+    : path;
+};
+const timeValue = (value: unknown): TimeValue | undefined => {
+  if (
+    !object(value) ||
+    !safePath(value.path) ||
+    typeof value.deviceId !== 'string' ||
+    typeof value.positive !== 'number' ||
+    typeof value.negative !== 'number' ||
+    !Number.isFinite(value.positive) ||
+    !Number.isFinite(value.negative) ||
+    value.positive < 0 ||
+    value.negative < 0
+  )
+    return undefined;
+  const folded = value.foldedTime;
+  if (
+    folded !== undefined &&
+    (!object(folded) ||
+      !safePath(folded.path) ||
+      typeof folded.elapsed !== 'number' ||
+      !Number.isFinite(folded.elapsed))
+  )
+    return undefined;
+  return value as unknown as TimeValue;
+};
 const set = (root: Record<string, unknown>, path: string[], value: unknown): void => {
   let target = root;
   for (const key of path.slice(0, -1)) {
@@ -130,35 +189,52 @@ export const personalRecords = async (
     } else await add(path, value);
   };
   for (const model of PERSONAL_MODELS) await slice([model], source[model]);
-  for (const record of Object.values(previous?.records ?? {}))
-    if (record.entityType === 'personal.time') {
-      const value = record.value as TimeValue;
-      if (
-        !timePaths.has(canonical(value.path)) &&
-        get(source, timeAnchor(value.path)) !== undefined
-      )
-        timePaths.set(canonical(value.path), { path: value.path, value: 0 });
-      if (timePaths.has(canonical(value.path))) records[record.entityId] = record;
+  const previousRecords = Object.values(previous?.records ?? {});
+  const locations = taskLocations(Object.values(records));
+  const previousLocations = taskLocations(previousRecords);
+  const buckets = new Map<string, RecordChange>();
+  for (const record of previousRecords) {
+    if (record.entityType !== 'personal.time') continue;
+    const value = record.value as TimeValue;
+    const path = relocatedTimePath(value.path, locations);
+    const key = canonical(path);
+    if (!timePaths.has(key) && get(source, timeAnchor(path)) !== undefined)
+      timePaths.set(key, { path, value: 0 });
+    if (timePaths.has(key)) {
+      // Archiving moves the bucket with the task, keeping its revision and contributions.
+      const carried =
+        path === value.path ? record : { ...record, value: { ...value, path } };
+      records[record.entityId] = carried;
+      buckets.set(canonical({ path, deviceId: value.deviceId }), carried);
     }
+  }
   for (const { path, value } of timePaths.values()) {
-    const delta = value - (previous ? Number(get(previous.source, path) ?? 0) : 0);
+    const previousPath = relocatedTimePath(path, previousLocations);
+    const delta =
+      value - (previous ? Number(get(previous.source, previousPath) ?? 0) : 0);
+    if (delta === 0 && previous) continue;
     const bucketDevice =
-      previous && get(previous.source, timeAnchor(path)) !== undefined
+      previous && get(previous.source, timeAnchor(previousPath)) !== undefined
         ? deviceId
         : 'legacy-baseline';
-    const entityId = await fingerprint({ path, deviceId: bucketDevice });
-    const old = records[entityId]?.value as TimeValue | undefined;
-    if (delta !== 0 || !previous)
-      records[entityId] = {
-        entityId,
-        entityType: 'personal.time',
-        value: {
-          path,
-          deviceId: bucketDevice,
-          positive: (old?.positive ?? 0) + Math.max(0, delta),
-          negative: (old?.negative ?? 0) + Math.max(0, -delta),
-        } satisfies TimeValue,
-      };
+    const identity = { path, deviceId: bucketDevice };
+    const bucket = buckets.get(canonical(identity));
+    const entityId = bucket?.entityId ?? (await fingerprint(identity));
+    // A split archive can temporarily expose both locations. The original ID can
+    // already belong to the carried bucket at the destination.
+    const existing = timeValue(records[entityId]?.value);
+    const old = existing?.deviceId === bucketDevice ? existing : undefined;
+    records[entityId] = {
+      entityId,
+      entityType: 'personal.time',
+      value: {
+        ...old,
+        path: old?.path ?? path,
+        deviceId: bucketDevice,
+        positive: (old?.positive ?? 0) + Math.max(0, delta),
+        negative: (old?.negative ?? 0) + Math.max(0, -delta),
+      } satisfies TimeValue,
+    };
   }
   return { source, records };
 };
@@ -180,20 +256,15 @@ export const restorePersonal = (
       throw new Error('Malformed personal document');
     set(result, value.path, clean(value.data));
   }
+  const locations = taskLocations(documents);
   for (const head of Object.values(heads))
     if (!head.deleted && head.entityType === 'personal.time') {
-      const value = head.value as TimeValue;
-      if (
-        !safePath(value.path) ||
-        !Number.isFinite(value.positive) ||
-        !Number.isFinite(value.negative) ||
-        value.positive < 0 ||
-        value.negative < 0
-      )
-        throw new Error('Malformed private time bucket');
-      const key = canonical(value.path);
+      const value = timeValue(head.value);
+      if (!value) throw new Error('Malformed private time bucket');
+      const path = relocatedTimePath(value.path, locations);
+      const key = canonical(path);
       time.set(key, {
-        path: value.path,
+        path,
         value: (time.get(key)?.value ?? 0) + value.positive - value.negative,
       });
     }
@@ -222,6 +293,106 @@ export const restorePersonal = (
   };
   repairIds(result);
   return result;
+};
+
+/** Include buckets that arrived after a local move was prepared, in the move's transaction. */
+export const preparePersonalTimeRebase = (
+  remote: Record<string, PlainHead>,
+  intents: Intent[],
+): TaskLocations => {
+  const queued = new Set<string>();
+  const projected: Record<
+    string,
+    Pick<PlainHead, 'entityId' | 'entityType' | 'value' | 'deleted'>
+  > = {
+    ...remote,
+  };
+  const removals = new Map<string, Intent>();
+  for (const intent of intents)
+    for (const change of intent.changes) {
+      queued.add(change.entityId);
+      if (change.entityType === 'personal.document') {
+        projected[change.entityId] = change;
+        if (change.deleted) removals.set(change.entityId, intent);
+      }
+    }
+  const locations = taskLocations(Object.values(projected));
+  if (!removals.size) return locations;
+
+  const remoteLocations = taskLocations(Object.values(remote));
+  const overflow: Intent['changes'] = [];
+  for (const head of Object.values(remote)) {
+    if (head.deleted || head.entityType !== 'personal.time' || queued.has(head.entityId))
+      continue;
+    const value = timeValue(head.value);
+    if (!value) continue;
+    const anchor = timeAnchor(value.path);
+    const taskId = taskIdAt(anchor);
+    const source = taskId && remoteLocations.get(taskId);
+    if (!source || canonical(source.path) !== canonical(anchor)) continue;
+    const intent = removals.get(source.entityId);
+    if (!intent) continue;
+    const path = relocatedTimePath(value.path, locations);
+    if (path === value.path) continue;
+    const change = {
+      entityId: head.entityId,
+      entityType: head.entityType,
+      deleted: false,
+      base: head,
+      value: { ...value, path },
+    };
+    (intent.changes.length < 100 ? intent.changes : overflow).push(change);
+  }
+  for (let offset = 0; offset < overflow.length; offset += 100)
+    intents.push({
+      id: crypto.randomUUID(),
+      changes: overflow.slice(offset, offset + 100),
+    });
+  return locations;
+};
+
+export const hasDifferentTaskTimeLocation = (
+  change: Intent['changes'][number],
+  locations: TaskLocations,
+): boolean => {
+  if (change.deleted || change.entityType !== 'personal.time') return false;
+  const value = timeValue(change.value);
+  return !!value && relocatedTimePath(value.path, locations) !== value.path;
+};
+
+/** A timer may point at the task's former location while this device is offline. */
+export const rebasePersonalTimeChange = (
+  change: Intent['changes'][number],
+  target: PlainHead | undefined,
+  remote: PlainHead | undefined,
+  locations: TaskLocations,
+): void => {
+  if (change.deleted || change.entityType !== 'personal.time') return;
+  const value = timeValue(change.value);
+  if (!value) return;
+  const path = relocatedTimePath(value.path, locations);
+  const base = timeValue(change.base?.value);
+  if (remote?.deleted && base && relocatedTimePath(base.path, locations) !== base.path) {
+    // Older clients fold acknowledged time into the archived baseline and delete old IDs.
+    // Carry just this device's unacknowledged contribution across such a move.
+    const retained = timeValue(target?.value);
+    change.base = target ?? null;
+    change.restore = target?.deleted || undefined;
+    change.value = {
+      ...value,
+      path,
+      positive: (retained?.positive ?? 0) + Math.max(0, value.positive - base.positive),
+      negative: (retained?.negative ?? 0) + Math.max(0, value.negative - base.negative),
+      // The app can recapture its still-active workspace after a restart. Persist
+      // the part already carried by the archived total alongside this counter.
+      foldedTime: retained?.foldedTime ?? {
+        path: base.path,
+        elapsed: base.positive - base.negative,
+      },
+    } satisfies TimeValue;
+  } else if (path !== value.path) {
+    change.value = { ...value, path };
+  }
 };
 
 export const baselineFromHeads = (
