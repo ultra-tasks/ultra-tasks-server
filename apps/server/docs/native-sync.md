@@ -152,7 +152,7 @@ older drafts. Hierarchy cycles are rejected by the shared client model.
 Native scope operations, realtime ticket issuance, and socket upgrades share a
 600 requests/minute budget per client IP on each server process. Scope and ticket
 requests check the IP and the verified account before body parsing. Authenticated
-requests share a 240 requests/minute budget per account across sessions and
+requests share a 480 requests/minute budget per account across sessions and
 addresses. Socket upgrades charge the account once the ticket and live session
 have been verified, before consuming the ticket. Ticket request bodies have an
 8 KiB ceiling. Rejected requests return HTTP 429 with a Retry-After header in

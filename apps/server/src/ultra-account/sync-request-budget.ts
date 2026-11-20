@@ -13,7 +13,7 @@ export interface SyncRequestLimits {
   accountPerMinute: number;
 }
 
-const DEFAULT_LIMITS: SyncRequestLimits = { ipPerMinute: 600, accountPerMinute: 240 };
+const DEFAULT_LIMITS: SyncRequestLimits = { ipPerMinute: 600, accountPerMinute: 480 };
 
 export const createSyncRequestBudget = async (
   app: FastifyInstance,
