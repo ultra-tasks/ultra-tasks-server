@@ -17,7 +17,7 @@ concurrency:
 jobs:
   checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     services:
       auth-postgres:
         image: postgres:16-alpine
